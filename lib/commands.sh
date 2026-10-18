@@ -168,7 +168,7 @@ cmd_status() {
       alive=false
       if command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then alive=true; fi
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
-      last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
+      last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
       elapsed=$(( $(now) - $(jq -r .started "$path") ))
       row=$(jq -c --argjson tmux "$alive" --argjson elapsed "$elapsed" --arg last "$last" '.+{tmux:$tmux,elapsed:$elapsed,last_log:$last}' "$path")
       if [ "$json" = 1 ]; then printf '%s\n' "$row"
