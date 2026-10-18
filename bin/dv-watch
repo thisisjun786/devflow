@@ -30,6 +30,7 @@ printf '%s\n' "$$" > "$DV_HOME/watch.pid"
 pids=''; active=0
 finish() {
   local pid
+  for pid in $pull_pids; do kill "$pid" 2>/dev/null || true; done
   for pid in $pids; do wait "$pid" || true; done
   rm -f "$DV_HOME/watch.pid"
   rmdir "$DV_HOME/.watch-lock"
@@ -40,6 +41,21 @@ cursor=0
 [ ! -f "$DV_HOME/cursor" ] || cursor=$(cat "$DV_HOME/cursor")
 touch "$DV_HOME/kick.q" "$DV_HOME/seen"
 last_scan=0
+# Remote dev hosts: one dv-kick-pull stream per host, restarted with a back-off when it ends.
+pull_pids=''
+pulls() {
+  local host pidfile pid last
+  for host in $DV_PULL_HOSTS; do
+    pidfile="$DV_HOME/pull-$host.pid"
+    pid=''; [ ! -f "$pidfile" ] || pid=$(tr -dc '0-9' < "$pidfile")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi
+    last=0; [ ! -f "$DV_HOME/pull-$host.started" ] || last=$(cat "$DV_HOME/pull-$host.started")
+    [ $(( $(now) - last )) -ge "$DV_PULL_RETRY" ] || continue
+    now > "$DV_HOME/pull-$host.started"
+    "$DV_ROOT/bin/dv-kick-pull" "$host" 2>> "$DV_HOME/pull-$host.log" &
+    printf '%s\n' "$!" > "$pidfile"; pull_pids="$pull_pids $!"
+  done
+}
 reap() {
   local live='' pid
   active=0
@@ -72,6 +88,7 @@ reconcile() {
 }
 while [ ! -e "$DV_HOME/stop" ]; do
   reap
+  pulls
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   while [ "$active" -lt "$DV_MAX_WORKERS" ] && [ ! -e "$DV_HOME/stop" ]; do

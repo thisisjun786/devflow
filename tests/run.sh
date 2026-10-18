@@ -152,7 +152,6 @@ case_install_linux_watch() {
     systemd-analyze --user verify "$unit"
   fi
   grep -Fx 'Restart=on-failure' "$unit"
-  grep -F 'dv-kick-pull" %i' "$linux_home/.config/systemd/user/dev.devflow.kick-pull@.service"
   grep 'systemctl --user enable --now dev.devflow.watch.service' "$CASE_DIR/linux.out"
   test -L "$linux_home/.hermes/profiles/sion/skills/software-development/devflow"
   test ! -e "$linux_home/Library"
@@ -197,24 +196,46 @@ case_reconcile() {
 
 case_kick_pull() {
   export SSH_FIXTURE_EXEC=1
-  remote_q="$CASE_DIR/remote-home/kick.q"; mkdir -p "$CASE_DIR/remote-home"
+  # The remote host's own config moves its queue: the stream must load it.
+  mkdir -p "$CASE_DIR/remote-home" "$CASE_DIR/rq"
+  printf 'DV_HOME=%q\n' "$CASE_DIR/rq" > "$CASE_DIR/remote-home/config.sh"
+  remote_q="$CASE_DIR/rq/kick.q"
   event() { jq -cn --arg i "$1" --arg m "$2" '{id:("box:"+$i+":done:h"),kind:"done",issue:$i,message:$m,host:"box",head:"h",time:1}'; }
+  lines() { if [ -f "$DV_HOME/kick.q" ]; then wc -l < "$DV_HOME/kick.q" | tr -d ' '; else echo 0; fi; }
+  until_lines() { for _ in {1..100}; do [ "$(lines)" = "$1" ] && return 0; sleep 0.1; done; return 1; }
+  # Stop only this case's pull (its EXIT trap ends ssh/tail); never pkill by pattern.
+  stop_pull() { kill "$!" 2>/dev/null || true; wait "$!" 2>/dev/null || true; }
   { event P-1 ''; event P-2 'two words'; } > "$remote_q"
-  dv-kick-pull box 2> "$CASE_DIR/pull.err" &
-  for _ in {1..100}; do [ -f "$DV_HOME/kick.q" ] && [ "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = 2 ] && break; sleep 0.1; done
-  event P-3 'later' >> "$remote_q"
-  for _ in {1..100}; do [ "$(wc -l < "$DV_HOME/kick.q" 2>/dev/null | tr -d ' ')" = 3 ] && break; sleep 0.1; done
-  pkill -f "$CASE_DIR/remote-home" || true; wait || true
-  test "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = 3
-  test "$(cat "$DV_HOME/pull-box.offset")" = 3
+  dv-kick-pull box 2> "$CASE_DIR/pull.err" & until_lines 2
+  event P-3 'later' >> "$remote_q"; until_lines 3; stop_pull
+  read -r offset _ < "$DV_HOME/pull-box.offset"; test "$offset" = 3
   jq -se '[.[].issue]==["P-1","P-2","P-3"] and .[1].message=="two words" and .[0].message=="" and all(.[]; .host=="box" and .head=="h")' "$DV_HOME/kick.q"
-  # A reconnect resumes after the stored offset: nothing is replayed.
-  dv-kick-pull box 2>> "$CASE_DIR/pull.err" &
-  sleep 1
+  # Reconnect resumes after the checkpoint: nothing replayed.
   event P-4 '' >> "$remote_q"
-  for _ in {1..100}; do [ "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = 4 ] && break; sleep 0.1; done
-  pkill -f "$CASE_DIR/remote-home" || true; wait || true
-  jq -se '[.[].issue]==["P-1","P-2","P-3","P-4"]' "$DV_HOME/kick.q"
+  dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 4; stop_pull
+  # A failed local write is not checkpointed; the next stream redelivers it.
+  mkdir "$DV_HOME/.kick-lock"
+  event P-5 '' >> "$remote_q"
+  if dv-kick-pull box 2>> "$CASE_DIR/pull.err"; then return 1; fi
+  read -r offset _ < "$DV_HOME/pull-box.offset"; test "$offset" = 4
+  rmdir "$DV_HOME/.kick-lock"
+  dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 5; stop_pull
+  # A replaced queue (new inode) restarts from its first line.
+  event P-6 '' > "$remote_q.new"; mv "$remote_q.new" "$remote_q"
+  dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 6; stop_pull
+  jq -se '[.[].issue]==["P-1","P-2","P-3","P-4","P-5","P-6"]' "$DV_HOME/kick.q"
+}
+case_watch_pull() {
+  export SSH_FIXTURE_EXEC=1 DV_PULL_HOSTS=box DV_PULL_RETRY=1 DV_WATCH_INTERVAL=0.1
+  export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_HOSTS=''
+  mkdir -p "$CASE_DIR/remote-home/state"
+  printf 'DV_HOME=%q\n' "$CASE_DIR/remote-home/state" > "$CASE_DIR/remote-home/config.sh"
+  jq -cn '{id:"box:W-1:done:h",kind:"done",issue:"W-1",message:"",host:"box",head:"h",time:1}' > "$CASE_DIR/remote-home/state/kick.q"
+  dv-watch & watcher=$!
+  for _ in {1..100}; do [ -f "$DV_HOME/seen" ] && grep -q 'box:W-1:done:h' "$DV_HOME/seen" && break; sleep 0.1; done
+  touch "$DV_HOME/stop"; wait "$watcher"
+  grep -Fx 'box:W-1:done:h' "$DV_HOME/seen"
+  pid=$(cat "$DV_HOME/pull-box.pid"); if kill -0 "$pid" 2>/dev/null; then return 1; fi
 }
 
 wait_file() {
@@ -367,7 +388,7 @@ case_land_checkout_race() {
 
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
+for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

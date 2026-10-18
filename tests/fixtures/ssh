@@ -7,4 +7,4 @@ while [ "$#" -gt 0 ]; do
   case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac
 done
 shift # host
-exec env DV_HOME="$CASE_DIR/remote-home" bash -c "$*"
+exec env -u DV_HOME DV_CONFIG="$CASE_DIR/remote-home/config.sh" bash -c "$*"
