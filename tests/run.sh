@@ -191,6 +191,19 @@ wait_pr_ready() {
   printf 'Timed out waiting for PR waiter to finish: %s\n' "$1" >&2
   return 1
 }
+case_reconcile_local() {
+  # The watcher's own host is read without ssh: the ssh fixture would serve nothing here.
+  export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1 DV_RECONCILE_INTERVAL=1 DV_HOSTS="$DV_HOST"
+  repo remote remote; needs_tmux; start L-1; wait_done L-1
+  : > "$DV_HOME/kick.q"; printf '[]' > "$CASE_DIR/remote-status"
+  dv-watch & watcher=$!
+  for _ in {1..100}; do
+    grep -q 'L-1' "$DV_HOME/kick.q" 2>/dev/null && break
+    sleep 0.1
+  done
+  touch "$DV_HOME/stop"; wait "$watcher"
+  jq -e 'select(.issue=="L-1") | .message=="Recovered by status safety net"' "$DV_HOME/kick.q"
+}
 case_agent_cli() {
   needs_tmux; repo cli
   export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive"
@@ -299,7 +312,7 @@ case_land_checkout_race() {
 
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in start_done kick_failure local_land pr_land clean parallel install review watch reconcile agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
+for name in start_done kick_failure local_land pr_land clean parallel install review watch reconcile reconcile_local agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
