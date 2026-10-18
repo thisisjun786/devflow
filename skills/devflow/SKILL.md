@@ -30,7 +30,7 @@ Linear 이슈를 정리한 뒤 개발 호스트의 로컬 저장소에서 이슈
 
 ## 실사용에서 확인된 것 (10-18, 10-19)
 - 10-19 Hermes가 lina-os로 옮겨오며 감시자도 lina-os로 옮겼다. lina-os는 자기 자신에게 ssh 키가 없으므로 같은 호스트 이벤트는 ssh 없이 처리한다(#6, #7). 기기의 `dv-kick-relay`는 lina-os의 `dv-kick`으로 바로 보낸다. 아래 Mac 관련 항목은 옛 구성이다.
-- 개발 호스트 순서(준 10-19): **hx-linux → go2-linux → gos-linux(jun 계정만) → lina-os(최후)**. lina-os는 Hermes·상주 서비스 몫이라 개발 에이전트를 되도록 올리지 않는다. gos의 OpenClaw 사용자(neolina·eunbot)는 외부용이라 건드리지 않는다.
+- 개발 호스트 순서(준 10-19): **hx-linux → go2-linux → lina-os → gos-linux(jun 계정만, 최후)**. lina-os는 Hermes·상주 서비스 몫이라 hx·go2가 찼을 때만 쓴다. gos는 그보다도 뒤다. gos의 OpenClaw 사용자(neolina·eunbot)는 외부용이라 건드리지 않는다.
 - 원격 호스트 이벤트: 기기는 lina-os로 ssh 키가 없다. 대신 lina-os dv-watch가 `DV_PULL_HOSTS="hx-linux go2-linux gos-linux"`로 기기마다 `dv-kick-pull`을 띄워 기기의 `kick.q`를 ssh `tail -f`로 받아 온다(#11). 기기 config는 `DV_KICK_HOST=<자기 hostname>`, `DV_KICK=`(로컬 큐). 옛 `dv-kick-relay`는 쓰지 않는다.
 - 기기에서 시작: `ssh hx-linux 'bash -lc "dv start ~/code/<repo> ISSUE slug --brief ~/dv/briefs/brief-x.md"'`. 저장소·브리프는 그 기기에 있어야 한다. 원격 없는 로컬 저장소(msghub 등)는 lina-os가 원본이므로 기기에서 시작하지 않거나, GitHub 비공개 원격을 둔 뒤에 옮긴다.
 - 기기에는 `gh`(thisisjun786 로그인)가 있다.
