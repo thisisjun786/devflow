@@ -150,7 +150,8 @@ cmd_kick() {
   if [ -n "$DV_KICK" ]; then
     bash -c "$DV_KICK \"\$@\"" dv-kick "$kind" "$issue" "$message" "$host" "$head" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   else
-    remote=$(shell_join dv-kick "$kind" "$issue" "$message" "$host" "$head")
+    # The remote shell often lacks ~/.local/bin: use the installed path explicitly.
+    remote=$(shell_join bash -lc "PATH=\$HOME/.local/bin:\$PATH $(shell_join dv-kick "$kind" "$issue" "$message" "$host" "$head")")
     ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$DV_KICK_HOST" "$remote" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   fi
   printf '%s\n' "$line" | jq -c --argjson rc "$rc" '. + {delivered:($rc==0),exit:$rc}' >> "$DV_STATE/$issue/events.log"
