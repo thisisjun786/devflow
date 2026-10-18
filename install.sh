@@ -83,8 +83,28 @@ StandardError=append:$state/watch.stderr.log
 WantedBy=default.target
 UNIT
   fi
+  # Remote dev hosts: the watcher pulls each host's kick queue over one ssh stream (no key back needed).
+  pull_unit="$unit_dir/dev.devflow.kick-pull@.service"
+  if [ ! -e "$pull_unit" ]; then
+    cat > "$pull_unit" <<UNIT
+[Unit]
+Description=devflow kick relay from dev host %i
+After=network-online.target
+
+[Service]
+Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart="$HOME/.local/bin/dv-kick-pull" %i
+Restart=always
+RestartSec=15
+StandardError=append:$state/kick-pull-%i.log
+
+[Install]
+WantedBy=default.target
+UNIT
+  fi
   # Printed for the operator, not run during installation.
   printf 'Register manually: systemctl --user daemon-reload && systemctl --user enable --now dev.devflow.watch.service\n'
+  printf 'For each remote dev host: systemctl --user enable --now dev.devflow.kick-pull@<ssh-host>.service\n'
   if command -v loginctl >/dev/null && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
     printf 'WARNING: lingering is off; the watcher stops at logout. Run: loginctl enable-linger %s\n' "$(id -un)"
   fi

@@ -45,7 +45,7 @@ dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야
 
 상태는 `$DV_STATE/ISSUE/`의 `meta`(JSON), `brief.md`, `log`, `report.md`, `done.json`, 리뷰·PR 결과입니다. done은 PR 대기 상태를 덮어쓰지 않습니다. ready는 **확인할 자료가 준비됨**을 뜻하며 CI 성공을 보장하지 않습니다. land는 빈 체크·skipped·pending·실패·head 불일치를 모두 거절합니다. 원격 브랜치를 지우지 않으며 squash 후 로컬 브랜치도 조상이 아니면 보존합니다.
 
-감시 호스트의 `$DV_HOME/kick.q`와 `events.log`는 JSON Lines입니다. 이벤트 ID(host/issue/kind/head)로 중복을 무시하며, 작업자 로그·프롬프트는 `workers/`에 남습니다. 3초 간격은 로컬 파일 읽기이며 원격 안전망은 30분 간격 `ssh HOST dv status --json`입니다(감시 호스트 자신은 ssh 없이). `$DV_HOME/stop`을 만들면 새 작업을 멈추고 실행 중인 작업자를 기다립니다. 재시작할 때 stop 파일을 지우세요. 비정상 종료의 잠금은 PID와 실제 프로세스를 확인한 뒤 사람이 지웁니다.
+감시 호스트의 `$DV_HOME/kick.q`와 `events.log`는 JSON Lines입니다. 이벤트 ID(host/issue/kind/head)로 중복을 무시하며, 작업자 로그·프롬프트는 `workers/`에 남습니다. 3초 간격은 로컬 파일 읽기이며 원격 안전망은 30분 간격 `ssh HOST dv status --json`입니다(감시 호스트 자신은 ssh 없이). 원격 개발 호스트는 감시 호스트가 `dv-kick-pull <host>`(systemd `dev.devflow.kick-pull@<host>.service`)로 그 호스트의 `kick.q`를 ssh 한 줄기로 `tail -F` 해 받아 옵니다. 개발 호스트에서 감시 호스트로 가는 ssh 키가 필요 없고, 폴링 없이 쓰는 즉시 도착하며, 줄 위치를 저장해 재접속 때 이어 받습니다. 그 호스트의 `DV_KICK_HOST`는 자기 자신(로컬 큐)으로 둡니다. `$DV_HOME/stop`을 만들면 새 작업을 멈추고 실행 중인 작업자를 기다립니다. 재시작할 때 stop 파일을 지우세요. 비정상 종료의 잠금은 PID와 실제 프로세스를 확인한 뒤 사람이 지웁니다.
 
 Codex goal은 TUI 입력 마커를 기다린 후 `/goal`을 붙여넣고 Enter를 보냅니다. TUI 버전이 달라 입력을 못 찾으면 failed 이벤트를 남기며 `dv send`로 보낼 수 있습니다. exec는 한 번 실행 후 성공할 때 래퍼가 done을 호출합니다. 종료된 에이전트 재시작은 자동화하지 않습니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리를 받습니다.
 

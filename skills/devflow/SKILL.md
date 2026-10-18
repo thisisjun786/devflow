@@ -5,7 +5,7 @@ description: Use when running dev work through dv (devflow).
 
 # 시온의 devflow
 
-Linear 이슈를 정리한 뒤 호스트(lina-os, hx, go2, gos)의 로컬 저장소에서 이슈당 에이전트 하나·worktree 하나·브랜치 하나로 개발합니다. 개발 중 설계·비평·relay·리뷰 루프는 없습니다.
+Linear 이슈를 정리한 뒤 개발 호스트의 로컬 저장소에서 이슈당 에이전트 하나·worktree 하나·브랜치 하나로 개발합니다. 개발 중 설계·비평·relay·리뷰 루프는 없습니다.
 
 1. 구체적인 요구와 완료 기준을 brief 파일로 쓰고 `dv start <repo> <ISSUE> <slug> --brief FILE`로 시작합니다. Codex 기본은 goal입니다. 필요하면 `--agent claude|devin` 또는 Codex `--mode exec`, `--base BRANCH`를 선택합니다.
 2. 에이전트는 실패 시험을 먼저 남기고 개발·관련 시험·커밋·보고서를 마칩니다. GitHub면 `dv pr`, 마지막에 `dv done`을 호출합니다.
@@ -30,8 +30,10 @@ Linear 이슈를 정리한 뒤 호스트(lina-os, hx, go2, gos)의 로컬 저장
 
 ## 실사용에서 확인된 것 (10-18, 10-19)
 - 10-19 Hermes가 lina-os로 옮겨오며 감시자도 lina-os로 옮겼다. lina-os는 자기 자신에게 ssh 키가 없으므로 같은 호스트 이벤트는 ssh 없이 처리한다(#6, #7). 기기의 `dv-kick-relay`는 lina-os의 `dv-kick`으로 바로 보낸다. 아래 Mac 관련 항목은 옛 구성이다.
-- 기기(hx/go2/gos)는 Mac에 직접 ssh할 수 없고 lina-os로도 공인키가 없어 이벤트를 못 보낸다. `~/.local/bin/dv-kick-relay`(기기→lina-os→Mac)를 만들어 `DV_KICK`에 넣었지만, 기기→lina-os 키 허용이 없으면 exit 255로 실패한다. 기기에서 dv를 쓰려면 lina-os authorized_keys에 기기 키를 넣는 작업(셀레네 몫)이 먼저다.
-- 기기에는 `gh`가 없다. 로컬 저장소 이슈(dv review/land 경로)만 쓸 수 있다.
+- 개발 호스트 순서(준 10-19): **hx-linux → go2-linux → lina-os(최후)**. lina-os는 Hermes·상주 서비스 몫이라 개발 에이전트를 되도록 올리지 않는다. gos-linux는 외부용 OpenClaw 에이전트 전용이라 개발에 쓰지 않는다.
+- 원격 호스트 이벤트: 기기는 lina-os로 ssh 키가 없다. 대신 lina-os가 `dev.devflow.kick-pull@hx-linux` / `@go2-linux` 서비스로 기기의 `kick.q`를 ssh `tail -F`로 받아 온다(#11). 기기 config는 `DV_KICK_HOST=<자기 hostname>`, `DV_KICK=`(로컬 큐). 옛 `dv-kick-relay`는 쓰지 않는다.
+- 기기에서 시작: `ssh hx-linux 'bash -lc "dv start ~/code/<repo> ISSUE slug --brief ~/dv/briefs/brief-x.md"'`. 저장소·브리프는 그 기기에 있어야 한다. 원격 없는 로컬 저장소(msghub 등)는 lina-os가 원본이므로 기기에서 시작하지 않거나, GitHub 비공개 원격을 둔 뒤에 옮긴다.
+- 기기에는 `gh`(thisisjun786 로그인)가 있다.
 - `dv status`의 마지막 로그 줄은 tmux 화면 캡처라 ANSI 코드가 섞인다. 상태 판단은 `--json`의 status/head로 하고 로그 줄은 참고만 한다.
 - Mac에서 `launchctl bootstrap`은 Hermes 게이트웨이 안에서 막힌다. LaunchAgent 등록은 셀레네에게 부탁하고, 그 전까지는 `dv-watch`를 상주 프로세스로 돌린다(재부팅 시 죽음).
 - 실제 회전 1회(JUN-303): dv start → Codex goal → dv done → Mac 이벤트 → 워커가 리뷰 1회·land까지 자동 수행. 약 15분.

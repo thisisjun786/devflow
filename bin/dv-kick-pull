@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Relay a dev host's local kick queue to this watcher host over one long-lived ssh stream.
+# The watcher host opens the connection (dev hosts need no key back to it), and
+# `tail -F` delivers each event as it is written: no polling. A per-host line offset
+# makes reconnects resume without loss; dv-watch deduplicates repeated ids.
+set -euo pipefail
+DV_ENTRY=${BASH_SOURCE[0]}
+while [ -L "$DV_ENTRY" ]; do
+  entry_dir=$(cd "$(dirname "$DV_ENTRY")" && pwd)
+  DV_ENTRY=$(readlink "$DV_ENTRY")
+  [[ "$DV_ENTRY" = /* ]] || DV_ENTRY="$entry_dir/$DV_ENTRY"
+done
+# shellcheck source=lib/common.sh
+source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+need jq
+[ "$#" -eq 1 ] || fail 'usage: dv-kick-pull <ssh-host>'
+host=$1
+[[ "$host" =~ ^[A-Za-z0-9._@-]+$ ]] || fail 'invalid host'
+mkdir -p "$DV_HOME"
+offset_file="$DV_HOME/pull-$host.offset"
+offset=0
+[ ! -f "$offset_file" ] || offset=$(tr -dc '0-9' < "$offset_file")
+offset=${offset:-0}
+# The remote queue path is the remote host's own DV_HOME, resolved there.
+# shellcheck disable=SC2016
+remote=$(shell_join bash -lc 'q="${DV_HOME:-$HOME/.local/state/devflow-mac}/kick.q"; mkdir -p "$(dirname "$q")"; touch "$q"; exec tail -n +"$1" -F "$q"' dv-pull "$((offset + 1))")
+while IFS= read -r line; do
+  offset=$((offset + 1))
+  # One jq call per field: empty fields (message, head) must not shift positions.
+  if printf '%s\n' "$line" | jq -e '(.kind|type)=="string" and (.issue|type)=="string" and (.host|type)=="string"' >/dev/null 2>&1; then
+    field() { printf '%s\n' "$line" | jq -r "$1 // \"\""; }
+    "$DV_ROOT/bin/dv-kick" "$(field .kind)" "$(field .issue)" "$(field .message)" "$(field .host)" "$(field .head)" ||
+      printf 'pull %s: kick failed at line %s\n' "$host" "$offset" >&2
+  else
+    printf 'pull %s: invalid line %s skipped\n' "$host" "$offset" >&2
+  fi
+  printf '%s\n' "$offset" > "$offset_file"
+done < <(ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "$host" "$remote")
+# ssh ended (network, reboot): exit non-zero so systemd restarts the stream.
+exit 75

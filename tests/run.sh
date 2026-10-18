@@ -152,6 +152,7 @@ case_install_linux_watch() {
     systemd-analyze --user verify "$unit"
   fi
   grep -Fx 'Restart=on-failure' "$unit"
+  grep -F 'dv-kick-pull" %i' "$linux_home/.config/systemd/user/dev.devflow.kick-pull@.service"
   grep 'systemctl --user enable --now dev.devflow.watch.service' "$CASE_DIR/linux.out"
   test -L "$linux_home/.hermes/profiles/sion/skills/software-development/devflow"
   test ! -e "$linux_home/Library"
@@ -192,6 +193,28 @@ case_reconcile() {
   touch "$DV_HOME/stop"; wait "$watcher"
   grep LOST-1 "$DV_HOME/kick.q"
   test "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = 1
+}
+
+case_kick_pull() {
+  export SSH_FIXTURE_EXEC=1
+  remote_q="$CASE_DIR/remote-home/kick.q"; mkdir -p "$CASE_DIR/remote-home"
+  event() { jq -cn --arg i "$1" --arg m "$2" '{id:("box:"+$i+":done:h"),kind:"done",issue:$i,message:$m,host:"box",head:"h",time:1}'; }
+  { event P-1 ''; event P-2 'two words'; } > "$remote_q"
+  dv-kick-pull box 2> "$CASE_DIR/pull.err" &
+  for _ in {1..100}; do [ -f "$DV_HOME/kick.q" ] && [ "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = 2 ] && break; sleep 0.1; done
+  event P-3 'later' >> "$remote_q"
+  for _ in {1..100}; do [ "$(wc -l < "$DV_HOME/kick.q" 2>/dev/null | tr -d ' ')" = 3 ] && break; sleep 0.1; done
+  pkill -f "$CASE_DIR/remote-home" || true; wait || true
+  test "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = 3
+  test "$(cat "$DV_HOME/pull-box.offset")" = 3
+  jq -se '[.[].issue]==["P-1","P-2","P-3"] and .[1].message=="two words" and .[0].message=="" and all(.[]; .host=="box" and .head=="h")' "$DV_HOME/kick.q"
+  # A reconnect resumes after the stored offset: nothing is replayed.
+  dv-kick-pull box 2>> "$CASE_DIR/pull.err" &
+  sleep 1
+  event P-4 '' >> "$remote_q"
+  for _ in {1..100}; do [ "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = 4 ] && break; sleep 0.1; done
+  pkill -f "$CASE_DIR/remote-home" || true; wait || true
+  jq -se '[.[].issue]==["P-1","P-2","P-3","P-4"]' "$DV_HOME/kick.q"
 }
 
 wait_file() {
@@ -344,7 +367,7 @@ case_land_checkout_race() {
 
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
+for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

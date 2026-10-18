@@ -36,6 +36,6 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_WATCH_INTERVAL:=3}" # local queue read interval, seconds
 : "${DV_MAX_WORKERS:=4}" # 1..4
 : "${DV_RECONCILE_INTERVAL:=1800}" # remote status safety net, seconds
-: "${DV_HOSTS=lina-os hx go2 gos}" # whitespace-separated SSH aliases
+: "${DV_HOSTS=lina-os hx-linux go2-linux}" # SSH aliases for the status safety net (gos is not a dev host)
 # DV_CONFIG: config file override (default ~/.config/devflow/config.sh).
 # DV_TEST_TMP: test temporary root (default TMPDIR or /tmp); no live agents/network.
