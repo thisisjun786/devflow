@@ -60,6 +60,8 @@ case_start_done() {
   test -s "$DV_STATE/T-1/brief.md"
   dv status --json | jq -e 'length==1 and .[0].issue=="T-1"'
   dv status T-1 | grep 'done'
+  head -c 200000 /dev/zero | tr '\0' 'x' >> "$DV_STATE/T-1/log"; printf '\n' >> "$DV_STATE/T-1/log"
+  dv status T-1 >/dev/null && dv status --json | jq -e 'length==1'
   if start T-1; then return 1; fi
 }
 case_kick_failure() {
