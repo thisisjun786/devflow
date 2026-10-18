@@ -131,6 +131,11 @@ case_install() {
   env HOME="$test_home" bash "$ROOT/install.sh" --mac --watch
   cmp "$CASE_DIR/original" "$test_home/.config/devflow/config.sh"
   cmp "$CASE_DIR/plist" "$test_home/Library/LaunchAgents/dev.devflow.watch.plist"
+  # A hand-edited plist survives a later install (review P1).
+  printf '# hand edit\n' >> "$test_home/Library/LaunchAgents/dev.devflow.watch.plist"
+  cp "$test_home/Library/LaunchAgents/dev.devflow.watch.plist" "$CASE_DIR/plist-edited"
+  env HOME="$test_home" bash "$ROOT/install.sh" --mac --watch
+  cmp "$CASE_DIR/plist-edited" "$test_home/Library/LaunchAgents/dev.devflow.watch.plist"
   test -L "$test_home/.local/bin/dv"
   test -L "$test_home/.hermes/profiles/sion/skills/software-development/devflow"
   env HOME="$test_home" DV_CONFIG="$test_home/.config/devflow/config.sh" "$test_home/.local/bin/dv" status --json | jq -e 'length==0'
