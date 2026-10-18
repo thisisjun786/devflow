@@ -31,6 +31,10 @@ if [ "$watch" = 1 ]; then
   # A returning operator may have edited paths or schedule by hand: keep their file.
   if [ -e "$plist" ]; then
     printf 'Kept existing LaunchAgent: %s (remove it to regenerate)\n' "$plist"
+    # A watcher that dies silently leaves the queue unread until someone notices. Say so instead of failing quietly.
+    if ! grep -q '<key>KeepAlive</key>' "$plist"; then
+      printf 'WARNING: %s has no KeepAlive; a crashed dv-watch stays down. Remove the file and re-run to regenerate.\n' "$plist"
+    fi
   else
     # XML escaping also supports home/checkout paths containing spaces and ampersands.
     xml() { printf '%s' "$1" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'; }
@@ -42,6 +46,8 @@ if [ "$watch" = 1 ]; then
 <key>ProgramArguments</key><array><string>$(xml "$HOME/.local/bin/dv-watch")</string></array>
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xml "$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")</string></dict>
 <key>RunAtLoad</key><true/>
+<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+<key>ThrottleInterval</key><integer>10</integer>
 <key>StandardOutPath</key><string>$(xml "$HOME/.local/state/devflow-mac/watch.stdout.log")</string>
 <key>StandardErrorPath</key><string>$(xml "$HOME/.local/state/devflow-mac/watch.stderr.log")</string>
 </dict></plist>
