@@ -85,6 +85,7 @@ UNIT
   fi
   # Printed for the operator, not run during installation.
   printf 'Register manually: systemctl --user daemon-reload && systemctl --user enable --now dev.devflow.watch.service\n'
+  printf 'Remote dev hosts: list them in DV_PULL_HOSTS here; dv-watch follows their queues.\n'
   if command -v loginctl >/dev/null && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
     printf 'WARNING: lingering is off; the watcher stops at logout. Run: loginctl enable-linger %s\n' "$(id -un)"
   fi

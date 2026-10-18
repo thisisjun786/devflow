@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Relay one remote dev host's kick queue into this watcher's queue over one ssh stream.
+# dv-watch starts and restarts this per host in DV_PULL_HOSTS (no separate daemon).
+# The watcher opens the connection, so dev hosts need no key back to it, and `tail -f`
+# delivers each event as soon as it is written: no polling. The offset (line count) and
+# the remote file's inode are checkpointed only after an event is queued here, so a
+# failed delivery or reconnect resumes at the first undelivered line. devflow only appends to
+# kick.q; a queue replaced while streaming is picked up on the next reconnect (inode check).
+set -euo pipefail
+DV_ENTRY=${BASH_SOURCE[0]}
+while [ -L "$DV_ENTRY" ]; do
+  entry_dir=$(cd "$(dirname "$DV_ENTRY")" && pwd)
+  DV_ENTRY=$(readlink "$DV_ENTRY")
+  [[ "$DV_ENTRY" = /* ]] || DV_ENTRY="$entry_dir/$DV_ENTRY"
+done
+# shellcheck source=lib/common.sh
+source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+need jq
+[ "$#" -eq 1 ] || fail 'usage: dv-kick-pull <ssh-host>'
+host=$1
+[[ "$host" =~ ^[A-Za-z0-9._@-]+$ ]] || fail 'invalid host'
+mkdir -p "$DV_HOME"
+state="$DV_HOME/pull-$host.offset"
+offset=0 inode=''
+if [ -f "$state" ]; then read -r offset inode < "$state" || true; fi
+[[ "$offset" =~ ^[0-9]+$ ]] || offset=0
+# Runs on the dev host: load its own devflow config (it may set DV_HOME), report the queue's
+# inode, restart from line 1 if the queue was replaced, then follow the open file.
+# shellcheck disable=SC2016
+remote=$(shell_join bash -c '
+  c="${DV_CONFIG:-$HOME/.config/devflow/config.sh}"; [ ! -f "$c" ] || . "$c"
+  q="${DV_HOME:-$HOME/.local/state/devflow-mac}/kick.q"; mkdir -p "${q%/*}"; touch "$q"
+  ino=$(stat -c %i "$q" 2>/dev/null || stat -f %i "$q"); start=$(( $1 + 1 ))
+  [ "$ino" = "$2" ] || start=1
+  printf "#start %s %s\n" "$start" "$ino"
+  exec tail -n +"$start" -f "$q"' dv-pull "$offset" "$inode")
+fifo="$DV_HOME/.pull-$host.$$"
+rm -f "$fifo"; mkfifo "$fifo"
+ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "$host" "$remote" > "$fifo" &
+sshpid=$!
+trap 'kill "$sshpid" 2>/dev/null || true; rm -f "$fifo"' EXIT
+trap 'exit 0' INT TERM
+field() { printf '%s\n' "$1" | jq -r "$2 // \"\""; }
+first=1
+while IFS= read -r line; do
+  if [ "$first" = 1 ]; then
+    first=0
+    case "$line" in
+      '#start '*) read -r _ start inode <<< "$line"; offset=$((start - 1)); continue ;;
+      *) fail "pull $host: missing stream header" ;;
+    esac
+  fi
+  if printf '%s\n' "$line" | jq -e '(.kind|type)=="string" and (.issue|type)=="string" and (.host|type)=="string"' >/dev/null 2>&1; then
+    # Not delivered here means not checkpointed: exit and resume at this line next time.
+    "$DV_ROOT/bin/dv-kick" "$(field "$line" .kind)" "$(field "$line" .issue)" "$(field "$line" .message)" \
+      "$(field "$line" .host)" "$(field "$line" .head)" || fail "pull $host: queue write failed at line $((offset + 1))"
+  else
+    printf 'pull %s: invalid line %s skipped\n' "$host" "$((offset + 1))" >&2
+  fi
+  offset=$((offset + 1))
+  printf '%s %s\n' "$offset" "$inode" > "$state.tmp" && mv "$state.tmp" "$state"
+done < "$fifo"
+# ssh ended (network, reboot): non-zero so dv-watch restarts the stream after its back-off.
+exit 75
