@@ -51,7 +51,13 @@ reap() {
 reconcile() {
   local host rows row issue head id
   for host in $DV_HOSTS; do
-    if rows=$(ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" 'dv status --json' 2>> "$DV_HOME/reconcile.log"); then
+    # The watcher's own host needs no ssh (and may have no key to itself).
+    if [ "$host" = "$DV_HOST" ]; then
+      rows=$(dv status --json 2>> "$DV_HOME/reconcile.log") || continue
+    else
+      rows=$(ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" 'dv status --json' 2>> "$DV_HOME/reconcile.log") || continue
+    fi
+    if true; then
       if ! printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null 2>&1; then continue; fi
       while IFS= read -r row; do
         issue=$(printf '%s' "$row" | jq -r .issue)
