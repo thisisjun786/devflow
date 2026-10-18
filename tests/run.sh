@@ -146,7 +146,11 @@ case_install_linux_watch() {
   linux_home="$CASE_DIR/linux home"
   env HOME="$linux_home" bash "$ROOT/install.sh" --host --watch > "$CASE_DIR/linux.out"
   unit="$linux_home/.config/systemd/user/dev.devflow.watch.service"
-  grep -Fx "ExecStart=$linux_home/.local/bin/dv-watch" "$unit"
+  grep -Fx "ExecStart=\"$linux_home/.local/bin/dv-watch\"" "$unit"
+  if command -v systemd-analyze >/dev/null; then
+    mkdir -p "$linux_home/.local/bin" && ln -sf "$ROOT/bin/dv-watch" "$linux_home/.local/bin/dv-watch"
+    systemd-analyze --user verify "$unit"
+  fi
   grep -Fx 'Restart=on-failure' "$unit"
   grep 'systemctl --user enable --now dev.devflow.watch.service' "$CASE_DIR/linux.out"
   test -L "$linux_home/.hermes/profiles/sion/skills/software-development/devflow"

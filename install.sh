@@ -72,8 +72,8 @@ Description=devflow dv-watch (finish events -> Hermes sion worker)
 After=network-online.target
 
 [Service]
-Environment=PATH=$HOME/.local/bin:$HOME/node/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=$HOME/.local/bin/dv-watch
+Environment="PATH=$HOME/.local/bin:$HOME/node/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart="$HOME/.local/bin/dv-watch"
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:$state/watch.stdout.log
