@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DV_ENTRY=${BASH_SOURCE[0]}
+while [ -L "$DV_ENTRY" ]; do
+  entry_dir=$(cd "$(dirname "$DV_ENTRY")" && pwd)
+  DV_ENTRY=$(readlink "$DV_ENTRY")
+  [[ "$DV_ENTRY" = /* ]] || DV_ENTRY="$entry_dir/$DV_ENTRY"
+done
+# shellcheck source=lib/common.sh
+source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+# shellcheck source=lib/commands.sh
+source "$DV_ROOT/lib/commands.sh"
+# shellcheck source=lib/delivery.sh
+source "$DV_ROOT/lib/delivery.sh"
+command=${1:-help}; [ "$#" -eq 0 ] || shift
+case "$command" in
+  start|done|pr|review|land|status|send|clean|kick) "cmd_$command" "$@" ;;
+  pr-wait) cmd_pr_wait "$@" ;;
+  _agent) run_agent "$@" ;;
+  help|--help|-h) printf '%s\n' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin] [--brief FILE] [--base BRANCH] [--mode goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|review|land|clean <ISSUE>' 'dv status [ISSUE] [--json]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
+  *) fail "unknown command: $command" ;;
+esac
