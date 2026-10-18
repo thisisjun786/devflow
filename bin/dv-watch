@@ -12,7 +12,20 @@ need jq
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 mkdir -p "$DV_HOME/workers"
 # A single queue reader owns the cursor and its child processes.
-mkdir "$DV_HOME/.watch-lock" 2>/dev/null || fail 'watcher lock exists; verify old process before removing it'
+# A SIGKILLed watcher cannot remove its own lock (no trap runs on SIGKILL), so a lock whose recorded pid is gone is
+# stale and must be taken over; otherwise launchd restarts the process and it dies on 'watcher lock exists' forever.
+take_lock() {
+  if mkdir "$DV_HOME/.watch-lock" 2>/dev/null; then return 0; fi
+  local holder=''
+  [ -f "$DV_HOME/watch.pid" ] && holder=$(tr -dc '0-9' <"$DV_HOME/watch.pid")
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    fail "watcher lock is held by live pid $holder; stop it before starting another"
+  fi
+  printf 'watcher lock left by dead pid %s; taking it over\n' "${holder:-unknown}" >&2
+  rm -rf "$DV_HOME/.watch-lock"
+  mkdir "$DV_HOME/.watch-lock" 2>/dev/null || fail 'watcher lock exists; verify old process before removing it'
+}
+take_lock
 printf '%s\n' "$$" > "$DV_HOME/watch.pid"
 pids=''; active=0
 finish() {
