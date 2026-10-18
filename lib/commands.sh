@@ -124,7 +124,10 @@ accept_devin_trust() {
 cmd_done() {
   [ "$#" -ge 1 ] || fail 'usage: dv done ISSUE [--note TEXT]'
   load_issue "$1"; shift; local note='' head files tmp
-  if [ "$#" -gt 0 ]; then [ "$#" -eq 2 ] && [ "$1" = --note ] || fail 'expected --note TEXT'; note=$2; fi
+  if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != --note ]; then fail 'expected --note TEXT'; fi
+    note=$2
+  fi
   require_worktree
   head=$(git -C "$WT" rev-parse HEAD)
   files=$(git -C "$WT" diff --name-only "$(jq -r .start_head "$S/meta")" "$head" | wc -l | tr -d ' ')
