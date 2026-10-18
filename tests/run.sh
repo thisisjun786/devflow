@@ -142,6 +142,19 @@ case_install() {
   test -L "$test_home/.hermes/profiles/sion/skills/software-development/devflow"
   env HOME="$test_home" DV_CONFIG="$test_home/.config/devflow/config.sh" "$test_home/.local/bin/dv" status --json | jq -e 'length==0'
 }
+case_install_linux_watch() {
+  linux_home="$CASE_DIR/linux home"
+  env HOME="$linux_home" bash "$ROOT/install.sh" --host --watch > "$CASE_DIR/linux.out"
+  unit="$linux_home/.config/systemd/user/dev.devflow.watch.service"
+  grep -Fx "ExecStart=$linux_home/.local/bin/dv-watch" "$unit"
+  grep -Fx 'Restart=on-failure' "$unit"
+  grep 'systemctl --user enable --now dev.devflow.watch.service' "$CASE_DIR/linux.out"
+  test -L "$linux_home/.hermes/profiles/sion/skills/software-development/devflow"
+  test ! -e "$linux_home/Library"
+  printf '# hand edit\n' >> "$unit"; cp "$unit" "$CASE_DIR/unit-edited"
+  env HOME="$linux_home" bash "$ROOT/install.sh" --host --watch > /dev/null
+  cmp "$CASE_DIR/unit-edited" "$unit"
+}
 case_review() {
   needs_tmux; repo local; start T-8; wait_done T-8
   dv review T-8; dv review T-8
@@ -327,7 +340,7 @@ case_land_checkout_race() {
 
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in start_done kick_failure local_land pr_land clean parallel install review watch reconcile reconcile_local kick_local_host worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
+for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

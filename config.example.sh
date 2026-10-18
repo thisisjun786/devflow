@@ -5,7 +5,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_STATE:=$HOME/.local/state/devflow}"
 : "${DV_HOME:=$HOME/.local/state/devflow-mac}"
 : "${DV_HOST:=$(hostname -s)}"
-: "${DV_KICK_HOST:=lina-mac}"
+: "${DV_KICK_HOST:=lina-os}" # host running dv-watch (lina-mac before 10-19)
 : "${DV_KICK:=}" # shell command; receives kind issue message host head as arguments
 : "${DV_CODEX_BIN:=codex}" # ~/node/bin/codex or ~/.opencodex/bin/codex
 : "${DV_CLAUDE_BIN:=claude}"
