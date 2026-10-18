@@ -91,7 +91,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
       if [ -n "$DV_WORKER_CMD" ]; then
         bash -c "$DV_WORKER_CMD \"\$@\"" dv-worker "$prompt" > "${prompt%.prompt.md}.log" 2>&1 &
       else
-        "$DV_HERMES_BIN" -p sion chat -Q --yolo -t terminal -s devflow --query-file "$prompt" > "${prompt%.prompt.md}.log" 2>&1 &
+        "$DV_HERMES_BIN" -p sion chat -Q --yolo -t terminal,connections -s devflow --query-file "$prompt" > "${prompt%.prompt.md}.log" 2>&1 &
       fi
       pids="$pids $!"; active=$((active + 1))
       printf '%s\n' "$id" >> "$DV_HOME/seen"
