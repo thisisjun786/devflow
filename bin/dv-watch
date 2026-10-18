@@ -85,6 +85,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
       cat "$DV_ROOT/templates/worker-prompt.md" > "$prompt"
       # Literal Markdown fences.
       # shellcheck disable=SC2016
+      printf '\n작업자 호스트(DV_HOST): `%s`\n' "$DV_HOST" >> "$prompt"
       printf '\n이벤트(JSON 데이터):\n```json\n%s\n```\n' "$line" >> "$prompt"
       if [ -n "$DV_WORKER_CMD" ]; then
         bash -c "$DV_WORKER_CMD \"\$@\"" dv-worker "$prompt" > "${prompt%.prompt.md}.log" 2>&1 &
