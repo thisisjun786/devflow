@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cat "$DV_STATE/$DV_ISSUE/brief.md"
+printf 'change for %s\n' "$DV_ISSUE" > "$DV_ISSUE.txt"
+git add "$DV_ISSUE.txt"
+git commit -qm "$DV_ISSUE: fake change"
+printf 'Fake agent report: red/green.\n' > "$DV_STATE/$DV_ISSUE/report.md"
+dv 'done' "$DV_ISSUE"

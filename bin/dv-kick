@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DV_ENTRY=${BASH_SOURCE[0]}
+while [ -L "$DV_ENTRY" ]; do
+  entry_dir=$(cd "$(dirname "$DV_ENTRY")" && pwd)
+  DV_ENTRY=$(readlink "$DV_ENTRY")
+  [[ "$DV_ENTRY" = /* ]] || DV_ENTRY="$entry_dir/$DV_ENTRY"
+done
+# shellcheck source=lib/common.sh
+source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+[ "$#" -ge 2 ] || fail 'usage: dv-kick kind ISSUE [message [host [head]]]'
+valid_issue "$2"
+mkdir -p "$DV_HOME"
+line=$(event_json "$1" "$2" "${3:-}" "${4:-$DV_HOST}" "${5:-}")
+# Serialize concurrent writers; readers consume only newline-terminated records.
+tries=0
+until mkdir "$DV_HOME/.kick-lock" 2>/dev/null; do
+  tries=$((tries + 1)); [ "$tries" -lt 100 ] || fail 'queue lock is busy'
+  sleep 0.1
+done
+trap 'rmdir "$DV_HOME/.kick-lock"' EXIT
+printf '%s\n' "$line" >> "$DV_HOME/kick.q"
+printf '%s\n' "$line" >> "$DV_HOME/events.log"

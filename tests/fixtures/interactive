@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" | jq -R . | jq -s . > "$DV_STATE/$DV_ISSUE/args.json"
+if [ "$(jq -r .agent "$DV_STATE/$DV_ISSUE/meta")" = devin ]; then
+  printf 'Do you trust this folder?\n'
+  IFS= read -r line
+  printf '%s\n' "$line" > "$DV_STATE/$DV_ISSUE/trust-enter"
+elif [[ " $* " != *' exec '* ]] && [ "$(jq -r .agent "$DV_STATE/$DV_ISSUE/meta")" = codex ]; then
+  printf 'dv-ready> '
+  IFS= read -r line
+  printf '%s\n' "$line" > "$DV_STATE/$DV_ISSUE/goal-input"
+fi
+"$ROOT/tests/fixtures/agent"
+if [[ " $* " = *' exec '* ]]; then exit; fi
+printf 'dv-ready> '
+while IFS= read -r line; do printf '%s\n' "$line" >> "$DV_STATE/$DV_ISSUE/sent-input"; done
