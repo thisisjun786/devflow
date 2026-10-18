@@ -147,7 +147,10 @@ cmd_kick() {
     host=$(jq -r .host "$DV_STATE/$issue/meta")
   fi
   line=$(event_json "$kind" "$issue" "$message" "$host" "$head")
-  if [ -n "$DV_KICK" ]; then
+  if [ -z "$DV_KICK" ] && [ "$DV_KICK_HOST" = "$DV_HOST" ]; then
+    # The watcher lives on this host: write to the local queue, no ssh to ourselves.
+    dv-kick "$kind" "$issue" "$message" "$host" "$head" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
+  elif [ -n "$DV_KICK" ]; then
     bash -c "$DV_KICK \"\$@\"" dv-kick "$kind" "$issue" "$message" "$host" "$head" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   else
     # The remote shell often lacks ~/.local/bin: use the installed path explicitly.

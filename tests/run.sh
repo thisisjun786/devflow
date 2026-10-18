@@ -204,6 +204,21 @@ case_reconcile_local() {
   touch "$DV_HOME/stop"; wait "$watcher"
   jq -e 'select(.issue=="L-1") | .message=="Recovered by status safety net"' "$DV_HOME/kick.q"
 }
+case_kick_local_host() {
+  # No DV_KICK and the kick host is this host: the event lands in the local queue without ssh.
+  export DV_KICK='' DV_KICK_HOST="$DV_HOST"
+  dv kick pr-ready K-1 local
+  jq -e 'select(.issue=="K-1") | .kind=="pr-ready" and .host=="test-host"' "$DV_HOME/kick.q"
+  jq -e '.delivered==true' "$DV_STATE/K-1/events.log"
+}
+case_worker_prompt_host() {
+  export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1
+  "$ROOT/bin/dv-kick" test P-1 hi "$DV_HOST" ''
+  dv-watch & watcher=$!
+  for _ in {1..100}; do ls "$DV_HOME/workers/"*.prompt.md >/dev/null 2>&1 && break; sleep 0.1; done
+  touch "$DV_HOME/stop"; wait "$watcher"
+  grep -F "작업자 호스트(DV_HOST): \`test-host\`" "$DV_HOME/workers/"*.prompt.md
+}
 case_agent_cli() {
   needs_tmux; repo cli
   export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive"
@@ -312,7 +327,7 @@ case_land_checkout_race() {
 
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in start_done kick_failure local_land pr_land clean parallel install review watch reconcile reconcile_local agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
+for name in start_done kick_failure local_land pr_land clean parallel install review watch reconcile reconcile_local kick_local_host worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
