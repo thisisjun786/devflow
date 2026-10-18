@@ -4,7 +4,8 @@
 # The watcher opens the connection, so dev hosts need no key back to it, and `tail -f`
 # delivers each event as soon as it is written: no polling. The offset (line count) and
 # the remote file's inode are checkpointed only after an event is queued here, so a
-# failed delivery or reconnect resumes at the first undelivered line.
+# failed delivery or reconnect resumes at the first undelivered line. devflow only appends to
+# kick.q; a queue replaced while streaming is picked up on the next reconnect (inode check).
 set -euo pipefail
 DV_ENTRY=${BASH_SOURCE[0]}
 while [ -L "$DV_ENTRY" ]; do

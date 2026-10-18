@@ -30,7 +30,7 @@ printf '%s\n' "$$" > "$DV_HOME/watch.pid"
 pids=''; active=0
 finish() {
   local pid
-  for pid in $pull_pids; do kill "$pid" 2>/dev/null || true; done
+  for pid in $pull_pids; do if is_pull "$pid"; then kill "$pid" 2>/dev/null || true; fi; done
   for pid in $pids; do wait "$pid" || true; done
   rm -f "$DV_HOME/watch.pid"
   rmdir "$DV_HOME/.watch-lock"
@@ -43,18 +43,28 @@ touch "$DV_HOME/kick.q" "$DV_HOME/seen"
 last_scan=0
 # Remote dev hosts: one dv-kick-pull stream per host, restarted with a back-off when it ends.
 pull_pids=''
+# A pid counts as our stream only if it is still alive AND still runs dv-kick-pull (pids are reused).
+is_pull() { kill -0 "$1" 2>/dev/null && ps -o args= -p "$1" 2>/dev/null | grep -q 'dv-kick-pull'; }
 pulls() {
   local host pidfile pid last
   for host in $DV_PULL_HOSTS; do
     pidfile="$DV_HOME/pull-$host.pid"
     pid=''; [ ! -f "$pidfile" ] || pid=$(tr -dc '0-9' < "$pidfile")
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi
+    if [ -n "$pid" ] && is_pull "$pid"; then continue; fi
     last=0; [ ! -f "$DV_HOME/pull-$host.started" ] || last=$(cat "$DV_HOME/pull-$host.started")
     [ $(( $(now) - last )) -ge "$DV_PULL_RETRY" ] || continue
     now > "$DV_HOME/pull-$host.started"
     "$DV_ROOT/bin/dv-kick-pull" "$host" 2>> "$DV_HOME/pull-$host.log" &
-    printf '%s\n' "$!" > "$pidfile"; pull_pids="$pull_pids $!"
+    printf '%s\n' "$!" > "$pidfile"
   done
+  # Keep only live streams so shutdown never signals a reused pid.
+  local live=''
+  for pid in $pull_pids; do if is_pull "$pid"; then live="$live $pid"; else wait "$pid" 2>/dev/null || true; fi; done
+  for host in $DV_PULL_HOSTS; do
+    pid=$(tr -dc '0-9' < "$DV_HOME/pull-$host.pid" 2>/dev/null || true)
+    case " $live " in *" $pid "*) ;; *) [ -z "$pid" ] || ! is_pull "$pid" || live="$live $pid" ;; esac
+  done
+  pull_pids=$live
 }
 reap() {
   local live='' pid
