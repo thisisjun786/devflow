@@ -36,4 +36,4 @@ Linear 이슈를 정리한 뒤 호스트(lina-os, hx, go2, gos)의 로컬 저장
 - Mac에서 `launchctl bootstrap`은 Hermes 게이트웨이 안에서 막힌다. LaunchAgent 등록은 셀레네에게 부탁하고, 그 전까지는 `dv-watch`를 상주 프로세스로 돌린다(재부팅 시 죽음).
 - 실제 회전 1회(JUN-303): dv start → Codex goal → dv done → Mac 이벤트 → 워커가 리뷰 1회·land까지 자동 수행. 약 15분.
 
-설치는 개발 호스트에서 `./install.sh --host`, Mac에서 `./install.sh --mac --watch`입니다. Mac은 출력된 launchctl 명령을 사람이 등록합니다. `~/.config/devflow/config.sh`의 경로·호스트·에이전트 실행 파일을 확인하세요. 중지는 `$DV_HOME/stop` 파일을 만들고 작업자가 끝나기를 기다립니다.
+설치는 개발 호스트에서 `./install.sh --host`, 감시 호스트(lina-os)에서 `./install.sh --host --watch`입니다. 출력된 `systemctl --user enable --now` 명령으로 등록하고, 모든 dv 호스트의 `DV_KICK_HOST`를 감시 호스트로 둡니다(기본값 lina-os). 옛 Mac 감시는 `./install.sh --mac --watch` + launchctl입니다. `~/.config/devflow/config.sh`의 경로·호스트·에이전트 실행 파일을 확인하세요. 중지는 `$DV_HOME/stop` 파일을 만들고 작업자가 끝나기를 기다립니다.

@@ -5,12 +5,13 @@
 ## 설치
 
 ```bash
-./install.sh --host            # lina-os / hx / go2 / gos
-./install.sh --mac --watch     # Mac: 스킬 링크와 LaunchAgent 파일 생성
-# 출력된 launchctl bootstrap 명령은 직접 실행
+./install.sh --host            # hx / go2 / gos 등 개발 호스트
+./install.sh --host --watch    # 감시 호스트(lina-os): 스킬 링크와 systemd user 유닛 생성
+# 출력된 systemctl --user enable --now 명령은 직접 실행
+./install.sh --mac --watch     # (옛 구성) Mac LaunchAgent; 출력된 launchctl 명령 직접 실행
 ```
 
-git, gh, tmux, jq가 필요하며 Mac 작업자는 Hermes의 sion 프로필을 사용합니다. 설치는 `~/.local/bin`에 링크하고 기존 `~/.config/devflow/config.sh`를 보존합니다. 저장소는 링크 대상이므로 이동하지 마세요. `~/.local/bin`을 로컬과 SSH 비대화형 PATH에 추가하고 `gh auth login`은 사람이 준비합니다.
+감시 호스트는 Hermes의 sion 프로필로 작업자를 띄우므로 Hermes가 도는 호스트(10-19부터 lina-os)여야 합니다. 리눅스 감시는 로그아웃 뒤에도 돌도록 `loginctl enable-linger $USER`가 켜져 있어야 합니다(설치가 상태를 알려 줍니다). 모든 dv 호스트의 `DV_KICK_HOST`는 감시 호스트로 둡니다(기본 lina-os). 감시 호스트 자신은 ssh 없이 로컬 큐에 씁니다. git, gh, tmux, jq가 필요합니다. 설치는 `~/.local/bin`에 링크하고 기존 `~/.config/devflow/config.sh`를 보존합니다. 저장소는 링크 대상이므로 이동하지 마세요. `~/.local/bin`을 로컬과 SSH 비대화형 PATH에 추가하고 `gh auth login`은 사람이 준비합니다.
 
 [config.example.sh](config.example.sh)에 모든 기본값이 있습니다. Codex 경로는 호스트에 따라 `~/node/bin/codex` 또는 `~/.opencodex/bin/codex`로 설정하세요. 기본 모델은 gpt-6-astra/xhigh이고, hooks와 crw 플러그인을 해당 실행에서만 끕니다. `DV_CODEX_DISABLE_HOOKS=0`, `DV_CODEX_DISABLE_CRW=0`으로 바꿀 수 있습니다. Claude는 opus/xhigh, Devin은 fusion-gpt-6-astra-xhigh-sidekick-swe-2-high입니다.
 
@@ -39,12 +40,12 @@ dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야
 | `dv send ISSUE 'text'` | tmux에 붙여넣기 후 Enter |
 | `dv clean ISSUE` | 깨끗한 worktree·tmux 정리; 병합된 로컬 브랜치만 삭제 |
 | `dv kick KIND ISSUE [msg]` | 완료 알림 전송, 실패 로그 보관 |
-| `dv-kick KIND ISSUE [msg [host [head]]]` | Mac 로컬 큐와 로그에 이벤트 추가 |
+| `dv-kick KIND ISSUE [msg [host [head]]]` | 감시 호스트 로컬 큐와 로그에 이벤트 추가 |
 | `dv-watch` | 로컬 큐 소비, 최대 4개 시온 작업자, 느린 상태 점검 |
 
 상태는 `$DV_STATE/ISSUE/`의 `meta`(JSON), `brief.md`, `log`, `report.md`, `done.json`, 리뷰·PR 결과입니다. done은 PR 대기 상태를 덮어쓰지 않습니다. ready는 **확인할 자료가 준비됨**을 뜻하며 CI 성공을 보장하지 않습니다. land는 빈 체크·skipped·pending·실패·head 불일치를 모두 거절합니다. 원격 브랜치를 지우지 않으며 squash 후 로컬 브랜치도 조상이 아니면 보존합니다.
 
-Mac의 `$DV_HOME/kick.q`와 `events.log`는 JSON Lines입니다. 이벤트 ID(host/issue/kind/head)로 중복을 무시하며, 작업자 로그·프롬프트는 `workers/`에 남습니다. 3초 간격은 로컬 파일 읽기이며 원격 안전망은 30분 간격 `ssh HOST dv status --json`입니다. `$DV_HOME/stop`을 만들면 새 작업을 멈추고 실행 중인 작업자를 기다립니다. 재시작할 때 stop 파일을 지우세요. 비정상 종료의 잠금은 PID와 실제 프로세스를 확인한 뒤 사람이 지웁니다.
+감시 호스트의 `$DV_HOME/kick.q`와 `events.log`는 JSON Lines입니다. 이벤트 ID(host/issue/kind/head)로 중복을 무시하며, 작업자 로그·프롬프트는 `workers/`에 남습니다. 3초 간격은 로컬 파일 읽기이며 원격 안전망은 30분 간격 `ssh HOST dv status --json`입니다(감시 호스트 자신은 ssh 없이). `$DV_HOME/stop`을 만들면 새 작업을 멈추고 실행 중인 작업자를 기다립니다. 재시작할 때 stop 파일을 지우세요. 비정상 종료의 잠금은 PID와 실제 프로세스를 확인한 뒤 사람이 지웁니다.
 
 Codex goal은 TUI 입력 마커를 기다린 후 `/goal`을 붙여넣고 Enter를 보냅니다. TUI 버전이 달라 입력을 못 찾으면 failed 이벤트를 남기며 `dv send`로 보낼 수 있습니다. exec는 한 번 실행 후 성공할 때 래퍼가 done을 호출합니다. 종료된 에이전트 재시작은 자동화하지 않습니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리를 받습니다.
 
