@@ -42,7 +42,10 @@ repo() {
 start() { dv start "$REPO" "$1" change --brief "$CASE_DIR/brief" --mode exec; }
 wait_done() {
   for _ in {1..100}; do
-    if [ -s "$DV_STATE/$1/events.log" ] && [ -f "$DV_STATE/$1/agent.exit" ]; then return; fi
+    # agent.exit precedes the wrapper's final done/kick. Wait for its TTY to exit
+    # before assertions or teardown can race the last state-directory writes.
+    if [ -s "$DV_STATE/$1/events.log" ] && [ -f "$DV_STATE/$1/agent.exit" ] &&
+      ! tmux -L "$DV_TMUX_SOCKET" has-session -t "=dv-$1" 2>/dev/null; then return; fi
     sleep 0.1
   done
   cat "$DV_STATE/$1/log" >&2
@@ -79,6 +82,7 @@ case_local_land() {
 case_pr_land() {
   needs_tmux; repo remote remote; start T-4; wait_done T-4
   dv pr T-4
+  wait_pr_ready T-4
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]\n' > "$GH_STUB_DIR/checks"
   if dv land T-4; then return 1; fi
   test ! -f "$GH_STUB_DIR/merged"
@@ -172,6 +176,14 @@ wait_file() {
   printf 'Timed out waiting for %s\n' "$path" >&2
   return 1
 }
+wait_pr_ready() {
+  for _ in {1..100}; do
+    if [ -s "$DV_STATE/$1/pr-ready.json" ] && [ ! -d "$DV_STATE/$1/.pr-wait" ]; then return; fi
+    sleep 0.1
+  done
+  printf 'Timed out waiting for PR waiter to finish: %s\n' "$1" >&2
+  return 1
+}
 case_agent_cli() {
   needs_tmux; repo cli
   export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive"
@@ -203,7 +215,7 @@ case_pr_ready() {
   head=$(git -C "$(jq -r .worktree "$DV_STATE/P-1/meta")" rev-parse HEAD)
   jq -n --arg head "$head" '[{author:{login:"devin-ai-integration[bot]"},commit:{oid:$head}},{author:{login:"chatgpt-codex-connector[bot]"},commit:{oid:$head}}]' > "$GH_STUB_DIR/reviews"
   dv pr P-1
-  wait_file "$DV_STATE/P-1/pr-ready.json"
+  wait_pr_ready P-1
   jq -e '.green and .bot_review and (.review_timed_out|not)' "$DV_STATE/P-1/pr-ready.json"
   for _ in {1..100}; do
     jq -se 'any(.[]; .kind=="pr-ready")' "$DV_HOME/kick.q" >/dev/null && break
