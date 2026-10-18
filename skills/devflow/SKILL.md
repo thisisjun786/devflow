@@ -28,4 +28,11 @@ Linear 이슈를 정리한 뒤 호스트(lina-os, hx, go2, gos)의 로컬 저장
 
 확인은 이벤트 host·issue·head와 현재 meta를 대조한 뒤 합니다. 보고서 주소만으로 시험 통과를 추정하지 않습니다. CI가 없거나 건너뜀·대기·실패면 land하지 않습니다. 한 번 수정한 P0·P1이 남거나 시험 실패면 차단입니다. base 직접 push, force push, 원격 브랜치 삭제를 하지 않습니다.
 
+## 실사용에서 확인된 것 (10-18)
+- 기기(hx/go2/gos)는 Mac에 직접 ssh할 수 없고 lina-os로도 공인키가 없어 이벤트를 못 보낸다. `~/.local/bin/dv-kick-relay`(기기→lina-os→Mac)를 만들어 `DV_KICK`에 넣었지만, 기기→lina-os 키 허용이 없으면 exit 255로 실패한다. 기기에서 dv를 쓰려면 lina-os authorized_keys에 기기 키를 넣는 작업(셀레네 몫)이 먼저다.
+- 기기에는 `gh`가 없다. 로컬 저장소 이슈(dv review/land 경로)만 쓸 수 있다.
+- `dv status`의 마지막 로그 줄은 tmux 화면 캡처라 ANSI 코드가 섞인다. 상태 판단은 `--json`의 status/head로 하고 로그 줄은 참고만 한다.
+- Mac에서 `launchctl bootstrap`은 Hermes 게이트웨이 안에서 막힌다. LaunchAgent 등록은 셀레네에게 부탁하고, 그 전까지는 `dv-watch`를 상주 프로세스로 돌린다(재부팅 시 죽음).
+- 실제 회전 1회(JUN-303): dv start → Codex goal → dv done → Mac 이벤트 → 워커가 리뷰 1회·land까지 자동 수행. 약 15분.
+
 설치는 개발 호스트에서 `./install.sh --host`, Mac에서 `./install.sh --mac --watch`입니다. Mac은 출력된 launchctl 명령을 사람이 등록합니다. `~/.config/devflow/config.sh`의 경로·호스트·에이전트 실행 파일을 확인하세요. 중지는 `$DV_HOME/stop` 파일을 만들고 작업자가 끝나기를 기다립니다.
