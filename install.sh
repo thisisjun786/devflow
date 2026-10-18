@@ -85,6 +85,9 @@ UNIT
   fi
   # Printed for the operator, not run during installation.
   printf 'Register manually: systemctl --user daemon-reload && systemctl --user enable --now dev.devflow.watch.service\n'
+  if command -v loginctl >/dev/null && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
+    printf 'WARNING: lingering is off; the watcher stops at logout. Run: loginctl enable-linger %s\n' "$(id -un)"
+  fi
   printf 'Set DV_KICK_HOST to this host (%s) in ~/.config/devflow/config.sh on every dv host.\n' "$(hostname -s)"
 fi
 printf 'Installed links. Add ~/.local/bin to PATH; edit ~/.config/devflow/config.sh. Missing dependencies: %s\n' "$missing"
