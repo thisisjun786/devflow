@@ -32,6 +32,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_READY_PATTERN:=›|❯|dv-ready>}" # Codex TUI input marker
 : "${DV_SEND_DELAY:=0.3}" # let bracketed paste settle before Enter
 : "${DV_LAND_MODE:=ff}" # ff or merge (local repositories)
+: "${DV_LAND_METHOD:=}" # GitHub: empty = auto; squash, merge or rebase
 : "${DV_TEST_CMD:=}" # required for local land; .devflow may supply it
 : "${DV_REVIEW_WAIT:=300}" # maximum seconds after checks for bot reviews
 : "${DV_REVIEW_BOTS:=devin,codex}" # comma-separated required author regexes (all must review this head)

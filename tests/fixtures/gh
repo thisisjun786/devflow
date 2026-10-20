@@ -2,6 +2,10 @@
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 case "$*" in
+  'repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed')
+    [ ! -f "$GH_STUB_DIR/repo-fail" ] || exit 1
+    if [ -f "$GH_STUB_DIR/repo-methods" ]; then cat "$GH_STUB_DIR/repo-methods"
+    else printf '{"mergeCommitAllowed":true,"squashMergeAllowed":true,"rebaseMergeAllowed":true}\n'; fi ;;
   'pr create '*)
     while [ "$#" -gt 0 ]; do
       if [ "$1" = --body-file ]; then cp "$2" "$GH_STUB_DIR/live-body"; break; fi
@@ -23,6 +27,8 @@ case "$*" in
     head=$(git rev-parse HEAD)
     state=OPEN
     [ ! -f "$GH_STUB_DIR/merged" ] || state=MERGED
+    [ ! -f "$GH_STUB_DIR/merge-unconfirmed" ] || state=OPEN
+    [ ! -f "$GH_STUB_DIR/head-mismatch" ] || head=wrong-head
     jq -n --arg head "$head" --arg state "$state" --slurpfile checks "$GH_STUB_DIR/checks" --slurpfile reviews "$GH_STUB_DIR/reviews" \
       '{number:1,url:"https://github.com/test/repo/pull/1",state:$state,headRefOid:$head,baseRefName:"main",statusCheckRollup:$checks[0],reviews:$reviews[0]}' ;;
   'pr merge '*) touch "$GH_STUB_DIR/merged" ;;

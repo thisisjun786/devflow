@@ -1488,6 +1488,8 @@ case_bid_rejections_no_tmux() { bid_without_tmux bid_rejections; }
 # runner was reading its tail previously produced a truncated `e` command.
 # shellcheck source=tests/host.sh
 source "$ROOT/tests/host.sh"
+# shellcheck source=tests/delivery.sh
+source "$ROOT/tests/delivery.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
@@ -1507,6 +1509,10 @@ for name in question_codex_record question_record_limit question_record_fallback
     if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
+done
+for name in land_squash_only land_merge_only land_rebase_only land_prefer_squash land_prefer_merge land_override_env land_override_repo land_override_precedence land_no_methods land_invalid_method land_disallowed_method land_repo_failure land_head_mismatch land_unconfirmed; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
 printf 'pass=%s skip=%s fail=%s\n' "$pass" "$skip" "$fail"
 [ "$fail" -eq 0 ]
