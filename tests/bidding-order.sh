@@ -16,6 +16,9 @@ bidding_order_setup() {
       bid) cat "$CASE_DIR/hosts/$host/bid.json" ;;
       _award)
         if [ -f "$CASE_DIR/hosts/$host/reject-award" ]; then
+          # Real _award reads the request before rejecting. Drain it here too
+          # so the scheduler producer cannot race an early-closing fake RPC.
+          cat >/dev/null
           jq -cn '{status:"rejected",reason:"full"}'
         else jq '{token,status:"working",head:"fake-head"}'; fi ;;
       *) return 1 ;;
