@@ -14,12 +14,16 @@ cmd_pr() {
     pr=$(jq -er .url "$S/pr.json")
   else
     title="$ISSUE: $(jq -r .slug "$S/meta")"
-    {
+    if [ -s "$S/pr.md" ]; then
+      # Worker-written public body: no brief, internal report or state paths.
+      cp "$S/pr.md" "$S/pr-body.md"
+    else {
       printf '## 브리프\n\n'
       cat "$S/brief.md"
       printf '\n## 보고서\n\n경로: `%s/report.md`\n\n' "$S"
       if [ -f "$S/report.md" ]; then cat "$S/report.md"; else printf '보고서가 아직 없습니다.\n'; fi
     } > "$S/pr-body.md"
+    fi
     pr=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$S/pr-body.md")
     jq -n --arg url "$pr" '{url:$url}' > "$S/pr.json"
     nohup "$DV_ROOT/bin/dv" polish "$ISSUE" >> "$S/polish.log" 2>&1 < /dev/null &
