@@ -35,22 +35,18 @@ manager_set() {
   else rm -f "$tmp"; return 1; fi
 }
 manager_lock() {
-  local dir=$1 pid
-  if ! mkdir "$dir/run.lock" 2>/dev/null; then
-    pid=$(cat "$dir/run.lock/pid" 2>/dev/null) || return 1
-    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-    if kill -0 "$pid" 2>/dev/null; then return 1; fi
-    # A dead holder can be recovered. An ownerless lock needs inspection.
-    rm -f "$dir/run.lock/pid"
-    rmdir "$dir/run.lock" 2>/dev/null || return 1
-    mkdir "$dir/run.lock" 2>/dev/null || return 1
-  fi
-  printf '%s\n' "$$" > "$dir/run.lock/pid"
+  local dir=$1
+  mkdir -p "$dir/run.lock" || return 1
+  # Bash noclobber uses exclusive file creation. Keep the parent directory:
+  # removing it on release races the next acquirer creating its owner file.
+  # Never steal a stale owner file automatically: a worker child may outlive
+  # its parent, and deleting a newly acquired replacement would break ordering.
+  (set -C; printf '%s\n' "$$" > "$dir/run.lock/pid") 2>/dev/null
 }
 manager_unlock() {
   local dir=$1
   [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$$" ] || return 0
-  rm -f "$dir/run.lock/pid"; rmdir "$dir/run.lock"
+  rm -f "$dir/run.lock/pid"
 }
 manager_log() {
   local dir=$1 kind=$2 old=$3 new=$4 rc=$5
@@ -114,7 +110,7 @@ manager_turn() {
 }
 manager_start() (
   [ "$#" -ge 1 ] || fail 'usage: dv manager start <repo> [--agent hermes]'
-  local repo=$1 agent=$DV_MANAGER_AGENT dir key tries=0
+  local repo=$1 agent=$DV_MANAGER_AGENT dir key tries=0 tmp
   shift
   if [ "$#" -gt 0 ]; then
     [ "$#" = 2 ] && [ "$1" = --agent ] || fail 'usage: dv manager start <repo> [--agent hermes]'
@@ -131,8 +127,10 @@ manager_start() (
   done
   trap 'manager_unlock "$dir"' EXIT
   if [ ! -f "$dir/meta.json" ]; then
+    tmp=$(mktemp "$dir/.meta.XXXXXX")
     jq -cn --arg repo "$repo" --arg key "$key" --arg host "$DV_HOST" \
-      '{repo:$repo,identity:$key,host:$host,agent:"hermes",enabled:false,session_id:null}' > "$dir/meta.json"
+      '{repo:$repo,identity:$key,host:$host,agent:"hermes",enabled:false,session_id:null}' > "$tmp"
+    mv "$tmp" "$dir/meta.json"
   fi
   if ! jq -e '.session_id!=null' "$dir/meta.json" >/dev/null; then
     manager_turn "$dir" '' "$dir/start-$(now)-$$" || fail 'manager initialization failed; see manager logs'

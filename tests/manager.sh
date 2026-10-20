@@ -135,7 +135,7 @@ case_manager_failed_event() {
   dir=$(dirname "$(manager_meta)")
   test "$(find "$dir/failed" -name '*.json' | wc -l | tr -d ' ')" = 1
   jq -se 'length==4 and .[3].resume==""' "$CASE_DIR/hermes/calls"
-  test ! -d "$dir/run.lock"
+  test ! -f "$dir/run.lock/pid"
 }
 manager_functions() {
   DV_ENTRY="$ROOT/bin/dv"
@@ -149,7 +149,7 @@ case_manager_restart_queue() {
   dv manager start "$REPO"
   manager_event M-1 "$REPO"
   manager_functions
-  local dir line prompt pid
+  local dir line prompt
   dir=$(dirname "$(manager_meta)")
   line=$(cat "$DV_HOME/kick.q"); prompt="$CASE_DIR/restart.prompt.md"
   cat "$ROOT/templates/worker-prompt.md" > "$prompt"
@@ -157,9 +157,6 @@ case_manager_restart_queue() {
   manager_enqueue "$line" "$prompt" 0
   # Model dispatch persistence followed by a watcher restart.
   printf '1\n' > "$DV_HOME/cursor"
-  mkdir "$dir/run.lock"
-  bash -c 'exit 0' & pid=$!; wait "$pid"
-  printf '%s\n' "$pid" > "$dir/run.lock/pid"
   manager_watch_until 2
   manager_enqueue "$line" "$prompt" 0
   test "$(find "$dir/pending" -name '*.json' | wc -l | tr -d ' ')" = 0
