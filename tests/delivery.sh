@@ -18,15 +18,16 @@ land_config() {
   git -C "$LAND_WT" commit -qm 'land configuration'
 }
 land_success() {
-  local head
+  local head pr
   head=$(git -C "$LAND_WT" rev-parse HEAD)
+  pr=$(jq -er .url "$DV_STATE/LAND-1/pr.json")
   dv land LAND-1
-  if ! grep -Fx -- "pr merge https://github.com/test/repo/pull/1 --$1 --match-head-commit $head" "$GH_STUB_DIR/calls"; then
+  if ! grep -Fx -- "pr merge $pr --$1 --match-head-commit $head" "$GH_STUB_DIR/calls"; then
     printf 'Expected --%s; gh calls:\n' "$1"
     cat "$GH_STUB_DIR/calls"; return 1
   fi
-  test "$(grep -c '^repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed$' "$GH_STUB_DIR/calls")" = 1
-  grep -Fx 'pr view https://github.com/test/repo/pull/1 --json state,headRefOid' "$GH_STUB_DIR/calls"
+  test "$(grep -c '^api repos/' "$GH_STUB_DIR/calls")" = 1
+  grep -Fx "pr view $pr --json state,headRefOid" "$GH_STUB_DIR/calls"
   jq -e '.status=="landed"' "$DV_STATE/LAND-1/meta"
   test ! -d "$LAND_WT"
 }
@@ -58,6 +59,27 @@ case_land_override_repo() {
   land_setup true true true
   land_config merge
   land_success merge
+}
+case_land_config_stdout() {
+  land_setup true true true
+  land_config merge
+  printf "echo 'loading land config'\n" >> "$LAND_WT/.devflow"
+  git -C "$LAND_WT" commit -qam 'configuration with stdout'
+  land_success merge 2> "$CASE_DIR/land-stderr"
+  grep -Fx 'loading land config' "$CASE_DIR/land-stderr"
+}
+case_land_policy_gh_repo() {
+  land_setup true false false
+  export GH_REPO=other/repo
+  land_success squash
+  grep -Fx 'api repos/test/repo' "$GH_STUB_DIR/calls"
+}
+case_land_policy_pr_url() {
+  land_setup false false true
+  export GH_REPO=other/repo GH_STUB_LAND_REPO=team/target
+  printf '{"url":"https://github.com/team/target/pull/42"}\n' > "$DV_STATE/LAND-1/pr.json"
+  land_success rebase
+  grep -Fx 'api repos/team/target' "$GH_STUB_DIR/calls"
 }
 case_land_override_precedence() {
   land_setup true true true
