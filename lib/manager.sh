@@ -113,7 +113,9 @@ manager_start() (
   local repo=$1 agent=$DV_MANAGER_AGENT dir key tries=0 tmp
   shift
   if [ "$#" -gt 0 ]; then
-    [ "$#" = 2 ] && [ "$1" = --agent ] || fail 'usage: dv manager start <repo> [--agent hermes]'
+    if [ "$#" != 2 ] || [ "$1" != --agent ]; then
+      fail 'usage: dv manager start <repo> [--agent hermes]'
+    fi
     agent=$2
   fi
   [ "$agent" = hermes ] || fail 'manager supports --agent hermes'
