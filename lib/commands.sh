@@ -116,12 +116,13 @@ inject_goal() {
   local instruction=$1 end=$(( $(now) + DV_START_WAIT )) pane
   while [ "$(now)" -lt "$end" ]; do
     if [ "$BACKEND" = herdr ]; then
-      # Pane history can contain an old shell prompt. Only a detected, ready
-      # Codex may receive /goal; readiness can still race the prompt submission.
+      # Pane history can contain an old shell prompt. Require detected Codex,
+      # then let agent prompt validate foreground/readiness (0.9.1 does not
+      # expose interactive_ready). A rejected submission sends no input.
       # Use one attempt per poll so blocked/unready replies share this deadline
       # instead of starting send_text's separate wait/retry budget.
       if pane=$(herdr_cmd agent get "$HERDR_PANE" 2>/dev/null) &&
-        printf '%s\n' "$pane" | jq -e '.result.agent | .agent=="codex" and .interactive_ready==true and .launch_pending!=true' >/dev/null 2>&1 &&
+        printf '%s\n' "$pane" | jq -e '.result.agent.agent=="codex"' >/dev/null 2>&1 &&
         [ "$(now)" -lt "$end" ] &&
         pane=$(herdr_cmd agent prompt "$HERDR_PANE" "/goal $instruction" 2>/dev/null) &&
         printf '%s\n' "$pane" | jq -e '.error==null and .result.type=="agent_prompted"' >/dev/null 2>&1; then return; fi
@@ -203,7 +204,8 @@ cmd_status() {
         if [ -n "$pane" ]; then
           info=$(herdr_info "$pane" 2>/dev/null) || info='{}'
           agent_status=$(printf '%s\n' "$info" | jq -r '.agent_status // "unknown"')
-          alive=$(printf '%s\n' "$info" | jq -r '.agent!=null')
+          # A live pane may be running a custom command with no detected agent.
+          alive=$(printf '%s\n' "$info" | jq -r '.pane_id!=null')
           if live_last=$(herdr_read "$pane" --lines 1 2>/dev/null); then
             last=$(printf '%s\n' "$live_last" | tail -n 1 | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r')
           fi

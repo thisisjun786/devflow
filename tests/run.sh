@@ -403,9 +403,9 @@ case_herdr_start_clean() {
   dv start "$REPO" H-1 native --brief "$CASE_DIR/brief"
   wait_native H-1
   wt=$(jq -r .worktree "$DV_STATE/H-1/meta")
-  jq -e '.backend=="herdr" and .herdr_workspace=="w-H-1" and .herdr_pane=="w-H-1:t1:p1"' "$DV_STATE/H-1/meta"
+  jq -e '.backend=="herdr" and .herdr_workspace=="w-H-1" and .herdr_pane=="w-H-1:p1"' "$DV_STATE/H-1/meta"
   if command -v tmux >/dev/null && tmux -L "$DV_TMUX_SOCKET" has-session -t '=dv-H-1' 2>/dev/null; then return 1; fi
-  jq -se --arg wt "$wt" '.[0]==["workspace","create","--label","dv-H-1","--cwd",$wt,"--no-focus"] and .[1][0:3]==["pane","wait-output","w-H-1:t1:p1"] and .[2][0:3]==["pane","run","w-H-1:t1:p1"] and (.[2][3]|contains("tmux")|not)' "$CASE_DIR/herdr/calls"
+  jq -se --arg wt "$wt" '.[0]==["workspace","create","--label","dv-H-1","--cwd",$wt,"--no-focus"] and .[1][0:3]==["pane","wait-output","w-H-1:p1"] and .[2][0:3]==["pane","run","w-H-1:p1"] and (.[2][3]|contains("tmux")|not)' "$CASE_DIR/herdr/calls"
   jq -e 'index("hooks")==null and index("plugins.\"crw@crw\".enabled=false")!=null' "$DV_STATE/H-1/args.json"
   grep '^/goal .*brief.md' "$DV_STATE/H-1/goal-input"
   grep -F 'native output before done' "$DV_STATE/H-1/log"
@@ -419,7 +419,7 @@ case_herdr_start_clean() {
     dv status H-1 --json | jq -e --arg status "$status" '.[0] | .backend=="herdr" and .alive and (.tmux|not) and .agent_status==$status and .last_log=="native output after done"'
     dv status H-1 | grep "agent=$status"
   done
-  jq -se 'any(.[]; .==["pane","read","w-H-1:t1:p1","--source","recent-unwrapped","--lines","1"])' "$CASE_DIR/herdr/calls"
+  jq -se 'any(.[]; .==["pane","read","w-H-1:p1","--source","recent-unwrapped","--lines","1"])' "$CASE_DIR/herdr/calls"
   printf 'dirty\n' > "$wt/dirty"
   if dv clean H-1; then return 1; fi
   test -f "$CASE_DIR/herdr/w-H-1/workspace"
@@ -438,7 +438,7 @@ case_herdr_send_retry() {
   dv send H-2 retry
   grep -Fx retry "$DV_STATE/H-2/sent-input"
   jq -se '[.[]|select(.[0:2]==["agent","prompt"] and .[3]=="retry")]|length==2' "$CASE_DIR/herdr/calls"
-  jq -se 'any(.[]; .[0:3]==["agent","wait","w-H-2:t1:p1"])' "$CASE_DIR/herdr/calls"
+  jq -se 'any(.[]; .[0:3]==["agent","wait","w-H-2:p1"])' "$CASE_DIR/herdr/calls"
   printf 'always\n' > "$CASE_DIR/herdr/blocked"
   if dv send H-2 still-blocked; then return 1; fi
   jq -se '[.[]|select(.[0:2]==["agent","prompt"] and .[3]=="still-blocked")]|length==2' "$CASE_DIR/herdr/calls"
@@ -448,6 +448,25 @@ case_herdr_send_retry() {
   jq -se '[.[]|select(.[0:2]==["agent","prompt"] and .[3]=="stalled")]|length==1' "$CASE_DIR/herdr/calls"
   test "$(wc -l < "$DV_STATE/H-2/sent-input" | tr -d ' ')" = 1
   dv clean H-2
+}
+case_herdr_undetected() {
+  repo herdr-undetected
+  export DV_HERDR=1 DV_AGENT_CMD_codex='printf "plain text: ❯"'
+  dv start "$REPO" HU-1 native --mode goal
+  wait_file "$CASE_DIR/herdr/w-HU-1/exit"
+  test "$(cat "$CASE_DIR/herdr/w-HU-1/exit")" = 0
+  dv status HU-1 --json | jq -e '.[0] | .alive and .agent_status=="unknown" and .last_log=="plain text: ❯"'
+  if dv send HU-1 hello > "$CASE_DIR/send.out" 2> "$CASE_DIR/send.err"; then return 1; fi
+  grep -F agent_not_found "$CASE_DIR/send.err"
+  test ! -s "$CASE_DIR/send.out"
+  dv 'done' HU-1
+  cmp "$CASE_DIR/herdr/w-HU-1/output" "$DV_STATE/HU-1/log"
+  # Already closed workspaces are reported on stderr, and clean stays idempotent.
+  herdr workspace close w-HU-1
+  dv status HU-1 --json | jq -e '.[0] | (.alive|not) and .last_log=="plain text: ❯"'
+  dv clean HU-1
+  test ! -d "$(jq -r .worktree "$DV_STATE/HU-1/meta")"
+  jq -e '.herdr_workspace==null and .herdr_pane==null' "$DV_STATE/HU-1/meta"
 }
 case_herdr_goal_retry() {
   repo goal-retry; herdr_setup; export DV_START_WAIT=4
@@ -489,7 +508,7 @@ case_herdr_agents_land() {
   repo herdr-agents; herdr_setup
   dv start "$REPO" H-3 native --agent devin; wait_native H-3
   test -f "$DV_STATE/H-3/trust-enter"
-  jq -se 'any(.[]; .==["pane","send-keys","w-H-3:t1:p1","Enter"])' "$CASE_DIR/herdr/calls"
+  jq -se 'any(.[]; .==["pane","send-keys","w-H-3:p1","Enter"])' "$CASE_DIR/herdr/calls"
   dv start "$REPO" H-4 native --agent claude; wait_native H-4
   jq -e 'index("opus")!=null and index("--dangerously-skip-permissions")!=null' "$DV_STATE/H-4/args.json"
   dv start "$REPO" H-5 native --mode exec; wait_native H-5
@@ -586,7 +605,7 @@ case_herdr_clean_safety() {
 
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety; do
+for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
