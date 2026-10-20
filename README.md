@@ -42,6 +42,9 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 
 | 명령 | 기능 |
 |---|---|
+| `dv submit REPO ISSUE SLUG --brief FILE [--agent AGENT] [--base BRANCH] [--mode MODE]` | 관리자에게 제출, 호스트는 입찰로 결정 |
+| `dv bid --json [--repo REPO] [--agent AGENT]` | 수용량·부하·메모리·clone·로그인 조회, 상태 변경 없음 |
+| `dv queue [ISSUE] [--json]` / `dv cancel ISSUE` | 관리자 배정 상태 조회 / 미배정 제출 취소 |
 | `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin] [--brief FILE] [--base BRANCH] [--mode goal\|exec]` | worktree·브랜치·상태·herdr/tmux 생성 |
 | `dv done ISSUE [--note TEXT]` | head·변경 파일 수·보고서 경로·완료 이벤트 |
 | `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작 |
@@ -58,6 +61,18 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 
 상태는 `$DV_STATE/ISSUE/`의 `meta`(JSON), `brief.md`, `log`, `report.md`, `done.json`, 리뷰·PR 결과입니다. done은 PR 대기 상태를 덮어쓰지 않습니다. ready는 **확인할 자료가 준비됨**을 뜻하며 CI 성공을 보장하지 않습니다. land는 빈 체크·skipped·pending·실패·head 불일치를 모두 거절합니다. 원격 브랜치를 지우지 않으며 squash 후 로컬 브랜치도 조상이 아니면 보존합니다.
 
+## 기기 자동 배정
+
+시온은 lina-os에서 `dv submit ~/code/my-app APP-42 fix-save --brief /path/brief.md`를 실행합니다. `DV_MANAGER_HOST` 기본값은 lina-os이며, 다른 호스트의 submit은 기존 SSH 연결로 관리자에게 브리프 내용을 전송합니다. 개발 호스트에 관리자 방향 SSH 키가 없어도 관리자에서 제출하면 됩니다. `DV_HOSTS`에는 배정 가능한 SSH 별칭을 적고, 모든 호스트에 같은 버전의 dv를 둡니다. 원격 저장소가 있는 로컬 경로는 origin URL로 전달합니다. 각 호스트는 `$DV_REPO_ROOT`(기본 `~/code`)의 같은 이름 clone을 확인하고, 없으면 낙찰 후 clone합니다. 이름이 같은 다른 origin은 덮어쓰지 않습니다. 원격 없는 경로는 해당 경로가 있는 호스트만 입찰합니다.
+
+`dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 호스트별 설정이고 기본값은 `max(1, floor(코어 수 / 8))`입니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 만석, 로그인 불가, 사용할 수 없는 저장소·터미널, `DV_MIN_MEMORY_MB`(기본 512) 미만이면 거절합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`를 사용하며, 다른 CLI는 `DV_AGENT_READY_codex/claude/devin`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
+
+점수는 `100 × 빈 자리/수용량 − 20 × load5/코어 + min(64, 남은 메모리/1024) + clone 보너스 20`입니다. 높은 점수가 먼저이고 동점은 hx → go2 → lina-os → gos 순입니다. 단, 관리자와 lina-os는 상주 서비스를 위해 조회·배정 모두 마지막으로 미룹니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 사용합니다. 낙찰 호스트는 잠금 안에서 수용량을 다시 확인하고 `dv start`를 실행합니다. 직접 실행하는 `dv start`는 수동 경로이므로 자동 배정 중에는 `submit`을 사용하세요.
+
+관리자 상태는 `$DV_HOME/submissions/ISSUE/task.json`이고 `dv queue`로 봅니다. A2A 상태 `submitted/working/input-required/completed/failed/canceled`를 사용하며, 개별 입찰은 `submitted/rejected`입니다. 기존 개발·PR 상태(`dv status`의 running/pr/ready 등)는 그대로 유지합니다. `bids.json`에는 점수·거절 이유, `dispatch.log`에는 시작 결과가 남습니다. 모두 거절하면 submitted로 남고, 기존 done/failed/landed 이벤트가 올 때만 재입찰합니다. 별도 입찰 폴링이나 데몬은 없습니다. `dv cancel`은 아직 배정되지 않은 제출만 취소합니다.
+
+응답 없는 입찰, 낙찰 재검사의 거절, 확인된 시작 실패는 같은 회차의 다음 후보로 넘어갑니다. 새 submitted/done/failed/landed 이벤트에서 시작하는 회차에는 이전 실패 호스트도 다시 입찰합니다. 재시도 가능한 시작 실패의 상태·로그·영수증은 `$DV_STATE/.awards/ISSUE/failed.*/`에 보관하고 새 브랜치를 사용합니다. 낙찰 응답을 잃었으면 같은 요청 토큰의 호스트 영수증을 조회해 중복 시작을 막습니다. 실행 여부가 불명확하거나 실패한 worktree가 dirty이면 input-required로 유지하고 이후 호스트 이벤트로 결과를 확정합니다. 이전 회차의 실패 이벤트는 새로 실행 중인 작업을 실패 처리하지 않습니다. `DV_BID_TIMEOUT`(10초), `DV_AWARD_TIMEOUT`(90초)으로 조회와 시작 확인 시간을 정합니다. `.admission-lock`은 소유 PID가 죽은 경우에만 회수합니다. 소유자 기록이 없는 잠금과 SIGKILL로 남은 `.schedule-lock`은 프로세스 종료 확인 뒤 수동 정리가 필요합니다.
+
 `dv pr`은 PR을 처음 만든 직후 `dv polish`를 백그라운드로 시작합니다. CI·봇 리뷰와 나란히 돌며 병합을 기다리게 하지 않습니다. 기본 명령은 로컬 `agy --model gemini-4-argon-high -p "<프롬프트>"`이며, `agy`가 없으면 `ssh lina-os`에서 같은 명령을 실행합니다. `DV_POLISH=0`으로 끄거나 `DV_POLISH_CMD`에 퇴고 명령을 지정할 수 있습니다. 명령에는 프롬프트가 마지막 인자로 전달되고, 표준 출력은 본문으로 사용됩니다(예: `DV_POLISH_CMD='my-polisher --model editor'`).
 
 퇴고는 군더더기·AI 말투·설명용 줄표만 정리하도록 요청합니다. 코드 블록·인라인 코드·URL의 내용과 출현 횟수를 보존했는지 검사한 뒤 `gh api --method PATCH repos/OWNER/REPO/pulls/NUMBER -F body=@파일`로 본문만 바꿉니다. 대상은 `pr.json`의 URL에서 구하며, 적용 직전에 읽은 GitHub 본문이 원문과 다르거나 읽기에 실패하면 적용하지 않고 로그에 남깁니다. 최초 원문은 `pr-body.orig.md`, 적용한 본문은 `pr-body.md`, 실행 결과는 `polish.log`에 남습니다. 빈 출력·검증 실패·명령 오류·시간 초과(기본 180초, `DV_POLISH_TIMEOUT`)에는 원문을 유지하고 종료 코드 0으로 끝납니다. 사실·숫자·일반 문장과 모든 Markdown 변형의 의미 보존까지 자동으로 증명하는 검사는 아닙니다.
@@ -66,7 +81,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 
 Codex goal은 tmux에서 TUI 입력 마커를 기다린 후 `/goal`을 붙여넣고 Enter를 보냅니다. herdr에서는 Codex 감지를 기다린 뒤 `agent prompt`로 제출하고, 준비되지 않았거나 차단됐으면 시작 제한 시간 안에서 재시도합니다. hook 신뢰 창이 보이면 자동 승인이나 입력 없이 `codex hook trust required` failed 이벤트를 보내고 주입을 중단합니다. 제출 성공 후에도 `DV_START_WAIT`초 안에 herdr의 `working` 또는 화면의 `Pursuing goal`을 확인합니다. 같은 `/goal`이 입력 칸에 남아 있으면 1초 뒤 Enter를 한 번만 더 보내고, 시작이 확인되지 않으면 `codex goal did not start` failed 이벤트를 보냅니다. 실패한 시작은 `dv status`에서 `start-failed`로 표시하며, 터미널은 사람이 확인할 수 있게 남깁니다. 신뢰 문제를 해결한 뒤 `dv send`로 다시 지시할 수 있습니다. 폴더 신뢰는 해당 실행의 CLI 설정으로 worktree와 원본 저장소 루트에 모두 적용하며 사용자 설정 파일은 수정하지 않습니다.
 
-exec는 한 번 실행 후 성공할 때 래퍼가 done을 호출합니다. 종료된 에이전트 재시작은 자동화하지 않습니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리를 받습니다.
+exec는 한 번 실행 후 성공할 때 래퍼가 done을 호출합니다. goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. 시작에 성공했던 에이전트의 재시작은 자동화하지 않습니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리를 받습니다.
 
 ## 시험
 

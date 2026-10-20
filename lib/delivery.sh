@@ -97,6 +97,7 @@ cmd_land() {
   fi
   meta_set '.status="landed"'
   clean_worktree
+  cmd_kick landed "$ISSUE" 'Landed'
 }
 local_land() {
   local test_cmd=$DV_TEST_CMD mode=$DV_LAND_MODE before target candidate result merged

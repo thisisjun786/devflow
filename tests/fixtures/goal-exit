@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+while [ ! -f "$CASE_DIR/release-$DV_ISSUE" ]; do sleep 0.05; done
+if [ -f "$CASE_DIR/done-$DV_ISSUE" ]; then dv 'done' "$DV_ISSUE"; fi
+rc=0
+[ ! -f "$CASE_DIR/exit-$DV_ISSUE" ] || rc=$(cat "$CASE_DIR/exit-$DV_ISSUE")
+exit "$rc"

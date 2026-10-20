@@ -47,5 +47,14 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)
 : "${DV_PULL_RETRY:=15}" # seconds between restarts of an ended pull stream
 : "${DV_HOSTS=lina-os hx-linux go2-linux}" # SSH aliases for the status safety net (gos is not a dev host)
+: "${DV_MANAGER_HOST:=lina-os}" # submit/queue manager, independent of the local kick host
+: "${DV_MAX_JOBS:=}" # host capacity; empty = max(1, floor(logical cores / 8))
+: "${DV_MIN_MEMORY_MB:=512}" # reject bids below this available memory
+: "${DV_REPO_ROOT:=$HOME/code}" # existing clones, or clone destination after an award
+: "${DV_BID_TIMEOUT:=10}" # seconds per read-only SSH bid/auth probe
+: "${DV_AWARD_TIMEOUT:=90}" # seconds to confirm agent startup
+: "${DV_AGENT_READY_codex:=}" # optional read-only auth probe command (exit 0 = ready)
+: "${DV_AGENT_READY_claude:=}"
+: "${DV_AGENT_READY_devin:=}"
 # DV_CONFIG: config file override (default ~/.config/devflow/config.sh).
 # DV_TEST_TMP: test temporary root (default TMPDIR or /tmp); no live agents/network.

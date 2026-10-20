@@ -1,5 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${SSH_BIDDING:-0}" = 1 ]; then
+  while [ "$#" -gt 0 ]; do
+    case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac
+  done
+  host=$1; shift
+  printf '%s %s\n' "$host" "$*" >> "$CASE_DIR/ssh.calls"
+  [ ! -f "$CASE_DIR/hosts/$host/offline" ] || exit 255
+  case "$*" in
+    'dv bid '*)
+      [ ! -f "$CASE_DIR/hosts/$host/hang-bid" ] || exec sleep 10
+      if [ -f "$CASE_DIR/hosts/$host/bid.json" ]; then cat "$CASE_DIR/hosts/$host/bid.json"; exit; fi ;;
+    'dv _award '*)
+      if [ -f "$CASE_DIR/hosts/$host/reject-award" ]; then
+        jq -cn '{status:"rejected",reason:"full"}'; exit
+      fi
+      if [ -f "$CASE_DIR/hosts/$host/drop-award" ]; then
+        env DV_CONFIG="$CASE_DIR/hosts/$host/config" bash -c "$*" >/dev/null
+        exit 255
+      fi ;;
+  esac
+  exec env DV_CONFIG="$CASE_DIR/hosts/$host/config" bash -c "$*"
+fi
 if [ -n "${SSH_POLISH_PATH:-}" ]; then
   test "$#" = 4 && test "$1" = -o && test "$2" = BatchMode=yes && test "$3" = lina-os
   touch "$CASE_DIR/polish-ssh"
