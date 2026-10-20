@@ -6,11 +6,29 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s\n' "$url" >> "$HOME/downloads"
 [ "${HOST_DOWNLOAD_FAIL:-0}" != 1 ] || exit 22
+case "$url" in
+  *'?mode=json&include=all'|*/SHASUMS256.txt|*.sha256|*_checksums.txt|*/releases/tags/*)
+    digest=$(cat "$HOME/download.sha256"); asset=$(cat "$HOME/download.asset")
+    if [ "${HOST_BAD_CHECKSUM:-0}" = 1 ]; then digest=$(printf '%064d' 0); fi
+    case "$url" in
+      *'?mode=json&include=all') jq -n --arg name "$asset" --arg digest "$digest" '[{files:[{filename:$name,sha256:$digest}]}]' > "$out" ;;
+      */releases/tags/*) jq -n --arg name "$asset" --arg digest "$digest" '{assets:[{name:$name,digest:("sha256:"+$digest)}]}' > "$out" ;;
+      *) printf '%s  %s\n' "$digest" "$asset" > "$out" ;;
+    esac
+    exit ;;
+esac
 stage=$(mktemp -d "$HOME/archive.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 payload() {
   sed "s/@VERSION@/$2/" "$HOST_FIXTURES/host-tool" > "$1"
   chmod +x "$1"
+}
+checksum() {
+  local sum
+  if command -v sha256sum >/dev/null; then sum=$(sha256sum "$out")
+  else sum=$(shasum -a 256 "$out"); fi
+  printf '%s\n' "${sum%% *}" > "$HOME/download.sha256"
+  printf '%s\n' "${url##*/}" > "$HOME/download.asset"
 }
 case "$url" in
   */go1.27.3.linux-*.tar.gz) dir=go/bin; tool=go; version=1.27.3 ;;
@@ -18,10 +36,11 @@ case "$url" in
   */uv-*-unknown-linux-gnu.tar.gz) dir=uv-x86_64-unknown-linux-gnu; tool=uv; version=0.11.32 ;;
   */gh_2.46.0_linux_*.tar.gz) dir=gh_2.46.0_linux_amd64/bin; tool=gh; version=2.46.0 ;;
   */gitleaks_8.30.1_linux_*.tar.gz) dir=.; tool=gitleaks; version=8.30.1 ;;
-  */herdr-linux-*) payload "$out" 0.9.1; exit ;;
+  */herdr-linux-*) payload "$out" 0.9.1; checksum; exit ;;
   *) printf 'Unexpected download: %s\n' "$url" >&2; exit 1 ;;
 esac
 mkdir -p "$stage/$dir"
 payload "$stage/$dir/$tool" "${HOST_BAD_VERSION:-$version}"
 if [ "$tool" = node ]; then payload "$stage/$dir/npm" 11.6.2; fi
 tar -czf "$out" -C "$stage" .
+checksum

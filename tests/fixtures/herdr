@@ -202,8 +202,13 @@ case "$1 $2" in
       done
     fi
     # The wrapper must terminate this unbounded server subscription on exit.
-    if [ "$#" = 5 ] && [ "$5" = blocked ]; then
+    if [ "$5" = blocked ]; then
       trap 'exit 0' TERM INT
+      if [ "$#" = 7 ]; then
+        test "$6" = --timeout
+        sleep 1
+        error timeout 'timed out waiting for agent status'
+      fi
       while :; do sleep 0.1; done
     fi
     test "$4" = --until; test "$#" = 11; test "${10}" = --timeout
