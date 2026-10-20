@@ -34,6 +34,8 @@
 
 PATH 검사는 상속된 개발 세션 PATH를 제외하고 계정 셸(`SHELL`, 필요하면 `DV_HOST_SHELL`로 지정)의 로그인 `-lc`와 SSH 비대화형 `-c` 시작을 **로컬에서** 재현합니다. 후자는 `SSH_CLIENT`를 설정하여 bash의 SSH 시작 파일 처리도 포함합니다. 실제 SSH 접속이나 sshd/PAM의 환경 정책까지 검증하는 것은 아닙니다. 셸의 실행 파일 경로를 검사하며 alias/function은 대상이 아닙니다. `sync`는 `~/.profile`과 `~/.zshenv`의 `# BEGIN devflow PATH` / `# END devflow PATH` 블록만 관리하며 중복된 자체 블록을 하나로 합칩니다. 그 밖의 사용자 줄·예전 수동 PATH 블록은 유지합니다. zsh는 비대화형에서도 `.zshenv`를 읽습니다. bash의 `.bashrc` 또는 `.bash_profile`이 `.profile`을 읽지 않으면 해당 모드의 drift는 남으며, `check`가 보여 줍니다. 이 파일들을 자동 편집하지는 않습니다.
 
+Claude 온보딩은 `check`의 텍스트 출력과 JSON의 `claude.onboarding`에 `hasCompletedOnboarding`, `skipDangerousModePermissionPrompt` 두 boolean으로 표시합니다. 파일이 없거나 읽을 수 없거나 올바른 JSON 객체가 아니면 해당 값은 false입니다. 이 검사도 설정을 변경하지 않습니다.
+
 `sync`는 설치 경로의 버전도 직접 확인하므로 PATH만 틀린 도구를 다시 받지 않습니다. 실패한 다운로드와 버전 불일치는 기존 도구를 교체하지 않습니다. 교체하는 기존 설치·링크는 같은 위치의 `.dv-backup.*`에 남기고 링크 대상에는 쓰지 않습니다. Node 업그레이드 시 이전 global 패키지도 백업에 남습니다. 새 Node에는 목록의 global 패키지(Claude Code·pnpm)를 설치하며, 그 밖의 패키지는 운영자가 옮깁니다. 셸 파일이 심볼릭 링크이거나 표시 블록이 깨졌으면 변경 전에 거절합니다. 성공 후 다시 실행하면 다운로드·npm 설치·PATH 파일 변경이 없습니다. 설치 잠금은 `~/.local/state/devflow-host/sync.lock`이며 강제 종료로 남으면 실행 중인 sync가 없는지 확인한 뒤 운영자가 제거합니다.
 
 `codex` 항목은 PATH상의 도구 검사와 별도로 **실제 `DV_CODEX_BIN`**의 두 모드 실행 경로를 보여 줍니다. `~/.opencodex` 디렉터리, OpenCodex 토큰 환경 변수 또는 Codex 설정의 OpenCodex 표기가 있으면 프록시 호스트로 판단하고 `~/.opencodex/bin/codex`로 연결되지 않는 실행기를 `wrong-launcher`로 표시합니다. 설정은 바꾸지 않으므로 운영자가 `DV_CODEX_BIN="$HOME/.opencodex/bin/codex"`를 지정해야 합니다. 로그인 성공만으로 공급자 준비를 보장하지 않습니다.
@@ -56,6 +58,10 @@ dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야
 herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 `dv start`가 포커스를 바꾸지 않고 `dv-<ISSUE>` workspace에서 에이전트를 직접 실행합니다(Codex hooks 유지). send·status·clean/land는 기록된 backend를 따르며 herdr 로그는 done/clean 시 화면을 저장합니다. 미설치 또는 `DV_HERDR=0`이면 tmux를 사용하고, 기존 backend 없는 이슈도 tmux로 처리합니다. herdr 시작 오류는 상태를 보존하고 실패를 알립니다.
 
 herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있으며, 이때 `dv send`는 `agent_not_found`를 반환합니다.
+
+Claude 기본 실행은 먼저 `~/.claude.json`의 `projects[worktree 경로].hasTrustDialogAccepted=true`를 기록합니다. 없는 파일은 만들고, 다른 키는 보존하며, 같은 디렉터리의 임시 파일을 rename하여 교체합니다. `~/.claude.json.dv-lock` 파일로 dv의 동시 기록을 직렬화하며 약 10초 동안 잠금을 얻지 못하면 시작 실패로 끝납니다. 손상된 JSON과 심볼릭 링크는 보존하고 시작을 거절합니다. SIGKILL 등으로 잠금이 남으면 실행 중인 기록 작업이 없는지 확인한 뒤 운영자가 잠금 파일을 제거해야 합니다. 이 잠금을 사용하지 않는 Claude 자체나 다른 도구의 동시 설정 변경까지 직렬화하지는 않습니다.
+
+`~/.claude.json`의 `hasCompletedOnboarding`과 `~/.claude/settings.json`의 `skipDangerousModePermissionPrompt`가 모두 true여야 Claude를 띄웁니다. 남은 온보딩이 있으면 `start-failed` 상태와 실패 이벤트를 남기며 화면에 키를 보내지 않습니다. 기기에서 `claude --dangerously-skip-permissions`를 한 번 대화형으로 실행해 테마·보안 안내·바이패스 경고를 끝내고 `dv host check`로 확인하세요. dv는 온보딩 플래그를 대신 설정하지 않습니다. `DV_AGENT_CMD_claude`로 전체 명령을 지정하면 이 준비 절차도 해당 명령에서 관리합니다.
 
 `DV_AGENT_QUESTIONS=sion`이 기본값이며 Codex의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 켜 둡니다. `DV_AGENT_QUESTIONS=off`이면 두 에이전트의 질문 도구를 끄는 기존 동작을 사용합니다. tmux·herdr와 Codex goal·exec에 모두 적용하며, `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 질문 도구 설정도 해당 명령에서 정합니다.
 
