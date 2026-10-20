@@ -88,13 +88,16 @@ shell_join() { printf '%q ' "$@"; }
 # One compact JSON line is shared by SSH, the queue, and the reconciliation path.
 event_json() {
   # Transports pass the original ID verbatim, including a question's episode.
-  local id=${6:-}
+  local id=${6:-} token=${7:-}
   if [ -z "$id" ]; then
     id="$4:$2:$1:$5"
+    [ -z "$token" ] || id="$id:$token"
     if [ "$1" = question ]; then id="$id:${DV_QUESTION_EPISODE:-$(now):$$:$RANDOM}"; fi
   fi
   jq -cn --arg kind "$1" --arg issue "$2" --arg message "$3" --arg host "$4" --arg head "$5" \
-    --arg id "$id" --argjson time "$(now)" '{id:$id,kind:$kind,issue:$issue,message:$message,host:$host,head:$head,time:$time}'
+    --arg id "$id" --arg token "$token" --argjson time "$(now)" \
+    '{id:$id,kind:$kind,issue:$issue,message:$message,host:$host,head:$head,time:$time} +
+    (if $token=="" then {} else {token:$token} end)'
 }
 send_text() {
   local text=$1 buffer="dv-$ISSUE-$$"

@@ -53,7 +53,7 @@ while IFS= read -r line; do
   if printf '%s\n' "$line" | jq -e '(.kind|type)=="string" and (.issue|type)=="string" and (.host|type)=="string"' >/dev/null 2>&1; then
     # Not delivered here means not checkpointed: exit and resume at this line next time.
     "$DV_ROOT/bin/dv-kick" "$(field "$line" .kind)" "$(field "$line" .issue)" "$(field "$line" .message)" \
-      "$(field "$line" .host)" "$(field "$line" .head)" "$(field "$line" .id)" || fail "pull $host: queue write failed at line $((offset + 1))"
+      "$(field "$line" .host)" "$(field "$line" .head)" "$(field "$line" .id)" "$(field "$line" .token)" || fail "pull $host: queue write failed at line $((offset + 1))"
   else
     printf 'pull %s: invalid line %s skipped\n' "$host" "$((offset + 1))" >&2
   fi
