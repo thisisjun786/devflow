@@ -10,6 +10,8 @@ done
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 # shellcheck source=lib/bidding.sh
 source "$DV_ROOT/lib/bidding.sh"
+# shellcheck source=lib/manager.sh
+source "$DV_ROOT/lib/manager.sh"
 need jq
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 mkdir -p "$DV_HOME/workers"
@@ -100,6 +102,7 @@ reconcile() {
 }
 while [ ! -e "$DV_HOME/stop" ]; do
   reap
+  manager_dispatch
   pulls
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
@@ -124,6 +127,15 @@ while [ ! -e "$DV_HOME/stop" ]; do
       printf '\n작업자 호스트(DV_HOST): `%s`\n' "$DV_HOST" >> "$prompt"
       # shellcheck disable=SC2016
       printf '\n이벤트(JSON 데이터):\n```json\n%s\n```\n' "$line" >> "$prompt"
+      routed=0
+      manager_enqueue "$line" "$prompt" "$cursor" >> "$DV_HOME/manager.log" 2>&1 || routed=$?
+      if [ "$routed" = 0 ]; then
+        printf '%s\n' "$id" >> "$DV_HOME/seen"
+        cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
+        continue
+      elif [ "$routed" != 1 ]; then
+        break # Persistence failed: retain the cursor so the event can retry.
+      fi
       if [ -n "$DV_WORKER_CMD" ]; then
         bash -c "$DV_WORKER_CMD \"\$@\"" dv-worker "$prompt" > "${prompt%.prompt.md}.log" 2>&1 &
       else

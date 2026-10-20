@@ -18,8 +18,12 @@ source "$DV_ROOT/lib/delivery.sh"
 source "$DV_ROOT/lib/polish.sh"
 # shellcheck source=lib/bidding.sh
 source "$DV_ROOT/lib/bidding.sh"
+# shellcheck source=lib/manager.sh
+source "$DV_ROOT/lib/manager.sh"
 command=${1:-help}; [ "$#" -eq 0 ] || shift
 case "$command" in
+  manager) cmd_manager "$@" ;;
+  _manager-run) cmd__manager_run "$@" ;;
   host)
     # shellcheck source=lib/host.sh
     source "$DV_ROOT/lib/host.sh"
@@ -27,6 +31,6 @@ case "$command" in
   start|done|pr|polish|review|land|status|send|clean|kick|submit|bid|queue|cancel|_submit|_award|_receipt) "cmd_$command" "$@" ;;
   pr-wait) cmd_pr_wait "$@" ;;
   _agent) run_agent "$@" ;;
-  help|--help|-h) printf '%s\n' 'dv host check [--json] [--probe-codex] | sync' 'dv submit <repo> <ISSUE> <slug> --brief FILE [--agent codex|claude|devin] [--base BRANCH] [--mode goal|exec]' 'dv bid --json [--repo REPO] [--agent AGENT]' 'dv queue [ISSUE] [--json]' 'dv cancel <ISSUE>' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin] [--brief FILE] [--base BRANCH] [--mode goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|polish|review|land|clean <ISSUE>' 'dv status [ISSUE] [--json]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
+  help|--help|-h) printf '%s\n' 'dv manager start <repo> [--agent hermes] | status [repo] [--json] | stop <repo>' 'dv host check [--json] [--probe-codex] | sync' 'dv submit <repo> <ISSUE> <slug> --brief FILE [--agent codex|claude|devin] [--base BRANCH] [--mode goal|exec]' 'dv bid --json [--repo REPO] [--agent AGENT]' 'dv queue [ISSUE] [--json]' 'dv cancel <ISSUE>' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin] [--brief FILE] [--base BRANCH] [--mode goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|polish|review|land|clean <ISSUE>' 'dv status [ISSUE] [--json]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
   *) fail "unknown command: $command" ;;
 esac
