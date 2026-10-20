@@ -19,6 +19,8 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_DEVIN_MODEL:=fusion-gpt-6-astra-xhigh-sidekick-swe-2-high}"
 : "${DV_AGENT:=codex}"
 : "${DV_AGENT_QUESTIONS:=sion}" # sion: question tools on; off: disable Codex/Claude question tools
+: "${DV_CODEX_SESSIONS:=${CODEX_HOME:-$HOME/.codex}/sessions}" # question transcripts, read only
+: "${DV_CLAUDE_SESSIONS:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" # question transcripts, read only
 : "${DV_MODE:=goal}"
 : "${DV_AGENT_CMD_codex:=}" # complete shell command, no extra CLI flags
 : "${DV_AGENT_CMD_claude:=}"

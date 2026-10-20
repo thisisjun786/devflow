@@ -36,7 +36,9 @@ herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지�
 
 에이전트는 브리프 안의 작거나 되돌릴 수 있는 선택을 직접 결정하고 보고서의 "결정"에 이유를 남깁니다. 설계 방향·범위·사용자에게 보이는 동작·데이터 형식처럼 결과를 바꾸는 선택만 시온에게 물으며, 선택지 2–3개와 추천안을 제시합니다. Codex의 `request_user_input_async`는 질문을 열어 둔 채 작업을 계속할 수 있으므로, 답에 의존하지 않는 작업은 진행합니다.
 
-herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wait`로 상태 전환을 기다립니다. `blocked`가 `DV_BLOCKED_GRACE`초(기본 20) 지속되면 마지막 화면 8줄을 정리해 최대 1,000자로 `question` 이벤트를 한 번 보내고, 차단이 풀린 뒤 다음 에피소드를 기다립니다. `dv status --json`의 `question_pending`은 알림을 보낸 에피소드가 열려 있는 동안 true입니다. 시온은 준의 맥락(기억·이전 결정·이슈)을 바탕으로 답하고 이유를 이슈에 기록하며, 되돌릴 수 없는 행동·외부 효과·비용·권한에 관한 질문만 준에게 올립니다. tmux에는 이 감시자가 없습니다.
+herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wait`로 상태 전환을 기다립니다. `blocked`가 `DV_BLOCKED_GRACE`초(기본 20) 지속되면 `question` 이벤트를 한 번 보내고, 차단이 풀린 뒤 다음 에피소드를 기다립니다. `dv status --json`의 `question_pending`은 알림을 보낸 에피소드가 열려 있는 동안 true입니다. 시온은 준의 맥락(기억·이전 결정·이슈)을 바탕으로 답하고 이유를 이슈에 기록하며, 되돌릴 수 없는 행동·외부 효과·비용·권한에 관한 질문만 준에게 올립니다. tmux에는 이 감시자가 없으며, herdr가 `working`을 유지하는 비동기 질문도 이 감시자의 이벤트를 발생시키지 않습니다.
+
+질문 본문은 herdr의 `agent_session.value`와 일치하는 세션 기록을 먼저 읽습니다. Codex는 `~/.codex/sessions/**/rollout-*.jsonl`의 마지막 `request_user_input` 계열 function call의 `arguments`, Claude는 `~/.claude/projects/**/<세션 ID>.jsonl`의 마지막 `AskUserQuestion` tool use의 `input`을 사용합니다. 세션 ID를 기록 안에서도 확인하고, 질문·선택지의 JSON을 최대 2,000자로 전달합니다(긴 JSON은 중간에 잘릴 수 있습니다). 기록·질문을 찾지 못하거나 읽을 수 없으면 기존처럼 마지막 화면 8줄을 정리해 최대 1,000자로 보냅니다. 기록 경로는 `DV_CODEX_SESSIONS`·`DV_CLAUDE_SESSIONS`로 지정할 수 있으며, 기본값은 `CODEX_HOME`·`CLAUDE_CONFIG_DIR`도 따릅니다. 기록과 사용자 설정은 읽기만 합니다.
 
 | 명령 | 기능 |
 |---|---|
