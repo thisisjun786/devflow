@@ -184,23 +184,11 @@ bid_task_set() {
   jq "$@" "$dir/task.json" > "$tmp" && mv "$tmp" "$dir/task.json"
 }
 bid_lock() {
-  local path=$1 owner=${2:-} tries=0 marker holder
+  local path=$1 owner=${2:-} tries=0
+  if [ -n "$owner" ]; then owned_lock "$path" "$owner"; return; fi
   until mkdir "$path" 2>/dev/null; do
-    if [ -n "$owner" ]; then
-      for marker in "$path"/pid-*; do
-        [ -f "$marker" ] || continue
-        holder=${marker##*/pid-}
-        [[ "$holder" =~ ^[1-9][0-9]*$ ]] || continue
-        if ! kill -0 "$holder" 2>/dev/null && rm "$marker" 2>/dev/null; then
-          # Only the remover of this exact dead owner's marker may remove the
-          # directory. Other contenders cannot remove a newly acquired lock.
-          rmdir "$path" 2>/dev/null || true
-        fi
-      done
-    fi
     tries=$((tries+1)); [ "$tries" -lt 100 ] || return 1; sleep 0.1
   done
-  [ -z "$owner" ] || : > "$path/pid-$owner"
 }
 cmd_cancel() (
   [ "$#" = 1 ] || fail 'usage: dv cancel ISSUE'
@@ -236,7 +224,7 @@ cmd__award() (
   deadline=$(printf '%s\n' "$request" | jq -er '.deadline|select(type=="number" and .==floor and .>0)')
   mkdir -p "$DV_STATE/.awards"
   bid_lock "$DV_STATE/.admission-lock" "$$" || fail 'host admission busy'
-  trap 'if rm "$DV_STATE/.admission-lock/pid-$$" 2>/dev/null; then rmdir "$DV_STATE/.admission-lock"; fi' EXIT
+  trap 'owned_unlock "$DV_STATE/.admission-lock" "$$"' EXIT
   dir="$DV_STATE/.awards/$issue"
   if [ -e "$dir" ]; then
     if ! jq -e --arg token "$token" '.token!=$token and .status=="failed"' "$dir/receipt.json" >/dev/null; then

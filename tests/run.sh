@@ -131,14 +131,58 @@ case_clean() {
 }
 case_parallel() {
   needs_tmux; repo parallel
-  start T-6 & p1=$!
-  start T-7 & p2=$!
-  wait "$p1"; wait "$p2"; wait_done T-6; wait_done T-7
+  # A linked source worktree must use the same repository lock as the main one.
+  git -C "$REPO" worktree add --detach "$CASE_DIR/source" main
+  export BASH_ENV="$ROOT/tests/fixtures/race-env" DV_TEST_RACE=worktree
+  DV_TEST_ACTOR=1 start T-6 & p1=$!
+  wait_file "$CASE_DIR/entered-1"
+  DV_TEST_ACTOR=2 dv start "$CASE_DIR/source" T-7 change --brief "$CASE_DIR/brief" --mode exec & p2=$!
+  local rc=0
+  wait_contender || rc=1
+  touch "$CASE_DIR/release"
+  wait "$p1" || rc=1; wait "$p2" || rc=1
+  unset BASH_ENV DV_TEST_RACE
+  [ "$rc" = 0 ]
+  wait_done T-6; wait_done T-7
   wt1=$(jq -r .worktree "$DV_STATE/T-6/meta")
   wt2=$(jq -r .worktree "$DV_STATE/T-7/meta")
   test -f "$wt1/T-6.txt"; test ! -f "$wt1/T-7.txt"
   test -f "$wt2/T-7.txt"; test ! -f "$wt2/T-6.txt"
   test "$(jq -r .branch "$DV_STATE/T-6/meta")" != "$(jq -r .branch "$DV_STATE/T-7/meta")"
+  test ! -e "$REPO/.git/devflow-worktree.lock"
+  # A failed Git operation must release the lock without removing user files.
+  git -C "$REPO" branch codex/t-9-change
+  printf 'keep\n' > "$REPO/dirty"
+  if start T-9; then return 1; fi
+  test ! -e "$REPO/.git/devflow-worktree.lock"
+  test "$(cat "$REPO/dirty")" = keep
+  start T-10; wait_done T-10
+  case_parallel_timeout
+}
+case_parallel_timeout() {
+  needs_tmux; repo parallel-timeout
+  local lock="$REPO/.git/devflow-worktree.lock"
+  mkdir "$lock"
+  printf '%s\n' "$$" > "$lock/pid-$$"
+  ln "$lock/pid-$$" "$lock/owner"
+  if BASH_ENV="$ROOT/tests/fixtures/race-env" DV_TEST_RACE=timeout DV_TEST_ACTOR=timeout \
+    start TIMEOUT-1 > "$CASE_DIR/timeout-output" 2>&1; then return 1; fi
+  grep 'repository worktree creation busy' "$CASE_DIR/timeout-output"
+  test ! -e "$DV_STATE/TIMEOUT-1"
+  test "$(cat "$lock/owner")" = "$$"
+  rm "$lock/pid-$$" "$lock/owner"
+  rmdir "$lock"
+  # Retrying the same issue succeeds once the other owner releases the lock.
+  start TIMEOUT-1; wait_done TIMEOUT-1
+}
+wait_contender() {
+  local tries
+  for tries in {1..200}; do
+    if [ -f "$CASE_DIR/contended-2" ] || [ -f "$CASE_DIR/entered-2" ]; then return; fi
+    sleep 0.05
+  done
+  echo 'Timed out waiting for lock contention' >&2
+  return 1
 }
 case_install() {
   test_home="$CASE_DIR/install home"
@@ -863,7 +907,7 @@ case_herdr_disabled_legacy() {
 herdr_isolated_path() {
   # Exclude user PATH and ~/.local/bin so native tests cannot reach real herdr.
   mkdir -p "$CASE_DIR/path" "$CASE_DIR/empty-home"
-  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed tail wc grep rm touch awk; do
+  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed tail wc grep rm touch awk ln; do
     ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"
   done
   if [ "${1:-}" = tmux ]; then ln -s "$(command -v tmux)" "$CASE_DIR/path/tmux"; fi
@@ -1270,6 +1314,43 @@ case_award_capacity() {
   wait "$a1"; wait "$a2"
   jq -se '[.[].status]|sort==["rejected","working"]' "$CASE_DIR/a1" "$CASE_DIR/a2"
   test "$(find "$CASE_DIR/hosts/hx-linux/state" -name meta | wc -l | tr -d ' ')" = 1
+  test ! -e "$CASE_DIR/hosts/hx-linux/state/.admission-lock"
+}
+case_admission_owner() {
+  repo admission
+  cat > "$CASE_DIR/award" <<'AWARD'
+#!/usr/bin/env bash
+set -euo pipefail
+DV_ENTRY="$ROOT/bin/dv"
+source "$ROOT/lib/common.sh"
+source "$ROOT/lib/bidding.sh"
+cmd_bid() {
+  printf '%s\n' "$$" > "$CASE_DIR/entered-$DV_TEST_ACTOR"
+  local tries=0
+  until [ -f "$CASE_DIR/release-$DV_TEST_ACTOR" ]; do
+    tries=$((tries+1)); [ "$tries" -lt 200 ] || return 1
+    sleep 0.05
+  done
+  printf '{"status":"rejected"}\n'
+}
+cmd__award
+AWARD
+  jq -cn --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + 30 ))" \
+    '{issue:"OWNER-1",repo:$repo,slug:"owner",agent:"codex",mode:"goal",base:"",brief:"fake",token:"owner",deadline:$deadline}' > "$CASE_DIR/request"
+  BASH_ENV="$ROOT/tests/fixtures/race-env" DV_TEST_RACE=admission DV_TEST_ACTOR=1 bash "$CASE_DIR/award" < "$CASE_DIR/request" > "$CASE_DIR/a1" & a1=$!
+  wait_file "$CASE_DIR/entered-1"
+  BASH_ENV="$ROOT/tests/fixtures/race-env" DV_TEST_RACE=admission DV_TEST_ACTOR=2 bash "$CASE_DIR/award" < "$CASE_DIR/request" > "$CASE_DIR/a2" & a2=$!
+  local rc=0
+  wait_contender || rc=1
+  if [ -f "$CASE_DIR/entered-2" ]; then echo 'non-owner entered admission' >&2; rc=1; fi
+  test ! -f "$CASE_DIR/removers" || rc=1
+  touch "$CASE_DIR/release-1" "$CASE_DIR/release-2"
+  wait "$a1" || rc=1; wait "$a2" || rc=1
+  # Each EXIT trap must remove exactly its own lock, in acquisition order.
+  printf '1 %s\n2 %s\n' "$(cat "$CASE_DIR/entered-1")" "$(cat "$CASE_DIR/entered-2")" > "$CASE_DIR/expected-removers"
+  cmp "$CASE_DIR/expected-removers" "$CASE_DIR/removers"
+  test ! -e "$DV_STATE/.admission-lock"
+  [ "$rc" = 0 ]
 }
 case_submit_scores() {
   bidding_hosts
@@ -1478,10 +1559,12 @@ STUB
   test ! -d "$DV_STATE/.admission-lock"
   # A living owner's lock must not be reclaimed by a competing award.
   mkdir "$DV_STATE/.admission-lock"
-  touch "$DV_STATE/.admission-lock/pid-$$"
+  printf '%s\n' "$$" > "$DV_STATE/.admission-lock/pid-$$"
+  ln "$DV_STATE/.admission-lock/pid-$$" "$DV_STATE/.admission-lock/owner"
   if award_request LOCK-3 | bid_limit 1 bid_rpc "$DV_HOST" _award > "$CASE_DIR/live-owner.json"; then return 1; fi
   test -f "$DV_STATE/.admission-lock/pid-$$"
   rm "$DV_STATE/.admission-lock/pid-$$"
+  rm "$DV_STATE/.admission-lock/owner"
   rmdir "$DV_STATE/.admission-lock"
 }
 bid_without_tmux() {
@@ -1522,7 +1605,7 @@ for name in question_async_ack question_overlap question_claude_overlap question
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
-for name in bid_order_ties bid_order_fallback bid_order_probes claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
+for name in bid_order_ties bid_order_fallback bid_order_probes claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity admission_owner submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
