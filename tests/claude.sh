@@ -139,6 +139,42 @@ case_claude_profile_start() {
   test -f "$DV_STATE/CP-1/trust-before-launch"
   cmp "$HOME/.claude.json" "$CASE_DIR/default-before"
 }
+case_claude_stale_server() {
+  needs_tmux; repo stale-profile
+  # Start the server before the caller selects a profile.
+  tmux -L "$DV_TMUX_SOCKET" new-session -d -s preexisting 'sleep 60'
+  if tmux -L "$DV_TMUX_SOCKET" show-environment -g CLAUDE_CONFIG_DIR; then return 1; fi
+  claude_profile_setup
+  cp "$HOME/.claude.json" "$CASE_DIR/default-before"
+  export DV_CLAUDE_BIN="$ROOT/tests/fixtures/claude"
+  dv start "$REPO" CS-1 trust --agent claude
+  wait_done CS-1
+  local path
+  path=$(jq -r .worktree "$DV_STATE/CS-1/meta")
+  jq -cn --arg path "$path" --slurpfile profile "$CLAUDE_CONFIG_DIR/.claude.json" --slurpfile default "$HOME/.claude.json" \
+    '{selected_profile_trusted:($profile[0].projects[$path].hasTrustDialogAccepted==true),default_profile_trusted:($default[0].projects[$path].hasTrustDialogAccepted==true)}'
+  jq -e --arg path "$path" '.projects[$path].hasTrustDialogAccepted==true' "$CLAUDE_CONFIG_DIR/.claude.json"
+  test -f "$DV_STATE/CS-1/trust-before-launch"
+  cmp "$HOME/.claude.json" "$CASE_DIR/default-before"
+}
+case_claude_stale_server_empty() {
+  needs_tmux; repo stale-profile-empty; claude_profile_setup
+  local stale_profile=$CLAUDE_CONFIG_DIR path
+  cp "$stale_profile/.claude.json" "$CASE_DIR/profile-before"
+  # The server keeps its old selection; an exported empty value must clear it
+  # for this launch and select the default profile in both dv and the agent.
+  tmux -L "$DV_TMUX_SOCKET" new-session -d -s preexisting 'sleep 60'
+  test "$(tmux -L "$DV_TMUX_SOCKET" show-environment -g CLAUDE_CONFIG_DIR)" = "CLAUDE_CONFIG_DIR=$stale_profile"
+  export CLAUDE_CONFIG_DIR='' DV_CLAUDE_BIN="$ROOT/tests/fixtures/claude"
+  dv start "$REPO" CS-2 trust --agent claude
+  wait_done CS-2
+  path=$(jq -r .worktree "$DV_STATE/CS-2/meta")
+  jq -cn --arg path "$path" --slurpfile stale "$stale_profile/.claude.json" --slurpfile default "$HOME/.claude.json" \
+    '{stale_profile_trusted:($stale[0].projects[$path].hasTrustDialogAccepted==true),default_profile_trusted:($default[0].projects[$path].hasTrustDialogAccepted==true)}'
+  jq -e --arg path "$path" '.projects[$path].hasTrustDialogAccepted==true' "$HOME/.claude.json"
+  test -f "$DV_STATE/CS-2/trust-before-launch"
+  cmp "$stale_profile/.claude.json" "$CASE_DIR/profile-before"
+}
 case_claude_profile_host() {
   host_setup; claude_profile_setup
   "$HOST_DV" host check --json > "$CASE_DIR/profile.json"
