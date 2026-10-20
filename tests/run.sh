@@ -1510,7 +1510,7 @@ source "$ROOT/tests/bidding-order.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_waiter reconcile_waiter_remote; do
+for name in pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

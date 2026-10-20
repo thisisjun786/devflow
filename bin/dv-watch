@@ -174,7 +174,9 @@ reconcile() {
         if ! jq -se --arg id "$id" 'any(.[]; .id==$id)' "$DV_HOME/kick.q" >/dev/null 2>&1; then
           "$DV_ROOT/bin/dv-kick" 'done' "$issue" 'Recovered by status safety net' "$host" "$head"
         fi
-      done < <(printf '%s\n' "$rows" | jq -c '.[] | select(.status=="done" or ((.status=="pr" or .status=="ready") and .done_at!=null))')
+      done < <(printf '%s\n' "$rows" | jq -c '.[] | select(.status=="done" or
+        ((.status=="pr" or .status=="ready") and .done_at!=null and
+         .head!=null and .head!="" and .done_head==.head))')
     fi
   done
 }
