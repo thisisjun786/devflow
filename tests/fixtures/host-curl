@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+out=''; url=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o|--output) out=$2; shift 2 ;; https://*) url=$1; shift ;; *) shift ;; esac
+done
+printf '%s\n' "$url" >> "$HOME/downloads"
+[ "${HOST_DOWNLOAD_FAIL:-0}" != 1 ] || exit 22
+stage=$(mktemp -d "$HOME/archive.XXXXXX")
+trap 'rm -rf "$stage"' EXIT
+payload() {
+  sed "s/@VERSION@/$2/" "$HOST_FIXTURES/host-tool" > "$1"
+  chmod +x "$1"
+}
+case "$url" in
+  */go1.27.3.linux-*.tar.gz) dir=go/bin; tool=go; version=1.27.3 ;;
+  */node-v24.20.0-linux-*.tar.gz) dir=node-v24.20.0-linux-x64/bin; tool=node; version=24.20.0 ;;
+  */uv-*-unknown-linux-gnu.tar.gz) dir=uv-x86_64-unknown-linux-gnu; tool=uv; version=0.11.32 ;;
+  */gh_2.46.0_linux_*.tar.gz) dir=gh_2.46.0_linux_amd64/bin; tool=gh; version=2.46.0 ;;
+  */gitleaks_8.30.1_linux_*.tar.gz) dir=.; tool=gitleaks; version=8.30.1 ;;
+  */herdr-linux-*) payload "$out" 0.9.1; exit ;;
+  *) printf 'Unexpected download: %s\n' "$url" >&2; exit 1 ;;
+esac
+mkdir -p "$stage/$dir"
+payload "$stage/$dir/$tool" "${HOST_BAD_VERSION:-$version}"
+if [ "$tool" = node ]; then payload "$stage/$dir/npm" 11.6.2; fi
+tar -czf "$out" -C "$stage" .

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+name=$(basename "$0")
+if [ "${1:-}" = auth ] || [ "${1:-}" = login ]; then
+  printf '%s\n' 'private auth detail must never be reported'
+  [ "$name" != claude ]
+  exit
+fi
+if [ "${1:-}" = exec ]; then
+  printf '%s\n' "$*" >> "$HOME/probes"
+  printf '%s\n' 'private provider detail'
+  exit "${HOST_PROBE_EXIT:-0}"
+fi
+if [ "$name" = npm ] && [ "${1:-}" = install ]; then
+  printf '%s\n' "$*" >> "$HOME/installs"
+  case "${*: -1}" in
+    @anthropic-ai/claude-code@*) tool=claude ;;
+    pnpm@*) tool=pnpm ;;
+    *) exit 1 ;;
+  esac
+  version=$(printf '%s\n' "${*: -1}" | sed 's/.*@//')
+  sed "s/@VER""SION@/$version/" "$HOST_FIXTURES/host-tool" > "$HOME/node/bin/$tool"
+  chmod +x "$HOME/node/bin/$tool"
+  exit
+fi
+version='@VERSION@'
+case "$name" in
+  go) printf 'go version go%s linux/amd64\n' "$version" ;;
+  node) printf 'v%s\n' "$version" ;;
+  *) printf '%s %s\n' "$name" "$version" ;;
+esac
