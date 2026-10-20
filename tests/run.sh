@@ -1470,10 +1470,12 @@ case_bid_readonly_no_tmux() { bid_without_tmux bid_readonly; }
 case_bid_rejections_no_tmux() { bid_without_tmux bid_rejections; }
 # Parse the complete driver before running it. Editing the file while an old
 # runner was reading its tail previously produced a truncated `e` command.
+# shellcheck source=tests/host.sh
+source "$ROOT/tests/host.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
+for name in host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?

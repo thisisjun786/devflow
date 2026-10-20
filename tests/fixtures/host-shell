@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Isolated startup model; real bash/zsh startup is exercised separately.
+export PATH="$HOME/system:/usr/bin:/bin"
+# shellcheck disable=SC1091
+case "$1" in
+  -lc) [ ! -f "$HOME/.profile" ] || source "$HOME/.profile" ;;
+  -c) [ ! -f "$HOME/.zshenv" ] || source "$HOME/.zshenv" ;;
+  *) exit 1 ;;
+esac
+exec /bin/bash -c "$2"
