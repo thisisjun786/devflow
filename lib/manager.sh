@@ -232,7 +232,9 @@ cmd__manager_run() (
   [ "$#" = 2 ] || fail 'usage: dv _manager-run <manager-directory> <queued-job>'
   local dir=$1 job=$2 prompt rc=0 log
   [ "$(dirname "$dir")" = "$DV_HOME/managers" ] || fail 'invalid manager directory'
-  [ "$(dirname "$job")" = "$dir/pending" ] && [ -f "$job" ] || fail 'invalid manager job'
+  if [ "$(dirname "$job")" != "$dir/pending" ] || [ ! -f "$job" ]; then
+    fail 'invalid manager job'
+  fi
   [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$PPID" ] || fail 'manager runner has no parent reservation'
   [ "$(cat "$dir/run.lock/job" 2>/dev/null)" = "$job" ] || fail 'manager runner job was not reserved'
   # Only one child can claim this exact reservation, even if invoked twice.

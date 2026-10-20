@@ -15,6 +15,8 @@ setup() {
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
+  unset CODEX_HOME
+  export DV_TRUSTED_REPOS='' DV_CODEX_ENV_FILE="$HOME/.opencodex/codex-auth-env.sh"
   unset DV_AGENT_QUESTIONS DV_AWARD_TOKEN
   export DV_CODEX_SESSIONS="$CASE_DIR/codex sessions" DV_CLAUDE_SESSIONS="$CASE_DIR/claude projects"
   export DV_POLISH=0 DV_POLISH_TIMEOUT=3 DV_POLISH_CMD="$ROOT/tests/fixtures/polish"
@@ -44,6 +46,7 @@ repo() {
   printf 'base\n' > "$REPO/base"
   git -C "$REPO" add .
   git -C "$REPO" commit -qm initial
+  export DV_TRUSTED_REPOS="$REPO"
   if [ "${2:-}" = remote ]; then
     git init -q --bare "$CASE_DIR/remote.git"
     git -C "$CASE_DIR/remote.git" symbolic-ref HEAD refs/heads/main
@@ -1149,6 +1152,8 @@ case_polish_parallel() {
 
 # shellcheck source=tests/codex-startup.sh
 source "$ROOT/tests/codex-startup.sh"
+# shellcheck source=tests/codex-trust.sh
+source "$ROOT/tests/codex-trust.sh"
 
 bidding_hosts() {
   needs_tmux; repo bidding
@@ -1596,6 +1601,10 @@ main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
 for name in manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in codex_allowlist codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

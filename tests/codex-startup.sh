@@ -93,13 +93,13 @@ case_codex_tmux_startup() {
   needs_tmux; repo tmux-startup
   export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive" DV_START_WAIT=2
   local mode reason
-  for mode in hook idle; do
+  for mode in hook folder idle; do
     printf '%s\n' "$mode" > "$CASE_DIR/codex-startup-mode"
     dv start "$REPO" "HT-$mode" startup
     wait_file "$DV_STATE/HT-$mode/events.log"
     reason='codex goal did not start'
-    if [ "$mode" = hook ]; then
-      reason='codex hook trust required'
+    if [ "$mode" = hook ] || [ "$mode" = folder ]; then
+      reason="codex $mode trust required"
       test ! -f "$DV_STATE/HT-$mode/goal-input"
     else test -f "$DV_STATE/HT-$mode/goal-input"; fi
     jq -se --arg reason "$reason" 'length==1 and .[0].kind=="failed" and .[0].message==$reason' "$DV_STATE/HT-$mode/events.log"
