@@ -11,6 +11,7 @@ setup() {
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
+  export DV_POLISH=0 DV_POLISH_TIMEOUT=3 DV_POLISH_CMD="$ROOT/tests/fixtures/polish"
   export GH_STUB_DIR="$CASE_DIR/gh" PATH="$ROOT/tests/fixtures:$ROOT/bin:$PATH"
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
   mkdir -p "$GH_STUB_DIR" "$DV_STATE" "$DV_WORK" "$DV_HOME"
@@ -603,9 +604,178 @@ case_herdr_clean_safety() {
   test ! -d "$wt"
 }
 
+polish_setup() {
+  repo polish remote
+  git -C "$REPO" worktree add -qb codex/polish "$DV_WORK/polish"
+  mkdir -p "$DV_STATE/POL-1"
+  jq -n --arg repo "$REPO" --arg wt "$DV_WORK/polish" '{repo:$repo,worktree:$wt,branch:"codex/polish",base:"main",slug:"polish",status:"running"}' > "$DV_STATE/POL-1/meta"
+  cat > "$DV_STATE/POL-1/pr-body.md" <<'BODY'
+# Summary
+
+It is worth noting that this fixes 18 cases.
+Run `dv pr DF-18` or ``echo `date` ``; see [docs](https://example.test/path?q=18#result).
+Keep https://example.test/other and <mailto:dev@example.test>.
+
+```bash
+printf '%s\n' "$HOME" # literal, not evaluated
+```
+
+~~~~md
+```nested```
+~~~~
+
+    indented code
+    still code
+
+> - ~~~sh
+>   printf 'quoted code stays'
+>   ~~~
+
+Closes #18
+BODY
+  cp "$DV_STATE/POL-1/pr-body.md" "$CASE_DIR/original"
+  cp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
+  cp "$CASE_DIR/original" "$DV_STATE/POL-1/brief.md"
+  printf '{"url":"https://github.com/test/repo/pull/1"}\n' > "$DV_STATE/POL-1/pr.json"
+  export DV_POLISH=1 POLISH_MODE=success
+}
+case_polish_success() {
+  polish_setup
+  dv polish POL-1
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.orig.md"
+  sed 's/It is worth noting that this fixes/This fixes/' "$CASE_DIR/original" > "$CASE_DIR/expected"
+  cmp "$CASE_DIR/expected" "$GH_STUB_DIR/edited-body"
+  cmp "$CASE_DIR/expected" "$DV_STATE/POL-1/pr-body.md"
+  grep -Fx 'api repos/test/repo/pulls/1' "$GH_STUB_DIR/calls"
+  grep -F 'api --method PATCH repos/test/repo/pulls/1 -F body=@' "$GH_STUB_DIR/calls"
+  cmp "$CASE_DIR/expected" "$GH_STUB_DIR/live-body"
+  grep -F '사실·숫자·경로·명령·코드 블록·링크·제목 구조' "$CASE_DIR/polish-prompt"
+  dv polish POL-1
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.orig.md"
+}
+polish_rejected() {
+  polish_setup
+  export POLISH_MODE=$1
+  dv polish POL-1
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.orig.md"
+  test ! -f "$GH_STUB_DIR/edited-body"
+  grep -i "$2" "$DV_STATE/POL-1/polish.log"
+}
+case_polish_code_missing() { polish_rejected code validation; }
+case_polish_tilde_missing() { polish_rejected tilde validation; }
+case_polish_indented_missing() { polish_rejected indented validation; }
+case_polish_quoted_code() { polish_rejected quoted validation; }
+case_polish_inline_missing() { polish_rejected inline validation; }
+case_polish_url_missing() { polish_rejected url validation; }
+case_polish_empty() { polish_rejected empty empty; }
+case_polish_failure() { polish_rejected failure 'command failed'; }
+case_polish_timeout() {
+  export DV_POLISH_TIMEOUT=1
+  polish_rejected timeout timeout
+  test ! -d "$DV_STATE/POL-1/.polish"
+  if kill -0 "$(cat "$CASE_DIR/polish-child.pid")" 2>/dev/null; then
+    test "$(ps -o stat= -p "$(cat "$CASE_DIR/polish-child.pid")" | cut -c 1)" = Z
+  fi
+}
+case_polish_disabled() {
+  polish_setup
+  DV_POLISH=0 dv polish POL-1
+  test ! -f "$CASE_DIR/polish-prompt"
+  test ! -f "$GH_STUB_DIR/edited-body"
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
+}
+case_polish_edit_failure() {
+  polish_setup
+  touch "$GH_STUB_DIR/edit-fail"
+  dv polish POL-1
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
+  cmp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
+  grep -F 'gh api PATCH failed' "$DV_STATE/POL-1/polish.log"
+}
+case_polish_remote_edit() {
+  polish_setup
+  export POLISH_MODE=remote-edit
+  dv polish POL-1
+  cmp "$CASE_DIR/human-body" "$GH_STUB_DIR/live-body"
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.orig.md"
+  test ! -f "$GH_STUB_DIR/edited-body"
+  if grep -F 'api --method PATCH ' "$GH_STUB_DIR/calls"; then return 1; fi
+  grep -F 'live PR body changed; edit skipped' "$DV_STATE/POL-1/polish.log"
+}
+case_polish_read_failure() {
+  polish_setup
+  touch "$GH_STUB_DIR/read-fail"
+  dv polish POL-1
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
+  cmp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
+  test ! -f "$GH_STUB_DIR/edited-body"
+  if grep -F 'api --method PATCH ' "$GH_STUB_DIR/calls"; then return 1; fi
+  grep -F 'gh api read failed; edit skipped' "$DV_STATE/POL-1/polish.log"
+}
+case_polish_pr_url() {
+  polish_setup
+  printf '{"url":"https://github.com/another-owner/another.repo/pull/37"}\n' > "$DV_STATE/POL-1/pr.json"
+  export GH_STUB_PR_ENDPOINT=repos/another-owner/another.repo/pulls/37
+  dv polish POL-1
+  test -f "$GH_STUB_DIR/edited-body"
+  grep -Fx 'api repos/another-owner/another.repo/pulls/37' "$GH_STUB_DIR/calls"
+  grep -F 'api --method PATCH repos/another-owner/another.repo/pulls/37 -F body=@' "$GH_STUB_DIR/calls"
+}
+case_polish_default() {
+  polish_setup
+  # An isolated PATH makes both routing tests independent of real installed agy/ssh.
+  local client="$CASE_DIR/client" remote="$CASE_DIR/remote-bin" utility
+  mkdir "$client" "$remote"
+  for utility in bash dirname readlink jq mkdir rm cat cp awk grep cmp mv date sleep sed touch env; do
+    ln -s "$(command -v "$utility")" "$client/$utility"
+  done
+  ln -s "$ROOT/tests/fixtures/gh" "$client/gh"
+  ln -s "$ROOT/tests/fixtures/ssh" "$client/ssh"
+  cat > "$remote/agy" <<'AGY'
+#!/usr/bin/env bash
+set -eu
+test "$#" = 4 && test "$1" = --model && test "$2" = gemini-4-argon-high && test "$3" = -p
+exec "$ROOT/tests/fixtures/polish" "$4"
+AGY
+  chmod +x "$remote/agy"
+  ln -s "$remote/agy" "$client/agy"
+  PATH="$client" DV_POLISH_CMD='' "$ROOT/bin/dv" polish POL-1
+  test -f "$GH_STUB_DIR/edited-body"
+  test ! -f "$CASE_DIR/polish-ssh"
+  cp "$CASE_DIR/polish-prompt" "$CASE_DIR/local-prompt"
+  cp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
+  cp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
+  rm "$client/agy" "$GH_STUB_DIR/edited-body"
+  PATH="$client" DV_POLISH_CMD='' SSH_POLISH_PATH="$remote:$client" "$ROOT/bin/dv" polish POL-1
+  test -f "$GH_STUB_DIR/edited-body"
+  test -f "$CASE_DIR/polish-ssh"
+  cmp "$CASE_DIR/local-prompt" "$CASE_DIR/polish-prompt"
+}
+case_polish_parallel() {
+  polish_setup
+  rm "$DV_STATE/POL-1/pr.json"
+  export POLISH_MODE=hold DV_POLISH_TIMEOUT=30
+  dv pr POL-1
+  wait_file "$CASE_DIR/polish-started"
+  wait_pr_ready POL-1
+  # CI/review completion and merge do not wait for the held polish command.
+  test ! -f "$GH_STUB_DIR/edited-body"
+  dv land POL-1
+  test -f "$GH_STUB_DIR/merged"
+  touch "$CASE_DIR/polish-release"
+  wait_file "$GH_STUB_DIR/edited-body"
+  for _ in {1..100}; do
+    [ -d "$DV_STATE/POL-1/.polish" ] || break
+    sleep 0.1
+  done
+  test ! -d "$DV_STATE/POL-1/.polish"
+}
+
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety; do
+for name in polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

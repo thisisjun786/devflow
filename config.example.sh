@@ -32,6 +32,9 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_REVIEW_WAIT:=300}" # maximum seconds after checks for bot reviews
 : "${DV_REVIEW_BOTS:=devin,codex}" # comma-separated required author regexes (all must review this head)
 : "${DV_POLL_INTERVAL:=10}" # PR review interval
+: "${DV_POLISH:=1}" # 0 disables optional PR prose polishing
+: "${DV_POLISH_CMD:=}" # shell command; receives the prompt as its last argument
+: "${DV_POLISH_TIMEOUT:=180}" # seconds; default command uses local agy or ssh lina-os
 : "${DV_WORKER_CMD:=}" # shell command; receives prompt file path; default Hermes below
 : "${DV_HERMES_BIN:=hermes}"
 : "${DV_WATCH_INTERVAL:=3}" # local queue read interval, seconds
