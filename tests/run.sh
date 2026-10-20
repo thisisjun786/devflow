@@ -976,8 +976,209 @@ case_polish_parallel() {
 
 # shellcheck source=tests/codex-startup.sh
 source "$ROOT/tests/codex-startup.sh"
+
+bidding_hosts() {
+  needs_tmux; repo bidding
+  export SSH_BIDDING=1 DV_MANAGER_HOST=test-host DV_HOSTS='lina-os go2-linux hx-linux'
+  export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1 DV_RECONCILE_INTERVAL=99999
+  export DV_BID_TIMEOUT=2 DV_AWARD_TIMEOUT=3
+  local host
+  for host in hx-linux go2-linux lina-os; do
+    mkdir -p "$CASE_DIR/hosts/$host"
+    cat > "$CASE_DIR/hosts/$host/config" <<EOF
+DV_HOST=$host
+DV_STATE='$CASE_DIR/hosts/$host/state'
+DV_WORK='$CASE_DIR/hosts/$host/work'
+DV_MAX_JOBS=1
+DV_AGENT_CMD_codex='while :; do sleep 1; done'
+EOF
+  done
+}
+wait_task() {
+  for _ in {1..200}; do
+    if [ -f "$DV_HOME/submissions/$1/task.json" ] && jq -e --arg s "$2" '.status==$s' "$DV_HOME/submissions/$1/task.json" >/dev/null; then return; fi
+    sleep 0.1
+  done
+  cat "$DV_HOME/submissions/$1/task.json" >&2
+  return 1
+}
+case_bid_readonly() {
+  repo bid
+  export DV_MAX_JOBS=2
+  before=$(find "$CASE_DIR" -type f | sort)
+  dv bid --json --repo "$REPO" --agent codex > "$CASE_DIR/bid.json"
+  jq -e '.status=="submitted" and .capacity==2 and .free_slots==2 and .repo_cloned and .agent_ready and .cores>=1 and .load5>=0 and .memory_available_mb>=0 and (.score|type)=="number"' "$CASE_DIR/bid.json"
+  rm "$CASE_DIR/bid.json"
+  test "$before" = "$(find "$CASE_DIR" -type f | sort)"
+  mkdir -p "$DV_STATE/B-1" "$DV_STATE/B-2"
+  for n in 1 2; do printf '{"status":"running"}\n' > "$DV_STATE/B-$n/meta"; done
+  dv bid --json --repo "$REPO" --agent codex | jq -e '.status=="rejected" and .free_slots==0'
+  printf '0\n' > "$DV_STATE/B-1/agent.exit"
+  dv bid --json --repo "$REPO" --agent codex | jq -e '.free_slots==1'
+  DV_AGENT_CMD_codex='' DV_CODEX_BIN=false dv bid --json --repo "$REPO" --agent codex | jq -e '.status=="rejected" and (.agent_ready|not)'
+  dv bid --json --repo "$CASE_DIR/missing" --agent codex | jq -e '.status=="rejected" and (.repo_cloned|not)'
+  DV_MAX_JOBS='' dv bid --json --repo "$REPO" --agent codex | jq -e '.capacity==([1,(.cores/8|floor)]|max)'
+}
+case_submit_spread() {
+  bidding_hosts
+  # Scores on these real local fake hosts differ slightly; manager is always last.
+  dv submit "$REPO" BID-1 one --brief "$CASE_DIR/brief"
+  dv submit "$REPO" BID-2 two --brief "$CASE_DIR/brief"
+  dv submit "$REPO" BID-3 three --brief "$CASE_DIR/brief"
+  dv submit "$REPO" BID-4 four --brief "$CASE_DIR/brief"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_task BID-1 working; wait_task BID-2 working; wait_task BID-3 working
+  test "$(jq -r .host "$DV_HOME/submissions/BID-3/task.json")" = lina-os
+  jq -s -e '[.[].host]|unique|length==3' "$DV_HOME"/submissions/BID-{1,2,3}/task.json
+  wait_file "$DV_HOME/submissions/BID-4/bids.json"
+  wait_task BID-4 submitted
+  # Repeated local ticks never rebid an all-full queue.
+  sleep 0.5; cp "$CASE_DIR/ssh.calls" "$CASE_DIR/calls.before"
+  sleep 0.5; cmp "$CASE_DIR/calls.before" "$CASE_DIR/ssh.calls"
+  host=$(jq -r .host "$DV_HOME/submissions/BID-1/task.json")
+  DV_CONFIG="$CASE_DIR/hosts/$host/config" dv 'done' BID-1
+  wait_task BID-1 completed; wait_task BID-4 working
+  test "$(jq -r .host "$DV_HOME/submissions/BID-4/task.json")" = "$host"
+  touch "$DV_HOME/stop"; wait "$watcher"
+  dv queue --json | jq -e 'length==4'
+  if dv submit "$REPO" BID-1 one --brief "$CASE_DIR/brief"; then return 1; fi
+}
+case_submit_failover() {
+  bidding_hosts
+  touch "$CASE_DIR/hosts/hx-linux/offline"
+  # A launch error (missing base) must not prevent trying another bidder.
+  cat >> "$CASE_DIR/hosts/go2-linux/config" <<EOF
+DV_AGENT_CMD_codex=false
+EOF
+  dv submit "$REPO" FAIL-1 change --brief "$CASE_DIR/brief" --mode exec
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_task FAIL-1 working
+  test "$(jq -r .host "$DV_HOME/submissions/FAIL-1/task.json")" = lina-os
+  touch "$DV_HOME/stop"; wait "$watcher"
+}
+case_submit_cancel() {
+  export DV_MANAGER_HOST="$DV_HOST" DV_HOSTS=''
+  repo cancel
+  dv submit "$REPO" CAN-1 change --brief "$CASE_DIR/brief"
+  dv cancel CAN-1
+  dv queue CAN-1 --json | jq -e '.[0].status=="canceled"'
+  if dv submit "$REPO" BAD-1 change --brief "$CASE_DIR/missing"; then return 1; fi
+  test ! -e "$DV_HOME/submissions/BAD-1"
+}
+case_submit_order() {
+  bidding_hosts
+  for host in hx-linux go2-linux lina-os; do
+    printf '{"status":"submitted","score":100}\n' > "$CASE_DIR/hosts/$host/bid.json"
+  done
+  dv submit "$REPO" ORDER-1 change --brief "$CASE_DIR/brief"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_task ORDER-1 working
+  test "$(jq -r .host "$DV_HOME/submissions/ORDER-1/task.json")" = hx-linux
+  test "$(sed -n '/dv bid /s/ .*//p' "$CASE_DIR/ssh.calls" | tail -1)" = lina-os
+  touch "$DV_HOME/stop"; wait "$watcher"
+}
+case_submit_timeout() {
+  bidding_hosts
+  touch "$CASE_DIR/hosts/hx-linux/hang-bid" "$CASE_DIR/hosts/go2-linux/drop-award"
+  dv submit "$REPO" TIME-1 change --brief "$CASE_DIR/brief"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_task TIME-1 working
+  test "$(jq -r .host "$DV_HOME/submissions/TIME-1/task.json")" = go2-linux
+  test ! -e "$CASE_DIR/hosts/lina-os/state/TIME-1"
+  test "$(grep -c 'go2-linux dv _award' "$CASE_DIR/ssh.calls")" = 1
+  touch "$DV_HOME/stop"; wait "$watcher"
+}
+case_submit_forward() {
+  bidding_hosts
+  # Simulate submit from a developer host; the manager receives brief bytes via stdin.
+  cp "$CASE_DIR/hosts/lina-os/config" "$CASE_DIR/hosts/lina-os/config.before"
+  printf '\nDV_MANAGER_HOST=lina-os\n' >> "$CASE_DIR/hosts/lina-os/config"
+  DV_MANAGER_HOST=lina-os dv submit "$REPO" FOR-1 change --brief "$CASE_DIR/brief"
+  jq -e '.issue=="FOR-1" and .brief=="# Test brief\nImplement one file.\n" and .status=="submitted"' "$DV_HOME/submissions/FOR-1/task.json"
+}
+case_award_capacity() {
+  bidding_hosts
+  request() {
+    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + 10 ))" \
+      '{issue:$issue,repo:$repo,slug:"capacity",agent:"codex",mode:"goal",base:"",brief:"held fake agent",token:$issue,deadline:$deadline}'
+  }
+  request CAPA-1 | DV_CONFIG="$CASE_DIR/hosts/hx-linux/config" dv _award > "$CASE_DIR/a1" & a1=$!
+  request CAPA-2 | DV_CONFIG="$CASE_DIR/hosts/hx-linux/config" dv _award > "$CASE_DIR/a2" & a2=$!
+  wait "$a1"; wait "$a2"
+  jq -se '[.[].status]|sort==["rejected","working"]' "$CASE_DIR/a1" "$CASE_DIR/a2"
+  test "$(find "$CASE_DIR/hosts/hx-linux/state" -name meta | wc -l | tr -d ' ')" = 1
+}
+case_submit_scores() {
+  bidding_hosts
+  printf '{"status":"submitted","score":100}\n' > "$CASE_DIR/hosts/hx-linux/bid.json"
+  printf '{"status":"submitted","score":200}\n' > "$CASE_DIR/hosts/go2-linux/bid.json"
+  printf '{"status":"submitted","score":999}\n' > "$CASE_DIR/hosts/lina-os/bid.json"
+  dv submit "$REPO" SCORE-1 change --brief "$CASE_DIR/brief"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_task SCORE-1 working
+  test "$(jq -r .host "$DV_HOME/submissions/SCORE-1/task.json")" = go2-linux
+  dv-kick question SCORE-1 'in-scope choice' go2-linux h
+  wait_task SCORE-1 input-required
+  # Old-host completion cannot finish the current assignment.
+  dv-kick 'done' SCORE-1 stale hx-linux h
+  sleep 0.2
+  wait_task SCORE-1 input-required
+  dv-kick landed SCORE-1 complete go2-linux h
+  wait_task SCORE-1 completed
+  touch "$DV_HOME/stop"; wait "$watcher"
+}
+case_bid_clone() {
+  needs_tmux; repo remote remote
+  export DV_REPO_ROOT="$CASE_DIR/clones" DV_MAX_JOBS=1
+  # The origin is rewritten to a disposable bare repo; no network or real PR.
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$CASE_DIR/remote.git.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/test/repo.git
+  dv bid --json --repo https://github.com/test/repo.git --agent codex | jq -e '.status=="submitted" and (.repo_cloned|not)'
+  test ! -e "$DV_REPO_ROOT"
+  jq -cn --argjson deadline "$(( $(date +%s) + 10 ))" \
+    '{issue:"CLONE-1",repo:"https://github.com/test/repo.git",slug:"clone",agent:"codex",mode:"goal",base:"",brief:"held fake agent",token:"clone",deadline:$deadline}' |
+    DV_AGENT_CMD_codex='exec sleep 30' dv _award | jq -e '.status=="working"'
+  test -d "$DV_REPO_ROOT/repo/.git"
+  dv bid --json --repo https://github.com/test/repo.git --agent codex | jq -e '.repo_cloned and .status=="rejected" and .reason=="full"'
+  dv bid --json --repo https://github.com/other/repo.git --agent codex | jq -e '(.repo_cloned|not) and .status=="rejected"'
+}
+case_bid_rejections() {
+  repo rejections
+  DV_MIN_MEMORY_MB=999999999 dv bid --json --repo "$REPO" | jq -e '.status=="rejected" and .reason=="low memory"'
+  DV_CLAUDE_BIN=false dv bid --json --repo "$REPO" --agent claude | jq -e '.status=="rejected" and (.agent_ready|not)'
+  DV_DEVIN_BIN=false dv bid --json --repo "$REPO" --agent devin | jq -e '.status=="rejected" and (.agent_ready|not)'
+  if DV_MAX_JOBS=0 dv bid --json; then return 1; fi
+  if DV_BID_TIMEOUT=garbage dv bid --json; then return 1; fi
+  mkdir -p "$DV_STATE/UNCERTAIN"
+  printf '{"status":"input-required"}\n' > "$DV_STATE/UNCERTAIN/meta"
+  DV_MAX_JOBS=1 dv bid --json --repo "$REPO" | jq -e '.status=="rejected" and .active==1'
+}
+case_bid_rpc_timeout() {
+  # A nested RPC shell inherits command-substitution stdout. Killing only its
+  # outer wrapper leaves that pipe open until the descendant exits naturally.
+  # shellcheck source=lib/bidding.sh
+  source "$ROOT/lib/bidding.sh"
+  # Passed by name to bid_limit below.
+  # shellcheck disable=SC2329
+  slow_rpc() ( sleep 5; printf 'late reply\n'; )
+  local before=$SECONDS reply rc=0
+  reply=$(bid_limit 1 slow_rpc) || rc=$?
+  test "$rc" != 0
+  test -z "$reply"
+  test "$((SECONDS-before))" -lt 4
+}
+# Parse the complete driver before running it. Editing the file while an old
+# runner was reading its tail previously produced a truncated `e` command.
+main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in bid_readonly submit_spread submit_failover submit_cancel submit_order submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
+  fi
+done
 for name in herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
@@ -989,3 +1190,5 @@ for name in herdr_cleanup_owner question_pull_replay question_startup question_s
 done
 printf 'pass=%s skip=%s fail=%s\n' "$pass" "$skip" "$fail"
 [ "$fail" -eq 0 ]
+}
+main "$@"

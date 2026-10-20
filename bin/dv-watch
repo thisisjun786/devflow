@@ -8,6 +8,8 @@ while [ -L "$DV_ENTRY" ]; do
 done
 # shellcheck source=lib/common.sh
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+# shellcheck source=lib/bidding.sh
+source "$DV_ROOT/lib/bidding.sh"
 need jq
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 mkdir -p "$DV_HOME/workers"
@@ -108,6 +110,13 @@ while [ ! -e "$DV_HOME/stop" ]; do
     if ! id=$(printf '%s\n' "$line" | jq -er '.id | select(type=="string")'); then
       printf 'invalid queue line %s\n' "$((cursor + 1))" >> "$DV_HOME/watch.log"
     elif ! grep -Fxq -- "$id" "$DV_HOME/seen"; then
+      # Deterministic scheduling is driven by this existing queue, never a bid poll.
+      if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then break; fi
+      if [ "$(printf '%s\n' "$line" | jq -r .kind)" = submitted ]; then
+        printf '%s\n' "$id" >> "$DV_HOME/seen"
+        cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
+        continue
+      fi
       prompt="$DV_HOME/workers/$(now)-$$-$cursor.prompt.md"
       cat "$DV_ROOT/templates/worker-prompt.md" > "$prompt"
       # Literal Markdown fences.

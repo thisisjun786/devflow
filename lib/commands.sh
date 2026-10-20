@@ -89,6 +89,7 @@ run_agent() {
     trap 'exit 143' TERM
   fi
   if [ -n "$override" ]; then
+    [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
     bash -c "$override" || rc=$?
   else
     local args=()
@@ -101,15 +102,20 @@ run_agent() {
         args+=(-c "projects.$(jq -Rn --arg path "$REPO" '$path').trust_level=\"trusted\"")
         if [ "$BACKEND" = tmux ] && [ "$DV_CODEX_DISABLE_HOOKS" = 1 ]; then args+=(--disable hooks); fi
         [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
-        if [ "$mode" = exec ]; then "${args[@]}" exec "$instruction" || rc=$?
+        if [ "$mode" = exec ]; then
+          [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
+          "${args[@]}" exec "$instruction" || rc=$?
         else
           inject_goal "$instruction" & helper=$!
           "${args[@]}" || rc=$?
           stop_question_sentinel
           wait "$helper" || true
         fi ;;
-      claude) "$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions --disallowedTools AskUserQuestion -- "$instruction" || rc=$? ;;
+      claude)
+        [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
+        "$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions --disallowedTools AskUserQuestion -- "$instruction" || rc=$? ;;
       devin)
+        [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
         accept_devin_trust & helper=$!
         "$DV_DEVIN_BIN" --model "$DV_DEVIN_MODEL" --permission-mode dangerous -- "$instruction" || rc=$?
         stop_question_sentinel
@@ -174,9 +180,14 @@ wait_codex_goal() {
           retried=1
           session_enter || true
         fi
-      elif printf '%s\n' "$screen" | grep -Eq '(^|[•*][[:space:]]+)Pursuing goal([[:space:]]|$)'; then return 0
+      elif printf '%s\n' "$screen" | grep -Eq '(^|[•*][[:space:]]+)Pursuing goal([[:space:]]|$)'; then
+        [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
+        return 0
       elif [ "$BACKEND" = herdr ] && agent=$(herdr_cmd agent get "$HERDR_PANE" 2>/dev/null) &&
-        printf '%s\n' "$agent" | jq -e '.result.agent | .agent=="codex" and .agent_status=="working"' >/dev/null 2>&1; then return 0; fi
+        printf '%s\n' "$agent" | jq -e '.result.agent | .agent=="codex" and .agent_status=="working"' >/dev/null 2>&1; then
+        [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
+        return 0
+      fi
     fi
     sleep 0.2
   done
