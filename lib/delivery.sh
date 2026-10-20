@@ -49,46 +49,125 @@ cmd_pr() {
     trap 'rmdir "$S/.operation" 2>/dev/null || true' EXIT
   fi
   meta_set --arg head "$head" --arg pr "$pr" '.status="pr" | .head=$head | .pr=$pr'
-  nohup "$DV_ROOT/bin/dv" pr-wait "$ISSUE" > "$S/pr-wait.log" 2>&1 < /dev/null &
-  printf '%s\n' "$!" > "$S/pr-wait.pid"
+  pr_wait_start
   printf '%s\n' "$pr"
+}
+pr_wait_alive() {
+  local marker holder found=false
+  for marker in "$S/.pr-wait"/pid-*; do
+    [ -f "$marker" ] || continue
+    found=true; holder=${marker##*/pid-}
+    [[ "$holder" =~ ^[1-9][0-9]*$ ]] || continue
+    if kill -0 "$holder" 2>/dev/null; then return 0; fi
+  done
+  # Older versions only recorded the background PID outside the empty lock.
+  if [ "$found" = false ] && [ -d "$S/.pr-wait" ] && [ -f "$S/pr-wait.pid" ]; then
+    holder=$(cat "$S/pr-wait.pid")
+    if [[ "$holder" =~ ^[1-9][0-9]*$ ]] && kill -0 "$holder" 2>/dev/null; then return 0; fi
+  fi
+  return 1
+}
+pr_wait_lock() {
+  local marker holder candidate nested tries=0
+  while [ "$tries" -lt 10 ]; do
+    pr_wait_alive && return 1
+    for marker in "$S/.pr-wait"/pid-* "$S/.pr-wait"/.pr-wait.*/pid-*; do
+      [ -f "$marker" ] || continue
+      holder=${marker##*/pid-}
+      [[ "$holder" =~ ^[1-9][0-9]*$ ]] || continue
+      if ! kill -0 "$holder" 2>/dev/null && rm "$marker" 2>/dev/null; then
+        rmdir "$(dirname "$marker")" 2>/dev/null || true
+      fi
+    done
+    rmdir "$S/.pr-wait" 2>/dev/null || true
+    # Publish a nonempty directory atomically, so an acquiring lock can never
+    # be mistaken for an old ownerless directory. A competing mv nests its
+    # candidate inside the winner's directory; it removes only that candidate.
+    candidate=$(mktemp -d "$S/.pr-wait.XXXXXX")
+    : > "$candidate/pid-$$"
+    if mv "$candidate" "$S/.pr-wait" 2>/dev/null && [ -f "$S/.pr-wait/pid-$$" ]; then
+      printf '%s\n' "$$" > "$S/pr-wait.pid"
+      return 0
+    fi
+    nested="$S/.pr-wait/${candidate##*/}"
+    rm -f "$candidate/pid-$$" "$nested/pid-$$"
+    rmdir "$candidate" "$nested" 2>/dev/null || true
+    tries=$((tries + 1))
+  done
+  return 1
+}
+pr_wait_unlock() {
+  if rm "$S/.pr-wait/pid-$$" 2>/dev/null; then
+    rmdir "$S/.pr-wait" 2>/dev/null || true
+  fi
+}
+pr_wait_start() {
+  pr_wait_alive && return 0
+  if command -v setsid >/dev/null; then
+    nohup setsid "$DV_ROOT/bin/dv" pr-wait "$ISSUE" >> "$S/pr-wait.log" 2>&1 < /dev/null &
+  else
+    # macOS has no setsid by default. Job control gives the waiter its own
+    # process group, and nohup protects it when the launching shell exits.
+    (set -m; nohup "$DV_ROOT/bin/dv" pr-wait "$ISSUE" >> "$S/pr-wait.log" 2>&1 < /dev/null &)
+  fi
+}
+cmd_pr_wait_start() {
+  [ "$#" -eq 1 ] || fail 'usage: dv _pr-wait-start ISSUE'
+  load_issue "$1"; require_worktree
+  [ "$(jq -r .status "$S/meta")" = pr ] || return 0
+  pr_wait_start
 }
 checks_green() {
   jq -e '.statusCheckRollup | length>0 and all(.[ ];
     if .__typename=="CheckRun" then .status=="COMPLETED" and .conclusion=="SUCCESS"
     elif .__typename=="StatusContext" then .state=="SUCCESS" else false end)' "$1" >/dev/null
 }
+checks_finished() {
+  jq -e '.statusCheckRollup | length>0 and all(.[];
+    if .__typename=="CheckRun" then .status=="COMPLETED"
+    elif .__typename=="StatusContext" then (.state=="SUCCESS" or .state=="FAILURE" or .state=="ERROR")
+    else false end)' "$1" >/dev/null
+}
 cmd_pr_wait() {
   [ "$#" -eq 1 ] || fail 'usage: dv pr-wait ISSUE'
   load_issue "$1"; require_worktree; cd "$WT" || exit
-  local pr head rc=0 deadline reviewed=false snapshot tmp
-  pr=$(jq -er .url "$S/pr.json"); head=$(git rev-parse HEAD)
+  local pr head rc=0 deadline='' reviewed=false snapshot tmp current green
+  pr=$(jq -er .url "$S/pr.json"); head=$(jq -r '.head // empty' "$S/meta")
+  [ -n "$head" ] || head=$(git rev-parse HEAD)
   # Only one waiter per issue; a later push starts another after this waiter exits.
-  mkdir "$S/.pr-wait" 2>/dev/null || return 0
-  trap 'rmdir "$S/.pr-wait" 2>/dev/null || true' EXIT
+  pr_wait_lock || return 0
+  trap pr_wait_unlock EXIT
+  trap 'exit 0' INT TERM
   while :; do
+    rc=0
     gh pr checks "$pr" --watch > "$S/checks.log" 2>&1 || rc=$?
-    deadline=$(( $(now) + DV_REVIEW_WAIT )); reviewed=false
-    while :; do
-      snapshot=$(gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state)
-      tmp=$(mktemp "$S/.pr-snapshot.XXXXXX"); printf '%s\n' "$snapshot" > "$tmp"; mv "$tmp" "$S/pr-snapshot.json"
-      if printf '%s\n' "$snapshot" | jq -e --arg bots "$DV_REVIEW_BOTS" --arg head "$head" \
-        '.reviews as $reviews | ($bots|split(",")) | all(.[]; . as $pattern | any($reviews[]?; (.author.login|test($pattern;"i")) and .commit.oid==$head))' >/dev/null; then reviewed=true; break; fi
-      [ "$(now)" -lt "$deadline" ] || break
-      sleep "$DV_POLL_INTERVAL"
-    done
+    snapshot=$(gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state)
+    tmp=$(mktemp "$S/.pr-snapshot.XXXXXX"); printf '%s\n' "$snapshot" > "$tmp"; mv "$tmp" "$S/pr-snapshot.json"
+    [ "$(jq -r .state "$S/pr-snapshot.json")" = OPEN ] || return 0
     # A correction can push while the first wait is active. Follow the new head.
-    if [ "$(jq -r .head "$S/meta")" != "$head" ]; then
-      head=$(jq -r .head "$S/meta"); rc=0; continue
+    current=$(jq -r '.head // empty' "$S/meta")
+    if [ -n "$current" ] && [ "$current" != "$head" ]; then
+      head=$current; deadline=''; reviewed=false
     fi
-    local green=false
-    checks_green "$S/pr-snapshot.json" && green=true
-    jq -n --arg head "$head" --argjson checks_exit "$rc" --argjson green "$green" --argjson reviewed "$reviewed" \
-      '{head:$head,checks_exit:$checks_exit,green:$green,bot_review:$reviewed,review_timed_out:($reviewed|not)}' > "$S/pr-ready.json"
-    meta_set --arg head "$head" 'if .head==$head and .status=="pr" then .status="ready" else . end'
-    cmd_kick pr-ready "$ISSUE" "checks=$green bot-review=$reviewed"
-    break
+    if [ "$(jq -r .headRefOid "$S/pr-snapshot.json")" = "$head" ] && checks_finished "$S/pr-snapshot.json"; then
+      [ -n "$deadline" ] || deadline=$(( $(now) + DV_REVIEW_WAIT ))
+      reviewed=false
+      if printf '%s\n' "$snapshot" | jq -e --arg bots "$DV_REVIEW_BOTS" --arg head "$head" \
+        '.reviews as $reviews | ($bots|split(",")) | all(.[]; . as $pattern | any($reviews[]?; (.author.login|test($pattern;"i")) and .commit.oid==$head))' >/dev/null; then reviewed=true; fi
+      if [ "$reviewed" = true ] || [ "$(now)" -ge "$deadline" ]; then break; fi
+    else
+      # gh checks --watch returns immediately before CI is registered. Empty
+      # or pending rollups must be polled again, even after the review timeout.
+      deadline=''; reviewed=false
+    fi
+    sleep "$DV_POLL_INTERVAL"
   done
+  green=false
+  checks_green "$S/pr-snapshot.json" && green=true
+  jq -n --arg head "$head" --argjson checks_exit "$rc" --argjson green "$green" --argjson reviewed "$reviewed" \
+    '{head:$head,checks_exit:$checks_exit,green:$green,bot_review:$reviewed,review_timed_out:($reviewed|not)}' > "$S/pr-ready.json"
+  meta_set --arg head "$head" 'if .head==$head and .status=="pr" then .status="ready" else . end'
+  cmd_kick pr-ready "$ISSUE" "checks=$green bot-review=$reviewed"
 }
 cmd_review() {
   [ "$#" -eq 1 ] || fail 'usage: dv review ISSUE'

@@ -328,7 +328,7 @@ cmd_kick() {
   return 0
 }
 cmd_status() {
-  local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record
+  local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   {
@@ -362,7 +362,10 @@ cmd_status() {
         alive=true; tmux_alive=true
       fi
       elapsed=$(( $(now) - $(jq -r .started "$path") ))
-      row=$(jq -c --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" '.+{backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending}' "$path")
+      # done_at can describe an earlier PR revision. Read the completion head
+      # without changing metadata or the bidding code's historical done_at.
+      done_head=$(jq -r '.head | select(type=="string")' "$(dirname "$path")/done.json" 2>/dev/null) || done_head=''
+      row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending}' "$path")
       if [ "$json" = 1 ]; then printf '%s\n' "$row"
       else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
     done

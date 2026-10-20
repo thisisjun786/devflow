@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 touch "${1%.prompt.md}.started"
+if [ "${DV_WORKER_FAIL_ONCE:-0}" = 1 ] && mkdir "$DV_HOME/failed-once" 2>/dev/null; then exit 9; fi
 if [ "${DV_WORKER_GATE:-0}" = 1 ]; then
   while [ ! -f "$DV_HOME/release" ]; do sleep 0.1; done
 fi
