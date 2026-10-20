@@ -84,16 +84,44 @@ cmd_review() {
   printf '%s\n' "$rc" > "$S/review-$count.exit"
   return "$rc"
 }
+github_land_method() (
+  # Isolate repository configuration from the caller's head/base and cleanup.
+  local override=${DV_LAND_METHOD:-} method settings
+  cd "$WT" || exit
+  if [ -f .devflow ]; then
+    # Repository-owned shell configuration is trusted, as with local land.
+    # shellcheck source=/dev/null
+    source ./.devflow || fail 'could not load repository land configuration'
+  fi
+  method=${override:-${DV_LAND_METHOD:-}}
+  settings=$(gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed) || fail 'could not read repository merge methods'
+  case "$method" in
+    '')
+      method=$(printf '%s\n' "$settings" | jq -r '
+        if .squashMergeAllowed==true then "squash"
+        elif .mergeCommitAllowed==true then "merge"
+        elif .rebaseMergeAllowed==true then "rebase" else empty end') || fail 'invalid repository merge methods'
+      [ -n "$method" ] || fail 'repository allows no PR merge method' ;;
+    squash|merge|rebase) ;;
+    *) fail 'DV_LAND_METHOD must be squash, merge or rebase' ;;
+  esac
+  printf '%s\n' "$settings" | jq -e --arg method "$method" '
+    if $method=="merge" then .mergeCommitAllowed==true
+    elif $method=="squash" then .squashMergeAllowed==true
+    else .rebaseMergeAllowed==true end' >/dev/null || fail "repository does not allow $method"
+  printf '%s\n' "$method"
+)
 cmd_land() {
   [ "$#" -eq 1 ] || fail 'usage: dv land ISSUE'
   load_issue "$1"; issue_lock; require_worktree; require_clean "$WT"
   if is_github; then
-    local pr head
+    local pr head method
     pr=$(jq -er .url "$S/pr.json"); head=$(git -C "$WT" rev-parse HEAD)
     (cd "$WT" && gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,state) > "$S/land-checks.json"
     jq -e --arg head "$head" --arg base "$BASE" '.headRefOid==$head and .baseRefName==$base and .state=="OPEN"' "$S/land-checks.json" >/dev/null || fail 'PR head/base/state mismatch'
     checks_green "$S/land-checks.json" || fail 'all PR checks must be successful (empty, skipped, pending and failed checks refuse land)'
-    (cd "$WT" && gh pr merge "$pr" --squash --match-head-commit "$head")
+    method=$(github_land_method) || return 1
+    (cd "$WT" && gh pr merge "$pr" "--$method" --match-head-commit "$head")
     (cd "$WT" && gh pr view "$pr" --json state,headRefOid) > "$S/land-result.json"
     jq -e --arg head "$head" '.state=="MERGED" and .headRefOid==$head' "$S/land-result.json" >/dev/null || fail 'merge not confirmed; worktree retained'
   else
