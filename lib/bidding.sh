@@ -361,7 +361,9 @@ bid_schedule_one() {
     token="$(now)-$$-$RANDOM"; deadline=$(( $(now) + DV_AWARD_TIMEOUT ))
     bid_task_set "$dir" --arg host "$host" --arg token "$token" --argjson deadline "$deadline" '.host=$host|.token=$token|.deadline=$deadline|.attempts+=[$host]' || return
     rc=0
-    reply=$(jq . "$dir/task.json" | bid_limit "$((DV_AWARD_TIMEOUT + 2))" bid_rpc "$host" _award 2>> "$dir/dispatch.log") || rc=$?
+    # Give the RPC the request file directly. An early reply must not be hidden
+    # by a request producer's SIGPIPE; transport failures still recover below.
+    reply=$(bid_limit "$((DV_AWARD_TIMEOUT + 2))" bid_rpc "$host" _award < "$dir/task.json" 2>> "$dir/dispatch.log") || rc=$?
     if [ "$rc" != 0 ] || ! printf '%s\n' "$reply" | jq -e --arg token "$token" '.status=="rejected" or (.token==$token and (.status=="working" or .status=="failed" or .status=="input-required"))' >/dev/null 2>&1; then
       # An SSH reply can be lost after a start. Recover its receipt before failover.
       reply=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" _receipt "$(basename "$dir")" "$token" < /dev/null 2>> "$dir/dispatch.log") || reply='{}'
