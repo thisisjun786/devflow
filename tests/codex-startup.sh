@@ -108,3 +108,34 @@ case_codex_tmux_startup() {
     dv clean "HT-$mode"
   done
 }
+startup_recovered() {
+  local mode=$1 reason=$2
+  startup_case "$mode"
+  startup_failed "$reason"
+  # Model the operator resolving startup before sending a new goal. The
+  # production injector must not accept the hook dialog itself.
+  rm "$CASE_DIR/herdr/w-HS-1/startup-mode"
+  dv send HS-1 '/goal resumed by operator'
+  grep -Fx '/goal resumed by operator' "$DV_STATE/HS-1/goal-input"
+  dv 'done' HS-1 --note recovered
+  test -s "$DV_STATE/HS-1/done.json"
+  jq '{status,failure_reason}' "$DV_STATE/HS-1/meta"
+  dv status HS-1 --json > "$CASE_DIR/recovered-status.json"
+  # This is also the status filter used by dv-watch reconciliation.
+  jq -e '[.[] | select(.status=="done")] | length==1 and .[0].issue=="HS-1" and (.[0]|has("failure_reason")|not)' "$CASE_DIR/recovered-status.json"
+  jq -se 'map(.kind)==["failed","done"] and .[1].message=="recovered"' "$DV_STATE/HS-1/events.log"
+  dv clean HS-1
+}
+case_codex_hook_recovered() { startup_recovered hook 'codex hook trust required'; }
+case_codex_start_recovered() { startup_recovered idle 'codex goal did not start'; }
+case_codex_done_delivery_status() {
+  startup_case screen-working
+  local status
+  for status in pr ready; do
+    jq --arg status "$status" '.status=$status' "$DV_STATE/HS-1/meta" > "$CASE_DIR/delivery-meta"
+    mv "$CASE_DIR/delivery-meta" "$DV_STATE/HS-1/meta"
+    dv 'done' HS-1
+    jq -e --arg status "$status" '.status==$status and (.done_at|type)=="number"' "$DV_STATE/HS-1/meta"
+  done
+  dv clean HS-1
+}
