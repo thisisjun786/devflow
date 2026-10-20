@@ -5,6 +5,11 @@ printf '%s\n' "$1" > "$CASE_DIR/polish-prompt"
 body="$DV_STATE/POL-1/pr-body.md"
 case "$POLISH_MODE" in
   success) sed 's/It is worth noting that this fixes/This fixes/' "$body" ;;
+  remote-edit)
+    cp "$body" "$CASE_DIR/human-body"
+    printf '\nHuman deployment note.\n' >> "$CASE_DIR/human-body"
+    cp "$CASE_DIR/human-body" "$GH_STUB_DIR/live-body"
+    sed 's/It is worth noting that this fixes/This fixes/' "$body" ;;
   code) sed '/^```bash$/,/^```$/d' "$body" ;;
   tilde) sed '/^~~~~md$/,/^~~~~$/d' "$body" ;;
   indented) sed '/^    /d' "$body" ;;

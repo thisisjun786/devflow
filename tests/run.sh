@@ -634,6 +634,7 @@ printf '%s\n' "$HOME" # literal, not evaluated
 Closes #18
 BODY
   cp "$DV_STATE/POL-1/pr-body.md" "$CASE_DIR/original"
+  cp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
   cp "$CASE_DIR/original" "$DV_STATE/POL-1/brief.md"
   printf '{"url":"https://github.com/test/repo/pull/1"}\n' > "$DV_STATE/POL-1/pr.json"
   export DV_POLISH=1 POLISH_MODE=success
@@ -645,7 +646,9 @@ case_polish_success() {
   sed 's/It is worth noting that this fixes/This fixes/' "$CASE_DIR/original" > "$CASE_DIR/expected"
   cmp "$CASE_DIR/expected" "$GH_STUB_DIR/edited-body"
   cmp "$CASE_DIR/expected" "$DV_STATE/POL-1/pr-body.md"
-  grep -F 'pr edit https://github.com/test/repo/pull/1 --body-file ' "$GH_STUB_DIR/calls"
+  grep -Fx 'api repos/test/repo/pulls/1' "$GH_STUB_DIR/calls"
+  grep -F 'api --method PATCH repos/test/repo/pulls/1 -F body=@' "$GH_STUB_DIR/calls"
+  cmp "$CASE_DIR/expected" "$GH_STUB_DIR/live-body"
   grep -F '사실·숫자·경로·명령·코드 블록·링크·제목 구조' "$CASE_DIR/polish-prompt"
   dv polish POL-1
   cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.orig.md"
@@ -687,7 +690,38 @@ case_polish_edit_failure() {
   touch "$GH_STUB_DIR/edit-fail"
   dv polish POL-1
   cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
-  grep -F 'gh pr edit failed' "$DV_STATE/POL-1/polish.log"
+  cmp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
+  grep -F 'gh api PATCH failed' "$DV_STATE/POL-1/polish.log"
+}
+case_polish_remote_edit() {
+  polish_setup
+  export POLISH_MODE=remote-edit
+  dv polish POL-1
+  cmp "$CASE_DIR/human-body" "$GH_STUB_DIR/live-body"
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.orig.md"
+  test ! -f "$GH_STUB_DIR/edited-body"
+  if grep -F 'api --method PATCH ' "$GH_STUB_DIR/calls"; then return 1; fi
+  grep -F 'live PR body changed; edit skipped' "$DV_STATE/POL-1/polish.log"
+}
+case_polish_read_failure() {
+  polish_setup
+  touch "$GH_STUB_DIR/read-fail"
+  dv polish POL-1
+  cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
+  cmp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
+  test ! -f "$GH_STUB_DIR/edited-body"
+  if grep -F 'api --method PATCH ' "$GH_STUB_DIR/calls"; then return 1; fi
+  grep -F 'gh api read failed; edit skipped' "$DV_STATE/POL-1/polish.log"
+}
+case_polish_pr_url() {
+  polish_setup
+  printf '{"url":"https://github.com/another-owner/another.repo/pull/37"}\n' > "$DV_STATE/POL-1/pr.json"
+  export GH_STUB_PR_ENDPOINT=repos/another-owner/another.repo/pulls/37
+  dv polish POL-1
+  test -f "$GH_STUB_DIR/edited-body"
+  grep -Fx 'api repos/another-owner/another.repo/pulls/37' "$GH_STUB_DIR/calls"
+  grep -F 'api --method PATCH repos/another-owner/another.repo/pulls/37 -F body=@' "$GH_STUB_DIR/calls"
 }
 case_polish_default() {
   polish_setup
@@ -712,6 +746,7 @@ AGY
   test ! -f "$CASE_DIR/polish-ssh"
   cp "$CASE_DIR/polish-prompt" "$CASE_DIR/local-prompt"
   cp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
+  cp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
   rm "$client/agy" "$GH_STUB_DIR/edited-body"
   PATH="$client" DV_POLISH_CMD='' SSH_POLISH_PATH="$remote:$client" "$ROOT/bin/dv" polish POL-1
   test -f "$GH_STUB_DIR/edited-body"
@@ -740,7 +775,7 @@ case_polish_parallel() {
 
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety; do
+for name in polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

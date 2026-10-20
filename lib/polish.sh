@@ -65,9 +65,12 @@ polish_run() (
 )
 
 polish_body() {
-  local tmp=$1 pr prompt command rc=0
+  local tmp=$1 pr endpoint prompt command rc=0
   [[ "$DV_POLISH_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo 'invalid DV_POLISH_TIMEOUT'; return 1; }
   pr=$(jq -er .url "$S/pr.json") || return 1
+  if [[ "$pr" =~ ^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$ ]]; then
+    endpoint="repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/pulls/${BASH_REMATCH[3]}"
+  else echo 'invalid PR URL; edit skipped'; return 1; fi
   cp "$S/pr-body.md" "$tmp/original" || return 1
   if [ ! -e "$S/pr-body.orig.md" ]; then cp "$tmp/original" "$S/pr-body.orig.md" || return 1; fi
   prompt=$(cat <<'PROMPT'
@@ -99,7 +102,11 @@ PROMPT
     echo 'validation failed (code block, inline code or URL changed); original retained'; return 1
   fi
   cmp -s "$tmp/original" "$S/pr-body.md" || { echo 'body changed during polish; edit skipped'; return 1; }
-  gh pr edit "$pr" --body-file "$tmp/output" || { echo 'gh pr edit failed; original retained'; return 1; }
+  gh api "$endpoint" > "$tmp/live.json" || { echo 'gh api read failed; edit skipped'; return 1; }
+  # JSON decoding must not add a newline to the live body before comparison.
+  jq -ej '.body | select(type=="string")' "$tmp/live.json" > "$tmp/live" || { echo 'invalid live PR body; edit skipped'; return 1; }
+  cmp -s "$tmp/original" "$tmp/live" || { echo 'live PR body changed; edit skipped'; return 1; }
+  gh api --method PATCH "$endpoint" -F "body=@$tmp/output" > /dev/null || { echo 'gh api PATCH failed; original retained'; return 1; }
   mv "$tmp/output" "$S/pr-body.md" || return 1
   echo 'polish applied'
 }
