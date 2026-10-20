@@ -7,16 +7,27 @@ cmd_pr() {
   is_github || fail 'dv pr requires a GitHub origin'
   cd "$WT" || exit
   [ "$BRANCH" != "$BASE" ] || fail 'cannot push the base branch'
-  local head pr title
+  local head pr title public_body=''
+  if [ -f "$S/pr.md" ]; then
+    # Coordinate with an older in-flight polish before publishing exact prose.
+    mkdir "$S/.polish" 2>/dev/null || fail 'PR polish is still running; retry dv pr when it finishes'
+    trap 'rm -f "$S/.polish/public-body"; rmdir "$S/.polish" "$S/.operation" 2>/dev/null || true' EXIT
+    public_body="$S/.polish/public-body"
+    cp "$S/pr.md" "$public_body"
+  fi
   head=$(git rev-parse HEAD)
   git push -u origin "$BRANCH:refs/heads/$BRANCH"
   if [ -f "$S/pr.json" ]; then
     pr=$(jq -er .url "$S/pr.json")
+    if [ -n "$public_body" ] && ! cmp -s "$public_body" "$S/pr-body.md"; then
+      gh pr edit "$pr" --body-file "$public_body"
+      mv "$public_body" "$S/pr-body.md"
+    fi
   else
     title="$ISSUE: $(jq -r .slug "$S/meta")"
-    if [ -s "$S/pr.md" ]; then
+    if [ -n "$public_body" ]; then
       # Worker-written public body: no brief, internal report or state paths.
-      cp "$S/pr.md" "$S/pr-body.md"
+      cp "$public_body" "$S/pr-body.md"
     else {
       printf '## 브리프\n\n'
       cat "$S/brief.md"
@@ -26,7 +37,14 @@ cmd_pr() {
     fi
     pr=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$S/pr-body.md")
     jq -n --arg url "$pr" '{url:$url}' > "$S/pr.json"
-    nohup "$DV_ROOT/bin/dv" polish "$ISSUE" >> "$S/polish.log" 2>&1 < /dev/null &
+    if [ -z "$public_body" ]; then
+      nohup "$DV_ROOT/bin/dv" polish "$ISSUE" >> "$S/polish.log" 2>&1 < /dev/null &
+    fi
+  fi
+  if [ -n "$public_body" ]; then
+    rm -f "$public_body"
+    rmdir "$S/.polish"
+    trap 'rmdir "$S/.operation" 2>/dev/null || true' EXIT
   fi
   meta_set --arg head "$head" --arg pr "$pr" '.status="pr" | .head=$head | .pr=$pr'
   nohup "$DV_ROOT/bin/dv" pr-wait "$ISSUE" > "$S/pr-wait.log" 2>&1 < /dev/null &

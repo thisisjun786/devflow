@@ -331,14 +331,15 @@ case_worker_prompt_host() {
   grep -F "작업자 호스트(DV_HOST): \`test-host\`" "$DV_HOME/workers/"*.prompt.md
 }
 assert_question_args() {
-  local issue=$1 agent=$2
+  local issue=$1 agent=$2 mode=${DV_AGENT_QUESTIONS:-sion}
+  if [ "$(jq -r .backend "$DV_STATE/$issue/meta")" = tmux ]; then mode=off; fi
   if [ "$agent" = codex ]; then
-    jq -e --arg mode "${DV_AGENT_QUESTIONS:-sion}" '
+    jq -e --arg mode "$mode" '
       index("tools.experimental_request_user_input.enabled=false") as $i |
       if $mode=="off" then $i!=null and .[$i-1]=="-c" else $i==null end
     ' "$DV_STATE/$issue/args.json"
   else
-    jq -e --arg mode "${DV_AGENT_QUESTIONS:-sion}" '
+    jq -e --arg mode "$mode" '
       index("--disallowedTools") as $i |
       if $mode=="off" then $i!=null and .[$i+1]=="AskUserQuestion"
       else $i==null and index("AskUserQuestion")==null end
@@ -532,8 +533,8 @@ question_record_setup() {
     '{questions:[{id:"format",header:"형식",question:($text+"\n  keep  spaces"),options:[{label:"JSON",description:"Recommended"},{label:"CSV",description:"Alternative"}]}]}' > "$CASE_DIR/exact-question.json"
 }
 question_codex_call() {
-  jq -cn --arg name "$1" --slurpfile question "$2" \
-    '{type:"response_item",payload:{type:"function_call",name:$name,arguments:($question[0]|tojson)}}' >> "$codex_record"
+  jq -cn --arg name "$1" --arg id "${3:-$1}" --slurpfile question "$2" \
+    '{type:"response_item",payload:{type:"function_call",call_id:$id,name:$name,arguments:($question[0]|tojson)}}' >> "$codex_record"
 }
 question_record_assert() {
   question_state blocked
@@ -1501,9 +1502,19 @@ case_bid_rejections_no_tmux() { bid_without_tmux bid_rejections; }
 source "$ROOT/tests/host.sh"
 # shellcheck source=tests/claude.sh
 source "$ROOT/tests/claude.sh"
+# shellcheck source=tests/followups.sh
+source "$ROOT/tests/followups.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
+  fi
+done
 for name in claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

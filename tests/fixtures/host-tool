@@ -19,8 +19,16 @@ if [ "$name" = npm ] && [ "${1:-}" = install ]; then
     *) exit 1 ;;
   esac
   version=$(printf '%s\n' "${*: -1}" | sed 's/.*@//')
-  sed "s/@VER""SION@/$version/" "$HOST_FIXTURES/host-tool" > "$HOME/node/bin/$tool"
-  chmod +x "$HOME/node/bin/$tool"
+  prefix=''
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --prefix ]; then prefix=$2; break; fi
+    shift
+  done
+  test -n "$prefix"
+  rm -f "$prefix/bin/$tool"
+  [ "${HOST_NPM_FAIL:-0}" != 1 ] || exit 1
+  sed "s/@VER""SION@/$version/" "$HOST_FIXTURES/host-tool" > "$prefix/bin/$tool"
+  chmod +x "$prefix/bin/$tool"
   exit
 fi
 version='@VERSION@'
