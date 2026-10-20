@@ -2,7 +2,22 @@
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 case "$*" in
-  'pr create '*) echo https://github.com/test/repo/pull/1 ;;
+  'pr create '*)
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --body-file ]; then cp "$2" "$GH_STUB_DIR/live-body"; break; fi
+      shift
+    done
+    echo https://github.com/test/repo/pull/1 ;;
+  'api --method PATCH repos/'*)
+    [ ! -f "$GH_STUB_DIR/edit-fail" ] || exit 1
+    test "$#" = 6 && test "$4" = "${GH_STUB_PR_ENDPOINT:-repos/test/repo/pulls/1}" && test "$5" = -F
+    [[ "$6" = body=@* ]]
+    cp "${6#body=@}" "$GH_STUB_DIR/edited-body"
+    cp "${6#body=@}" "$GH_STUB_DIR/live-body" ;;
+  'api repos/'*)
+    [ ! -f "$GH_STUB_DIR/read-fail" ] || exit 1
+    test "$#" = 2 && test "$2" = "${GH_STUB_PR_ENDPOINT:-repos/test/repo/pulls/1}"
+    jq -n --rawfile body "$GH_STUB_DIR/live-body" '{body:$body}' ;;
   'pr checks '*) jq -e 'length>0 and all(.conclusion=="SUCCESS")' "$GH_STUB_DIR/checks" >/dev/null ;;
   'pr view '*)
     head=$(git rev-parse HEAD)

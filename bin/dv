@@ -14,11 +14,13 @@ source "$DV_ROOT/lib/herdr.sh"
 source "$DV_ROOT/lib/commands.sh"
 # shellcheck source=lib/delivery.sh
 source "$DV_ROOT/lib/delivery.sh"
+# shellcheck source=lib/polish.sh
+source "$DV_ROOT/lib/polish.sh"
 command=${1:-help}; [ "$#" -eq 0 ] || shift
 case "$command" in
-  start|done|pr|review|land|status|send|clean|kick) "cmd_$command" "$@" ;;
+  start|done|pr|polish|review|land|status|send|clean|kick) "cmd_$command" "$@" ;;
   pr-wait) cmd_pr_wait "$@" ;;
   _agent) run_agent "$@" ;;
-  help|--help|-h) printf '%s\n' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin] [--brief FILE] [--base BRANCH] [--mode goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|review|land|clean <ISSUE>' 'dv status [ISSUE] [--json]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
+  help|--help|-h) printf '%s\n' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin] [--brief FILE] [--base BRANCH] [--mode goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|polish|review|land|clean <ISSUE>' 'dv status [ISSUE] [--json]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
   *) fail "unknown command: $command" ;;
 esac
