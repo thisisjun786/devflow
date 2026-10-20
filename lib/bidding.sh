@@ -181,10 +181,23 @@ bid_task_set() {
   jq "$@" "$dir/task.json" > "$tmp" && mv "$tmp" "$dir/task.json"
 }
 bid_lock() {
-  local path=$1 tries=0
+  local path=$1 owner=${2:-} tries=0 marker holder
   until mkdir "$path" 2>/dev/null; do
+    if [ -n "$owner" ]; then
+      for marker in "$path"/pid-*; do
+        [ -f "$marker" ] || continue
+        holder=${marker##*/pid-}
+        [[ "$holder" =~ ^[1-9][0-9]*$ ]] || continue
+        if ! kill -0 "$holder" 2>/dev/null && rm "$marker" 2>/dev/null; then
+          # Only the remover of this exact dead owner's marker may remove the
+          # directory. Other contenders cannot remove a newly acquired lock.
+          rmdir "$path" 2>/dev/null || true
+        fi
+      done
+    fi
     tries=$((tries+1)); [ "$tries" -lt 100 ] || return 1; sleep 0.1
   done
+  [ -z "$owner" ] || : > "$path/pid-$owner"
 }
 cmd_cancel() (
   [ "$#" = 1 ] || fail 'usage: dv cancel ISSUE'
@@ -200,29 +213,49 @@ cmd_cancel() (
 cmd__receipt() {
   [ "$#" = 2 ] || fail 'usage: dv _receipt ISSUE token'
   valid_issue "$1"
-  local dir="$DV_STATE/.awards/$1"
-  if [ -f "$dir/receipt.json" ]; then
-    jq -e --arg token "$2" 'select(.token==$token)' "$dir/receipt.json"
-  else jq -cn '{status:"absent"}'; fi
+  local dir="$DV_STATE/.awards/$1" receipt exited=false
+  [ ! -f "$DV_STATE/$1/agent.exit" ] || exited=true
+  for receipt in "$dir/receipt.json" "$dir"/failed.*/receipt.json; do
+    [ -f "$receipt" ] || continue
+    if jq -e --arg token "$2" '.token==$token' "$receipt" >/dev/null; then
+      jq --argjson exited "$exited" '.+{exited:$exited}' "$receipt"; return
+    fi
+  done
+  if [ -d "$dir" ]; then return 1; fi
+  jq -cn '{status:"absent"}'
 }
 cmd__award() (
   bid_settings
-  local request issue dir token deadline repo agent mode slug base bid rc=0 status head
+  local request issue dir token deadline repo agent mode slug base bid rc=0 status head history=''
   request=$(cat); printf '%s\n' "$request" | bid_request_valid || fail 'invalid award'
   issue=$(printf '%s\n' "$request" | jq -r .issue)
   token=$(printf '%s\n' "$request" | jq -er '.token|select(type=="string")')
   deadline=$(printf '%s\n' "$request" | jq -er '.deadline|select(type=="number" and .==floor and .>0)')
   mkdir -p "$DV_STATE/.awards"
-  bid_lock "$DV_STATE/.admission-lock" || fail 'host admission busy'
-  trap 'rmdir "$DV_STATE/.admission-lock"' EXIT
+  bid_lock "$DV_STATE/.admission-lock" "$$" || fail 'host admission busy'
+  trap 'if rm "$DV_STATE/.admission-lock/pid-$$" 2>/dev/null; then rmdir "$DV_STATE/.admission-lock"; fi' EXIT
   dir="$DV_STATE/.awards/$issue"
-  if [ -e "$dir" ]; then cmd__receipt "$issue" "$token"; exit; fi
+  if [ -e "$dir" ]; then
+    if ! jq -e --arg token "$token" '.token!=$token and .status=="failed"' "$dir/receipt.json" >/dev/null; then
+      cmd__receipt "$issue" "$token"; exit
+    fi
+    [ "$(now)" -lt "$deadline" ] || fail 'award expired before admission'
+    # A later round may retry a confirmed, cleaned startup failure. Preserve all
+    # prior state and receipts; never reuse an uncertain or still-owned worktree.
+    if [ -f "$DV_STATE/$issue/meta" ]; then
+      jq -e '.status=="failed"' "$DV_STATE/$issue/meta" >/dev/null || fail 'previous start needs inspection'
+      [ ! -e "$(jq -r .worktree "$DV_STATE/$issue/meta")" ] || fail 'previous worktree still exists'
+    fi
+    history=$(mktemp -d "$dir/failed.XXXXXX")
+    mv "$dir/receipt.json" "$dir/request.json" "$dir/brief.md" "$history/"
+    [ ! -e "$DV_STATE/$issue" ] || mv "$DV_STATE/$issue" "$history/state"
+  fi
   [ "$(now)" -lt "$deadline" ] || fail 'award expired before admission'
   [ ! -e "$DV_STATE/$issue" ] || fail 'issue already exists on this host'
   repo=$(printf '%s\n' "$request" | jq -r .repo); agent=$(printf '%s\n' "$request" | jq -r .agent)
   bid=$(cmd_bid --json --repo "$repo" --agent "$agent")
   printf '%s\n' "$bid" | jq -e '.status=="submitted"' >/dev/null || { printf '%s\n' "$bid"; exit; }
-  mkdir "$dir"
+  mkdir -p "$dir"
   printf '%s\n' "$request" > "$dir/request.json"
   printf '%s\n' "$request" | jq -r .brief > "$dir/brief.md"
   printf '%s\n' "$request" | jq '{token,status:"starting"}' > "$dir/receipt.json"
@@ -232,6 +265,8 @@ cmd__award() (
   fi
   repo=$(printf '%s\n' "$bid" | jq -r .repo)
   mode=$(printf '%s\n' "$request" | jq -r .mode); slug=$(printf '%s\n' "$request" | jq -r .slug); base=$(printf '%s\n' "$request" | jq -r .base)
+  # Keep any branch left by the earlier attempt; a retry gets its own branch.
+  [ -z "$history" ] || slug="$slug-retry-${history##*.}"
   local args=(start "$repo" "$issue" "$slug" --agent "$agent" --mode "$mode" --brief "$dir/brief.md")
   [ -z "$base" ] || args+=(--base "$base")
   if [ "$rc" = 0 ] && [ "$(now)" -lt "$deadline" ]; then
@@ -289,6 +324,9 @@ bid_schedule_one() {
       *) bid_task_set "$dir" '.status="input-required"|.reason="Interrupted award; awaiting host outcome"'; return ;;
     esac
   fi
+  # Attempts belong to this event's round. Resolve a pinned receipt above before
+  # clearing them so an uncertain start cannot be dispatched a second time.
+  bid_task_set "$dir" '.attempts=[]' || return
   repo=$(jq -r .repo "$dir/task.json"); agent=$(jq -r .agent "$dir/task.json")
   bids=$(mktemp "$dir/.bids.XXXXXX")
   hosts=$(bid_hosts | awk '!seen[$0]++')
@@ -320,7 +358,7 @@ bid_schedule_one() {
     case "$status" in
       working) bid_task_set "$dir" --arg head "$(printf '%s\n' "$reply" | jq -r '.head//""')" '.status="working"|.head=$head|del(.reason)'; return ;;
       failed) bid_task_set "$dir" '.host=null' || return ;;
-      rejected) bid_task_set "$dir" --arg host "$host" '.host=null|.attempts-=[$host]' || return ;;
+      rejected) bid_task_set "$dir" '.host=null' || return; continue ;;
       absent)
         # A delayed SSH invocation must expire before an absent receipt is safe.
         if [ "$(now)" -ge "$deadline" ]; then bid_task_set "$dir" '.host=null' || return
@@ -350,7 +388,9 @@ bid_event() (
         status=$(printf '%s\n' "$receipt" | jq -r '.status//"unknown"' 2>/dev/null || echo unknown)
         case "$status" in
           failed) bid_task_set "$dir" '.status="submitted"|.host=null' ;;
-          working) bid_task_set "$dir" '.status="failed"' ;;
+          working)
+            # A failure queued by the previous round must not fail a live retry.
+            if printf '%s\n' "$receipt" | jq -e '.exited' >/dev/null; then bid_task_set "$dir" '.status="failed"'; fi ;;
           *) bid_task_set "$dir" '.status="input-required"|.reason="Failure needs a confirmed startup outcome before reassignment"' ;;
         esac ;;
       question) bid_task_set "$dir" '.status="input-required"' ;;

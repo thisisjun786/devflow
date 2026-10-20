@@ -128,6 +128,9 @@ run_agent() {
   if [ "$mode" = exec ]; then
     if [ "$rc" -eq 0 ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
     else "$DV_ROOT/bin/dv" kick failed "$ISSUE" "agent exited $rc"; fi
+  # Codex startup failures already emitted failed through codex_start_failed.
+  elif [ ! -f "$S/done.json" ] && ! jq -e '.status=="start-failed"' "$S/meta" >/dev/null; then
+    "$DV_ROOT/bin/dv" kick failed "$ISSUE" "goal agent exited $rc without dv done"
   fi
   return "$rc"
 }

@@ -1015,7 +1015,7 @@ wait_task() {
   return 1
 }
 case_bid_readonly() {
-  repo bid
+  needs_tmux; repo bid
   export DV_MAX_JOBS=2
   before=$(find "$CASE_DIR" -type f | sort)
   dv bid --json --repo "$REPO" --agent codex > "$CASE_DIR/bid.json"
@@ -1154,7 +1154,7 @@ case_bid_clone() {
   dv bid --json --repo https://github.com/other/repo.git --agent codex | jq -e '(.repo_cloned|not) and .status=="rejected"'
 }
 case_bid_rejections() {
-  repo rejections
+  needs_tmux; repo rejections
   DV_MIN_MEMORY_MB=999999999 dv bid --json --repo "$REPO" | jq -e '.status=="rejected" and .reason=="low memory"'
   DV_CLAUDE_BIN=false dv bid --json --repo "$REPO" --agent claude | jq -e '.status=="rejected" and (.agent_ready|not)'
   DV_DEVIN_BIN=false dv bid --json --repo "$REPO" --agent devin | jq -e '.status=="rejected" and (.agent_ready|not)'
@@ -1178,12 +1178,180 @@ case_bid_rpc_timeout() {
   test -z "$reply"
   test "$((SECONDS-before))" -lt 4
 }
+bidding_functions() {
+  # Exercise an individual event without unrelated reconciliation or workers.
+  DV_ENTRY="$ROOT/bin/dv"
+  # shellcheck source=lib/common.sh
+  source "$ROOT/lib/common.sh"
+  # shellcheck source=lib/herdr.sh
+  source "$ROOT/lib/herdr.sh"
+  # shellcheck source=lib/commands.sh
+  source "$ROOT/lib/commands.sh"
+  # shellcheck source=lib/bidding.sh
+  source "$ROOT/lib/bidding.sh"
+}
+case_award_rejected_next() {
+  bidding_hosts; bidding_functions
+  export DV_HOSTS='hx-linux go2-linux'
+  printf '{"status":"submitted","score":200}\n' > "$CASE_DIR/hosts/hx-linux/bid.json"
+  printf '{"status":"submitted","score":100}\n' > "$CASE_DIR/hosts/go2-linux/bid.json"
+  touch "$CASE_DIR/hosts/hx-linux/reject-award"
+  dv submit "$REPO" REJECT-1 change --brief "$CASE_DIR/brief"
+  bid_event "$(event_json submitted REJECT-1 '' "$DV_HOST" '')"
+  jq -e '.status=="working" and .host=="go2-linux"' "$DV_HOME/submissions/REJECT-1/task.json"
+  test "$(grep -c 'dv _award' "$CASE_DIR/ssh.calls")" = 2
+}
+case_award_new_round() {
+  bidding_hosts; bidding_functions
+  local host kind issue saved
+  export DV_HOSTS='hx-linux go2-linux'
+  for kind in 'done' failed landed submitted; do
+    issue="ROUND-$kind"
+    for host in $DV_HOSTS; do
+      printf '\nDV_AGENT_CMD_codex=false\n' >> "$CASE_DIR/hosts/$host/config"
+    done
+    dv submit "$REPO" "$issue" change --brief "$CASE_DIR/brief" --mode exec
+    bid_event "$(event_json submitted "$issue" '' "$DV_HOST" '')"
+    jq -e '.status=="submitted" and .host==null and (.attempts|length)==2' "$DV_HOME/submissions/$issue/task.json"
+    # Confirmed failed receipts/state must be preserved when a later event retries.
+    saved=$(cat "$CASE_DIR/hosts/hx-linux/state/.awards/$issue/receipt.json")
+    printf '%s\n' "$saved" > "$CASE_DIR/old-receipt"
+    for host in $DV_HOSTS; do
+      printf '\nDV_AGENT_CMD_codex="exec sleep 30"\n' >> "$CASE_DIR/hosts/$host/config"
+    done
+    bid_event "$(event_json "$kind" "$issue" '' other-host h)"
+    jq -e '.status=="working"' "$DV_HOME/submissions/$issue/task.json"
+    host=$(jq -r .host "$DV_HOME/submissions/$issue/task.json")
+    # The previously failed round's receipt remains byte-for-byte available.
+    find "$CASE_DIR/hosts/hx-linux/state/.awards/$issue" -name receipt.json -exec cat '{}' + |
+      jq -se --argjson old "$saved" 'any(.[]; .==$old)'
+    bid_event "$(event_json failed "$issue" 'old startup failure' "$host" h)"
+    jq -e '.status=="working"' "$DV_HOME/submissions/$issue/task.json"
+    # Release this round's slot without fabricating a manager event.
+    DV_CONFIG="$CASE_DIR/hosts/$host/config" dv clean "$issue"
+    printf '0\n' > "$CASE_DIR/hosts/$host/state/$issue/agent.exit"
+  done
+}
+case_award_uncertain_round() {
+  bidding_hosts; bidding_functions
+  export DV_HOSTS=hx-linux
+  dv submit "$REPO" UNCERTAIN-1 change --brief "$CASE_DIR/brief"
+  bid_task_set "$DV_HOME/submissions/UNCERTAIN-1" '.host="hx-linux"|.token="uncertain"|.attempts=["hx-linux"]'
+  local receipt="$CASE_DIR/hosts/hx-linux/state/.awards/UNCERTAIN-1/receipt.json"
+  mkdir -p "$(dirname "$receipt")"
+  printf '{"token":"uncertain","status":"starting"}\n' > "$receipt"
+  cp "$receipt" "$CASE_DIR/receipt.before"
+  bid_event "$(event_json submitted UNCERTAIN-1 '' "$DV_HOST" '')"
+  bid_event "$(event_json 'done' OTHER-1 '' other-host h)"
+  jq -e '.status=="input-required" and .host=="hx-linux" and .token=="uncertain"' "$DV_HOME/submissions/UNCERTAIN-1/task.json"
+  cmp "$CASE_DIR/receipt.before" "$receipt"
+  if grep 'dv _award' "$CASE_DIR/ssh.calls"; then return 1; fi
+}
+case_goal_exit_rebids() {
+  bidding_hosts
+  export DV_HOSTS=hx-linux
+  printf '\nDV_AGENT_CMD_codex=%q\n' "$ROOT/tests/fixtures/goal-exit" >> "$CASE_DIR/hosts/hx-linux/config"
+  dv submit "$REPO" EXIT-1 first --brief "$CASE_DIR/brief"
+  dv submit "$REPO" EXIT-2 second --brief "$CASE_DIR/brief"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_task EXIT-1 working
+  wait_file "$DV_HOME/submissions/EXIT-2/bids.json"
+  jq -e '.status=="submitted"' "$DV_HOME/submissions/EXIT-2/task.json"
+  touch "$CASE_DIR/release-EXIT-1"
+  wait_task EXIT-1 failed
+  wait_task EXIT-2 working
+  touch "$CASE_DIR/done-EXIT-2" "$CASE_DIR/release-EXIT-2"
+  wait_task EXIT-2 completed
+  wait_file "$CASE_DIR/hosts/hx-linux/state/EXIT-2/agent.exit"
+  jq -se 'all(.[]; .kind!="failed")' "$CASE_DIR/hosts/hx-linux/state/EXIT-2/events.log"
+  touch "$DV_HOME/stop"; wait "$watcher"
+}
+case_goal_exit_agents() {
+  repo exits; bidding_functions
+  local selected exit_code completed issue rc
+  # No terminal is needed: isolate the exit wrapper from interactive injection.
+  tmux_dv() { :; }
+  inject_goal() { :; }
+  accept_devin_trust() { :; }
+  export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/goal-exit"
+  export DV_CLAUDE_BIN="$ROOT/tests/fixtures/goal-exit" DV_DEVIN_BIN="$ROOT/tests/fixtures/goal-exit"
+  for selected in codex claude devin custom; do
+    for exit_code in 0 9; do
+      for completed in no yes; do
+        issue="EXIT-$selected-$exit_code-$completed"
+        mkdir "$DV_STATE/$issue"
+        jq -n --arg issue "$issue" --arg repo "$REPO" --arg agent "${selected/custom/codex}" --arg head "$(git -C "$REPO" rev-parse HEAD)" \
+          '{issue:$issue,repo:$repo,worktree:$repo,branch:"main",base:"main",agent:$agent,host:"test-host",mode:"goal",status:"running",start_head:$head}' > "$DV_STATE/$issue/meta"
+        touch "$CASE_DIR/release-$issue"
+        printf '%s\n' "$exit_code" > "$CASE_DIR/exit-$issue"
+        [ "$completed" != yes ] || touch "$CASE_DIR/done-$issue"
+        if [ "$selected" = custom ]; then export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/goal-exit"; fi
+        rc=0; (run_agent "$issue") || rc=$?
+        test "$rc" = "$exit_code"
+        if [ "$completed" = yes ]; then jq -se 'all(.[]; .kind!="failed")' "$DV_STATE/$issue/events.log"
+        else jq -se '[.[]|select(.kind=="failed")]|length==1' "$DV_STATE/$issue/events.log"; fi
+      done
+    done
+  done
+}
+case_award_timeout_lock() {
+  bidding_hosts; bidding_functions
+  export DV_MAX_JOBS=1 DV_AGENT_CMD_codex='exec sleep 30'
+  mkdir "$CASE_DIR/tool"
+  cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/templates" "$ROOT/config.example.sh" "$CASE_DIR/tool/"
+  mv "$CASE_DIR/tool/bin/dv" "$CASE_DIR/tool/bin/dv-real"
+  cat > "$CASE_DIR/tool/bin/dv" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = start ] && [ -f "$CASE_DIR/delay-start" ]; then
+  touch "$CASE_DIR/start-entered"
+  exec sleep 30
+fi
+exec "$(dirname "$0")/dv-real" "$@"
+STUB
+  chmod +x "$CASE_DIR/tool/bin/dv"
+  export DV_ROOT="$CASE_DIR/tool"
+  award_request() {
+    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + 10 ))" \
+      '{issue:$issue,repo:$repo,slug:"timeout",agent:"codex",mode:"goal",base:"",brief:"fake",token:$issue,deadline:$deadline}'
+  }
+  touch "$CASE_DIR/delay-start"
+  if award_request LOCK-1 | bid_limit 1 bid_rpc "$DV_HOST" _award > "$CASE_DIR/timeout.json"; then return 1; fi
+  test -f "$CASE_DIR/start-entered"
+  test -d "$DV_STATE/.admission-lock"
+  cp "$DV_STATE/.awards/LOCK-1/receipt.json" "$CASE_DIR/uncertain-receipt"
+  rm "$CASE_DIR/delay-start"
+  award_request LOCK-2 | bid_limit 3 bid_rpc "$DV_HOST" _award > "$CASE_DIR/next.json"
+  jq -e '.status=="working"' "$CASE_DIR/next.json"
+  cmp "$CASE_DIR/uncertain-receipt" "$DV_STATE/.awards/LOCK-1/receipt.json"
+  test ! -d "$DV_STATE/.admission-lock"
+  # A living owner's lock must not be reclaimed by a competing award.
+  mkdir "$DV_STATE/.admission-lock"
+  touch "$DV_STATE/.admission-lock/pid-$$"
+  if award_request LOCK-3 | bid_limit 1 bid_rpc "$DV_HOST" _award > "$CASE_DIR/live-owner.json"; then return 1; fi
+  test -f "$DV_STATE/.admission-lock/pid-$$"
+  rm "$DV_STATE/.admission-lock/pid-$$"
+  rmdir "$DV_STATE/.admission-lock"
+}
+bid_without_tmux() {
+  cat > "$CASE_DIR/no-tmux-env" <<'NO_TMUX'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = tmux ]; then return 1; fi
+  builtin command "$@"
+}
+NO_TMUX
+  local rc=0
+  BASH_ENV="$CASE_DIR/no-tmux-env" bash "$ROOT/tests/run.sh" --case "$1" > "$CASE_DIR/no-tmux.log" 2>&1 || rc=$?
+  if [ "$rc" != 77 ]; then cat "$CASE_DIR/no-tmux.log"; printf 'Expected skip 77, got %s\n' "$rc"; return 1; fi
+}
+case_bid_readonly_no_tmux() { bid_without_tmux bid_readonly; }
+case_bid_rejections_no_tmux() { bid_without_tmux bid_rejections; }
 # Parse the complete driver before running it. Editing the file while an old
 # runner was reading its tail previously produced a truncated `e` command.
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in bid_readonly submit_spread submit_failover submit_cancel submit_order submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout; do
+for name in bid_readonly submit_spread submit_failover submit_cancel submit_order submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
