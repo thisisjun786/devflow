@@ -81,14 +81,17 @@ codex_config_info() {
       print "{\"path\":[" path "],\"value\":" value "}"
     }
   ' "$config" | jq -s '
-    reduce .[] as $entry ({provider:"openai",env_keys:{},projects:{}};
+    reduce .[] as $entry ({provider:"openai",env_keys:{},projects:{},seen:{}};
       $entry.path as $p |
+      ($p|tojson) as $identity |
+      if .seen[$identity] then error("duplicate provider/project setting")
+      else .seen[$identity]=true end |
       if ($entry.value|type)!="string" then error("expected a string")
       elif $p==["model_provider"] then .provider=$entry.value
       elif ($p|length)==3 and $p[0]=="model_providers" and $p[2]=="env_key" then .env_keys[$p[1]]=$entry.value
       elif ($p|length)==2 and $p[0]=="projects" and $entry.value=="__section__" then .projects[$p[1]]=(.projects[$p[1]] // "unspecified")
       elif ($p|length)==3 and $p[0]=="projects" and $p[2]=="trust_level" then .projects[$p[1]]=$entry.value
-      else error("unsupported provider/project configuration") end)
+      else error("unsupported provider/project configuration") end) | del(.seen)
   '
 }
 codex_environment() {

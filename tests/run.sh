@@ -1515,7 +1515,7 @@ source "$ROOT/tests/bidding-order.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in codex_allowlist codex_persisted_trust codex_trust_conflict codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid; do
+for name in codex_allowlist codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

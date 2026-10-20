@@ -42,6 +42,15 @@ case_codex_trust_conflict() {
   cmp "$CASE_DIR/original" "$HOME/.codex/config.toml"
   test ! -e "$DV_STATE/CONFLICT-1"
 }
+case_codex_trust_duplicate() {
+  repo duplicate; herdr_setup
+  mkdir -p "$HOME/.codex"
+  printf '[projects."%s"]\ntrust_level = "untrusted"\ntrust_level = "trusted"\n' "$REPO" > "$HOME/.codex/config.toml"
+  cp "$HOME/.codex/config.toml" "$CASE_DIR/original"
+  if dv start "$REPO" DUP-1 trust > "$CASE_DIR/duplicate.log" 2>&1; then cat "$CASE_DIR/duplicate.log"; return 1; fi
+  cmp "$CASE_DIR/original" "$HOME/.codex/config.toml"
+  test ! -e "$DV_STATE/DUP-1"
+}
 case_codex_trust_parallel() {
   repo parallel; herdr_setup
   local first second
