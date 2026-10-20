@@ -15,7 +15,7 @@ setup() {
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
-  unset DV_AGENT_QUESTIONS
+  unset DV_AGENT_QUESTIONS DV_AWARD_TOKEN
   export DV_CODEX_SESSIONS="$CASE_DIR/codex sessions" DV_CLAUDE_SESSIONS="$CASE_DIR/claude projects"
   export DV_POLISH=0 DV_POLISH_TIMEOUT=3 DV_POLISH_CMD="$ROOT/tests/fixtures/polish"
   export GH_STUB_DIR="$CASE_DIR/gh" PATH="$ROOT/tests/fixtures:$ROOT/bin:$PATH"
@@ -263,7 +263,7 @@ case_question_pull_replay() {
   printf 'DV_HOME=%q\n' "$CASE_DIR/rq" > "$CASE_DIR/remote-home/config.sh"
   local remote_q="$CASE_DIR/rq/kick.q" puller count
   # Two genuine source events at one head, each with a distinct blocked episode.
-  DV_HOME="$CASE_DIR/rq" DV_QUESTION_EPISODE='w1:p1:123:1' dv-kick question Q-1 first box same-head
+  DV_HOME="$CASE_DIR/rq" DV_QUESTION_EPISODE='w1:p1:123:1' dv-kick question Q-1 first box same-head '' award-1
   DV_HOME="$CASE_DIR/rq" DV_QUESTION_EPISODE='w1:p1:123:3' dv-kick question Q-1 second box same-head
   cp "$remote_q" "$CASE_DIR/source-events"
   for count in 2 4; do
@@ -278,7 +278,7 @@ case_question_pull_replay() {
     cp "$CASE_DIR/source-events" "$remote_q.new"; mv "$remote_q.new" "$remote_q"
   done
   jq -se --slurpfile source "$CASE_DIR/source-events" \
-    '($source|map(.id)) as $ids | map(.id)==($ids+$ids) and (map(.id)|unique|length)==2' "$DV_HOME/kick.q"
+    '($source|map({id,token})) as $events | map({id,token})==($events+$events) and (map(.id)|unique|length)==2' "$DV_HOME/kick.q"
   dv-watch & watcher=$!
   for _ in {1..100}; do
     [ "$(find "$DV_HOME/workers" -name '*.finished' 2>/dev/null | wc -l | tr -d ' ')" = 2 ] && break
@@ -1506,12 +1506,14 @@ source "$ROOT/tests/delivery.sh"
 source "$ROOT/tests/claude.sh"
 # shellcheck source=tests/followups.sh
 source "$ROOT/tests/followups.sh"
+# shellcheck source=tests/bidding-edge.sh
+source "$ROOT/tests/bidding-edge.sh"
 # shellcheck source=tests/bidding-order.sh
 source "$ROOT/tests/bidding-order.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update; do
+for name in question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
