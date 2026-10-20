@@ -26,11 +26,12 @@ pane_json() {
   jq -c '.result.root_pane' "$dir/workspace"
 }
 agent_json() {
-  local status=idle agent
+  local status=idle agent seq=1
   [ ! -f "$dir/status" ] || status=$(cat "$dir/status")
+  [ ! -f "$dir/seq" ] || seq=$(cat "$dir/seq")
   agent=$(jq -r .agent "$DV_STATE/${id#w-}/meta")
   pane_json | jq -c --arg status "$status" --arg agent "$agent" \
-    'del(.scroll) + {agent:$agent,agent_status:$status,state_change_seq:1}'
+    --argjson seq "$seq" 'del(.scroll) + {agent:$agent,agent_status:$status,state_change_seq:$seq}'
 }
 agent_reply() {
   agent_json | jq -c --arg id "$request" --arg type "$1" '{id:$id,result:{agent:.,type:$type}}'
@@ -70,16 +71,21 @@ case "$1 $2" in
     printf '{"id":"cli:workspace:close","result":{"type":"ok"}}\n' ;;
   'pane wait-output')
     test "$3" = "$id:p1"
-    shift 3; pattern=''; timeout=''
+    shift 3; pattern=''; timeout=''; source=''
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --regex) pattern=$2; shift 2 ;;
-        --source) test "$2" = recent-unwrapped; shift 2 ;;
+        --source) source=$2; shift 2 ;;
         --timeout) timeout=$2; shift 2 ;;
         *) exit 1 ;;
       esac
     done
     test -n "$pattern"; test "$timeout" -gt 0
+    if [ "$source" = visible ] && [ -f "$stub/late-detection" ]; then
+      # Model the app banner appearing as the foreground agent is detected.
+      printf 'Starting app...\n│ OpenAI Codex\n' > "$dir/output"
+      touch "$dir/detected"
+    else test "$source" = recent-unwrapped; fi
     # grep is line-oriented already; handle the old Rust multiline prefix too.
     pattern=${pattern#'(?m)'}
     # The remaining production pattern is POSIX ERE. Do not always succeed.
@@ -93,7 +99,7 @@ case "$1 $2" in
     test "$3" = "$id:p1"; test "$#" = 4; test -f "$dir/ready"
     # Run only the configured fake agent, directly; no PTY/tmux or real agents.
     cwd=$(jq -r .result.root_pane.cwd "$dir/workspace")
-    if [ -z "${DV_AGENT_CMD_codex:-}" ]; then touch "$dir/detected"; fi
+    if [ -z "${DV_AGENT_CMD_codex:-}" ] && [ ! -f "$stub/late-detection" ]; then touch "$dir/detected"; fi
     (rc=0; (cd "$cwd" && bash -c "$4") || rc=$?; printf '%s\n' "$rc" > "$dir/exit") > "$dir/output" 2>&1 < /dev/null &
     printf '%s\n' "$!" > "$dir/pid" ;;
   'pane read')
@@ -125,7 +131,7 @@ case "$1 $2" in
       fi
       printf '› \n'; exit
     fi
-    if [ "$#" -gt 5 ]; then test "$6" = --lines; test "$7" = 1; tail -n 1 "$dir/output"
+    if [ "$#" -gt 5 ]; then test "$6" = --lines; tail -n "$7" "$dir/output"
     else cat "$dir/output"; fi ;;
   'pane send-keys')
     test "$4" = Enter
@@ -160,6 +166,33 @@ case "$1 $2" in
     agent_reply agent_prompted ;;
   'agent wait')
     require_agent "$@"
+    if [ -f "$stub/question-mode" ]; then
+      shift 3; untils=' '; timeout=0
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --until) untils="$untils$2 "; shift 2 ;;
+          --timeout) timeout=$2; shift 2 ;;
+          *) exit 1 ;;
+        esac
+      done
+      printf '%s\n' "$$" > "$stub/wait-$$.pid"
+      trap 'rm -f "$stub/wait-$$.pid"' EXIT
+      trap 'exit 0' TERM INT
+      started=$SECONDS
+      while :; do
+        status=idle; [ ! -f "$dir/status" ] || status=$(cat "$dir/status")
+        case "$untils" in *" $status "*) agent_reply agent_info; exit ;; esac
+        if [ "$timeout" -gt 0 ] && [ "$(( (SECONDS - started) * 1000 ))" -ge "$timeout" ]; then
+          error timeout 'timed out waiting for agent status'
+        fi
+        sleep 0.05
+      done
+    fi
+    # The wrapper must terminate this unbounded server subscription on exit.
+    if [ "$#" = 5 ] && [ "$5" = blocked ]; then
+      trap 'exit 0' TERM INT
+      while :; do sleep 0.1; done
+    fi
     test "$4" = --until; test "$#" = 11; test "${10}" = --timeout
     test "${11}" -gt 0
     if [ -f "$stub/blocked" ]; then error timeout 'timed out waiting for agent status'; fi

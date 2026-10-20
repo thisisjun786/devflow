@@ -25,6 +25,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_TMUX_SOCKET:=}" # empty uses the normal tmux server
 : "${DV_HERDR:=1}" # native herdr backend when installed; 0 uses tmux
 : "${DV_START_WAIT:=30}" # seconds to wait for Codex prompt / Devin trust menu
+: "${DV_BLOCKED_GRACE:=20}" # seconds a herdr pane must stay blocked before a question event
 : "${DV_READY_PATTERN:=›|❯|dv-ready>}" # Codex TUI input marker
 : "${DV_SEND_DELAY:=0.3}" # let bracketed paste settle before Enter
 : "${DV_LAND_MODE:=ff}" # ff or merge (local repositories)

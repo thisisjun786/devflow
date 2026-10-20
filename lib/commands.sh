@@ -74,13 +74,19 @@ cmd_start() {
 run_agent() {
   load_issue "$1"; require_worktree; cd "$WT" || exit
   export DV_ISSUE="$ISSUE"
-  local agent mode override instruction rc=0
+  local agent mode override instruction rc=0 sentinel='' helper=''
   agent=$(jq -r .agent "$S/meta"); mode=$(jq -r .mode "$S/meta")
   override="DV_AGENT_CMD_$agent"; override=${!override}
   instruction="Read $S/brief.md and complete everything it asks. Finish with dv done $ISSUE."
   # Native herdr snapshots are collected at done/clean; tmux keeps its TTY log.
   if [ "$BACKEND" = tmux ]; then
     tmux_dv pipe-pane -o -t "$SESSION:0.0" "cat >> $(shell_join "$S/log")"
+  else
+    [[ "$DV_BLOCKED_GRACE" =~ ^[1-9][0-9]*$ ]] || fail 'DV_BLOCKED_GRACE must be a positive integer'
+    herdr_question_sentinel & sentinel=$!
+    trap 'stop_question_sentinel' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
   fi
   if [ -n "$override" ]; then
     bash -c "$override" || rc=$?
@@ -89,6 +95,7 @@ run_agent() {
     case "$agent" in
       codex)
         args=("$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\"" -s danger-full-access -a never)
+        args+=(-c tools.experimental_request_user_input.enabled=false)
         args+=(-c "projects.$(jq -Rn --arg path "$WT" '$path').trust_level=\"trusted\"")
         # Codex resolves a linked worktree's trust against the original repo.
         args+=(-c "projects.$(jq -Rn --arg path "$REPO" '$path').trust_level=\"trusted\"")
@@ -96,23 +103,34 @@ run_agent() {
         [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
         if [ "$mode" = exec ]; then "${args[@]}" exec "$instruction" || rc=$?
         else
-          inject_goal "$instruction" &
+          inject_goal "$instruction" & helper=$!
           "${args[@]}" || rc=$?
-          wait || true
+          stop_question_sentinel
+          wait "$helper" || true
         fi ;;
-      claude) "$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions "$instruction" || rc=$? ;;
+      claude) "$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions --disallowedTools AskUserQuestion -- "$instruction" || rc=$? ;;
       devin)
-        accept_devin_trust &
+        accept_devin_trust & helper=$!
         "$DV_DEVIN_BIN" --model "$DV_DEVIN_MODEL" --permission-mode dangerous -- "$instruction" || rc=$?
-        wait || true ;;
+        stop_question_sentinel
+        wait "$helper" || true ;;
     esac
   fi
+  stop_question_sentinel
+  trap - EXIT INT TERM
   printf '%s\n' "$rc" > "$S/agent.exit"
   if [ "$mode" = exec ]; then
     if [ "$rc" -eq 0 ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
     else "$DV_ROOT/bin/dv" kick failed "$ISSUE" "agent exited $rc"; fi
   fi
   return "$rc"
+}
+stop_question_sentinel() {
+  if [ -n "$sentinel" ]; then
+    kill "$sentinel" 2>/dev/null || true
+    wait "$sentinel" 2>/dev/null || true
+    sentinel=''
+  fi
 }
 codex_start_failed() {
   local reason=$1 screen=$2
@@ -230,35 +248,36 @@ cmd_done() {
 }
 cmd_kick() {
   [ "$#" -ge 2 ] || fail 'usage: dv kick kind ISSUE [message]'
-  local kind=$1 issue=$2 message=${3:-} head='' host=$DV_HOST rc=0 line remote
+  local kind=$1 issue=$2 message=${3:-} head='' host=$DV_HOST rc=0 line remote event_id
   valid_issue "$issue"; mkdir -p "$DV_STATE/$issue"
   if [ -f "$DV_STATE/$issue/meta" ]; then
     head=$(jq -r '.head // .start_head' "$DV_STATE/$issue/meta")
     host=$(jq -r .host "$DV_STATE/$issue/meta")
   fi
   line=$(event_json "$kind" "$issue" "$message" "$host" "$head")
+  event_id=$(printf '%s\n' "$line" | jq -r .id)
   if [ -z "$DV_KICK" ] && [ "$DV_KICK_HOST" = "$DV_HOST" ]; then
     # The watcher lives on this host: write to the local queue, no ssh to ourselves.
-    dv-kick "$kind" "$issue" "$message" "$host" "$head" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
+    dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   elif [ -n "$DV_KICK" ]; then
-    bash -c "$DV_KICK \"\$@\"" dv-kick "$kind" "$issue" "$message" "$host" "$head" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
+    bash -c "$DV_KICK \"\$@\"" dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   else
     # The remote shell often lacks ~/.local/bin: use the installed path explicitly.
-    remote=$(shell_join bash -lc "PATH=\$HOME/.local/bin:\$PATH $(shell_join dv-kick "$kind" "$issue" "$message" "$host" "$head")")
+    remote=$(shell_join bash -lc "PATH=\$HOME/.local/bin:\$PATH $(shell_join dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id")")
     ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$DV_KICK_HOST" "$remote" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   fi
   printf '%s\n' "$line" | jq -c --argjson rc "$rc" '. + {delivered:($rc==0),exit:$rc}' >> "$DV_STATE/$issue/events.log"
   return 0
 }
 cmd_status() {
-  local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive
+  local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   {
     for path in "$DV_STATE"/*/meta; do
       [ -f "$path" ] || continue
       [ -z "$selected" ] || [ "$(basename "$(dirname "$path")")" = "$selected" ] || continue
-      alive=false; tmux_alive=false; agent_status=unknown
+      alive=false; tmux_alive=false; agent_status=unknown; question_pending=false
       backend=$(jq -r '.backend // "tmux"' "$path")
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
@@ -269,6 +288,10 @@ cmd_status() {
           agent_status=$(printf '%s\n' "$info" | jq -r '.agent_status // "unknown"')
           # A live pane may be running a custom command with no detected agent.
           alive=$(printf '%s\n' "$info" | jq -r '.pane_id!=null')
+          pending="$(dirname "$path")/question.pending"
+          if [ "$agent_status" = blocked ] && [ -f "$pending" ] &&
+            printf '%s\n' "$info" | jq -e --slurpfile pending "$pending" '.state_change_seq==$pending[0].seq' >/dev/null 2>&1 &&
+            kill -0 "$(jq -r .owner "$pending")" 2>/dev/null; then question_pending=true; fi
           if live_last=$(herdr_read "$pane" --lines 1 2>/dev/null); then
             last=$(printf '%s\n' "$live_last" | tail -n 1 | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r')
           fi
@@ -277,7 +300,7 @@ cmd_status() {
         alive=true; tmux_alive=true
       fi
       elapsed=$(( $(now) - $(jq -r .started "$path") ))
-      row=$(jq -c --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --arg last "$last" '.+{backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last}' "$path")
+      row=$(jq -c --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" '.+{backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending}' "$path")
       if [ "$json" = 1 ]; then printf '%s\n' "$row"
       else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
     done
