@@ -26,12 +26,15 @@ pane_json() {
   jq -c '.result.root_pane' "$dir/workspace"
 }
 agent_json() {
-  local status=idle agent seq=1
+  local status=idle agent seq=1 session=''
   [ ! -f "$dir/status" ] || status=$(cat "$dir/status")
   [ ! -f "$dir/seq" ] || seq=$(cat "$dir/seq")
+  [ ! -f "$dir/session" ] || session=$(cat "$dir/session")
   agent=$(jq -r .agent "$DV_STATE/${id#w-}/meta")
   pane_json | jq -c --arg status "$status" --arg agent "$agent" \
-    --argjson seq "$seq" 'del(.scroll) + {agent:$agent,agent_status:$status,state_change_seq:$seq}'
+    --arg session "$session" --argjson seq "$seq" 'del(.scroll) +
+      {agent:$agent,agent_status:$status,state_change_seq:$seq} +
+      (if $session=="" then {} else {agent_session:{kind:"id",value:$session}} end)'
 }
 agent_reply() {
   agent_json | jq -c --arg id "$request" --arg type "$1" '{id:$id,result:{agent:.,type:$type}}'

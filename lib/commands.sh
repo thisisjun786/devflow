@@ -95,7 +95,7 @@ run_agent() {
     case "$agent" in
       codex)
         args=("$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\"" -s danger-full-access -a never)
-        args+=(-c tools.experimental_request_user_input.enabled=false)
+        [ "$DV_AGENT_QUESTIONS" != off ] || args+=(-c tools.experimental_request_user_input.enabled=false)
         args+=(-c "projects.$(jq -Rn --arg path "$WT" '$path').trust_level=\"trusted\"")
         # Codex resolves a linked worktree's trust against the original repo.
         args+=(-c "projects.$(jq -Rn --arg path "$REPO" '$path').trust_level=\"trusted\"")
@@ -108,7 +108,10 @@ run_agent() {
           stop_question_sentinel
           wait "$helper" || true
         fi ;;
-      claude) "$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions --disallowedTools AskUserQuestion -- "$instruction" || rc=$? ;;
+      claude)
+        args=("$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions)
+        [ "$DV_AGENT_QUESTIONS" != off ] || args+=(--disallowedTools AskUserQuestion)
+        "${args[@]}" -- "$instruction" || rc=$? ;;
       devin)
         accept_devin_trust & helper=$!
         "$DV_DEVIN_BIN" --model "$DV_DEVIN_MODEL" --permission-mode dangerous -- "$instruction" || rc=$?

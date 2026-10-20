@@ -83,6 +83,42 @@ herdr_question_cleanup() {
   rm -f "$S/question.pending" "$question_tmp/reply" "$question_tmp/error" "$question_tmp/pending"
   rmdir "$question_tmp"
 }
+# Read only the session identified by herdr; transcript text is untrusted data.
+herdr_question_record() {
+  local info=$1 agent session_id root pattern file message
+  agent=$(printf '%s\n' "$info" | jq -r '.result.agent.agent')
+  session_id=$(printf '%s\n' "$info" | jq -er '.result.agent.agent_session.value | select(type=="string" and length>0)') || return 1
+  # Keep IDs literal in find patterns and reject paths / wildcard selectors.
+  [[ "$session_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || return 1
+  case "$agent" in
+    codex) root=$DV_CODEX_SESSIONS; pattern="rollout-*-$session_id.jsonl" ;;
+    claude) root=$DV_CLAUDE_SESSIONS; pattern="$session_id.jsonl" ;;
+    *) return 1 ;;
+  esac
+  [ -d "$root" ] || return 1
+  while IFS= read -r file; do
+    # Stream JSONL, tolerate a partially written tail, and keep only the last
+    # matching call. Invalid arguments on that call must not revive an old one.
+    if message=$(jq -ner --arg agent "$agent" --arg session "$session_id" '
+      reduce (inputs?) as $row ({matches:false,question:null};
+        if $agent=="codex" then
+          if $row.type=="session_meta" then .matches=($row.payload.id==$session)
+          elif .matches and $row.type=="response_item" and $row.payload.type=="function_call"
+            and (($row.payload.name // "") | contains("request_user_input")) then
+            .question=($row.payload.arguments | if type=="string" then try fromjson catch null else . end)
+          else . end
+        elif $row.sessionId==$session and $row.type=="assistant" then
+          reduce $row.message.content[]? as $item (.;
+            if $item.type=="tool_use" and $item.name=="AskUserQuestion" then .question=$item.input else . end)
+        else . end)
+      | .question | select(type=="object") | tojson | .[0:2000]
+    ' "$file" 2>/dev/null); then
+      printf '%s\n' "$message"
+      return 0
+    fi
+  done < <(find "$root" -type f -name "$pattern" -print 2>/dev/null)
+  return 1
+}
 herdr_question_sentinel() {
   local question_bin question_tmp question_child='' question_owner_subshell=$BASH_SUBSHELL seq info message first=1
   question_bin=$(herdr_bin) || return 0
@@ -110,13 +146,15 @@ herdr_question_sentinel() {
     info=$(herdr_cmd agent get "$HERDR_PANE") || break
     # A leave/re-enter race belongs to a fresh episode with a fresh grace period.
     printf '%s\n' "$info" | jq -e --argjson seq "$seq" '.result.agent | .agent_status=="blocked" and .state_change_seq==$seq' >/dev/null || continue
-    message=$(herdr_cmd pane read "$HERDR_PANE" --source visible --lines 8) || message='Blocked pane; screen unavailable'
-    # Strip terminal controls, collapse whitespace, and bound the queue payload.
-    message=$(printf '%s\n' "$message" | jq -Rrs '
-      gsub("\u001b\\[[0-?]*[ -/]*[@-~]"; "") |
-      gsub("\u001b\\][^\u0007]*(\u0007|\u001b\\\\)"; "") |
-      gsub("[\u0000-\u001f\u007f]"; " ") | gsub("\\s+"; " ") |
-      sub("^ +"; "") | sub(" +$"; "") | .[-1000:]')
+    if ! message=$(herdr_question_record "$info"); then
+      message=$(herdr_cmd pane read "$HERDR_PANE" --source visible --lines 8) || message='Blocked pane; screen unavailable'
+      # Screen fallback keeps the existing cleanup; JSON question text stays exact.
+      message=$(printf '%s\n' "$message" | jq -Rrs '
+        gsub("\u001b\\[[0-?]*[ -/]*[@-~]"; "") |
+        gsub("\u001b\\][^\u0007]*(\u0007|\u001b\\\\)"; "") |
+        gsub("[\u0000-\u001f\u007f]"; " ") | gsub("\\s+"; " ") |
+        sub("^ +"; "") | sub(" +$"; "") | .[-1000:]')
+    fi
     jq -cn --argjson seq "$seq" --argjson owner "$$" '{seq:$seq,owner:$owner}' > "$question_tmp/pending"
     mv "$question_tmp/pending" "$S/question.pending"
     DV_QUESTION_EPISODE="$HERDR_PANE:$$:$seq" "$DV_ROOT/bin/dv" kick question "$ISSUE" "$message"
