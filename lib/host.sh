@@ -123,7 +123,7 @@ host_check() {
   rows=$(host_rows) || fail 'invalid hosts/tools.tsv'
   login_path=$(host_shell_path login) || fail 'login shell probe failed'
   ssh_path=$(host_shell_path ssh) || fail 'non-interactive SSH shell probe failed'
-  [ -n "$login_path" ] && [ -n "$ssh_path" ] || fail 'shell did not return PATH'
+  if [ -z "$login_path" ] || [ -z "$ssh_path" ]; then fail 'shell did not return PATH'; fi
   tools_json=$(
     while IFS=$'\t' read -r name version install scope; do
       [ -n "$name" ] || continue
@@ -210,7 +210,7 @@ host_publish() {
   mkdir -p "$(dirname "$target")"
   if [ -e "$target" ] || [ -L "$target" ]; then
     backup="$target.dv-backup.$(date +%s).$$"
-    [ ! -e "$backup" ] && [ ! -L "$backup" ] || fail "backup exists: $backup"
+    if [ -e "$backup" ] || [ -L "$backup" ]; then fail "backup exists: $backup"; fi
     mv "$target" "$backup"
   fi
   if ! mv "$source" "$target"; then
