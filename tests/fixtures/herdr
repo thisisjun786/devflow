@@ -1,14 +1,43 @@
 #!/usr/bin/env bash
+# herdr 0.9.1 CLI contract, measured by CRW-1698's live probes:
+# JSON success envelopes on stdout; errors on stderr + exit 1;
+# run/send-keys are silent, read is raw text (no added newline).
 set -euo pipefail
 stub="$CASE_DIR/herdr"
 mkdir -p "$stub"
 printf '%s\n' "$@" | jq -R . | jq -sc . >> "$stub/calls"
-error() { jq -cn --arg code "$1" '{error:{code:$code,message:$code}}'; exit 1; }
-if [ -f "$stub/fail" ] && [ "$(cat "$stub/fail")" = "$1 $2" ]; then error stub_failure; fi
+request="cli:$1:$2"
+case "$1 $2" in 'pane run'|'pane send-keys') request=cli:request ;; esac
+error() {
+  jq -cn --arg id "$request" --arg code "$1" --arg message "$2" \
+    '{error:{code:$code,message:$message},id:$id}' >&2
+  exit 1
+}
+# Explicit transport fault injection, separate from simulated server replies.
+if [ -f "$stub/fail" ] && [ "$(cat "$stub/fail")" = "$1 $2" ]; then exit 1; fi
 if [ "$1 $2" != 'workspace create' ]; then
   id=${3%%:*}; dir="$stub/$id"
-  if [ ! -f "$dir/workspace" ]; then error "${1}_not_found"; fi
+  if [ ! -f "$dir/workspace" ]; then
+    if [ "$1" = agent ]; then error agent_not_found "agent target $3 not found"
+    else error "${1}_not_found" "$1 $3 not found"; fi
+  fi
 fi
+pane_json() {
+  jq -c '.result.root_pane' "$dir/workspace"
+}
+agent_json() {
+  local status=idle agent
+  [ ! -f "$dir/status" ] || status=$(cat "$dir/status")
+  agent=$(jq -r .agent "$DV_STATE/${id#w-}/meta")
+  pane_json | jq -c --arg status "$status" --arg agent "$agent" \
+    'del(.scroll) + {agent:$agent,agent_status:$status,state_change_seq:1}'
+}
+agent_reply() {
+  agent_json | jq -c --arg id "$request" --arg type "$1" '{id:$id,result:{agent:.,type:$type}}'
+}
+require_agent() {
+  [ -f "$dir/detected" ] || error agent_not_found "agent target $3 not found"
+}
 case "$1 $2" in
   'workspace create')
     shift 2
@@ -24,84 +53,94 @@ case "$1 $2" in
     test "$no_focus" = 1; test -d "$cwd"
     id="w-${label#dv-}"; dir="$stub/$id"
     mkdir "$dir"
-    jq -n --arg id "$id" --arg label "$label" --arg cwd "$cwd" \
-      '{result:{workspace:{workspace_id:$id,label:$label},root_pane:{pane_id:($id+":t1:p1"),cwd:$cwd}}}' > "$dir/workspace"
-    printf '$ \n' > "$dir/output"
+    jq -cn --arg id "$id" --arg label "$label" --arg cwd "$cwd" \
+      '{id:"cli:workspace:create",result:{
+        root_pane:{agent_status:"unknown",cwd:$cwd,focused:false,foreground_cwd:$cwd,pane_id:($id+":p1"),revision:0,
+          scroll:{max_offset_from_bottom:0,offset_from_bottom:0,viewport_rows:40},tab_id:($id+":t1"),terminal_id:("term_"+$id),workspace_id:$id},
+        tab:{agent_status:"unknown",focused:false,label:"1",number:1,pane_count:1,tab_id:($id+":t1"),workspace_id:$id},
+        type:"workspace_created",workspace:{active_tab_id:($id+":t1"),agent_status:"unknown",focused:false,label:$label,
+          number:2,pane_count:1,tab_count:1,workspace_id:$id}}}' > "$dir/workspace"
+    printf '❯' > "$dir/output"
     cat "$dir/workspace" ;;
-  'workspace get') cat "$dir/workspace" ;;
+  'workspace get')
+    jq -c '{id:"cli:workspace:get",result:{type:"workspace_info",workspace:.result.workspace}}' "$dir/workspace" ;;
   'workspace close')
     rm "$dir/workspace"
-    printf '{"result":{"type":"workspace_closed"}}\n' ;;
+    printf '{"id":"cli:workspace:close","result":{"type":"ok"}}\n' ;;
   'pane wait-output')
-    test "$3" = "$id:t1:p1"
+    test "$3" = "$id:p1"
     shift 3; pattern=''; timeout=''
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --regex) pattern=$2; shift 2 ;;
+        --source) test "$2" = recent-unwrapped; shift 2 ;;
         --timeout) timeout=$2; shift 2 ;;
         *) exit 1 ;;
       esac
     done
     test -n "$pattern"; test "$timeout" -gt 0
+    # grep is line-oriented already; handle the old Rust multiline prefix too.
+    pattern=${pattern#'(?m)'}
+    # The remaining production pattern is POSIX ERE. Do not always succeed.
+    matched=$(grep -E "$pattern" "$dir/output") || error timeout 'timed out waiting for output match'
     touch "$dir/ready"
-    printf '{"result":{"type":"pane_output_matched"}}\n' ;;
+    jq -cn --arg id "$request" --arg pane "$id:p1" --arg tab "$id:t1" --arg workspace "$id" \
+      --arg matched "$matched" --arg text "$(cat "$dir/output")" \
+      '{id:$id,result:{matched_line:$matched,pane_id:$pane,read:{format:"text",pane_id:$pane,revision:0,
+        source:"recent_unwrapped",tab_id:$tab,text:$text,truncated:false,workspace_id:$workspace},revision:0,type:"output_matched"}}' ;;
   'pane run')
-    test "$3" = "$id:t1:p1"; test "$#" = 4; test -f "$dir/ready"
+    test "$3" = "$id:p1"; test "$#" = 4; test -f "$dir/ready"
     # Run only the configured fake agent, directly; no PTY/tmux or real agents.
     cwd=$(jq -r .result.root_pane.cwd "$dir/workspace")
+    if [ -z "${DV_AGENT_CMD_codex:-}" ]; then touch "$dir/detected"; fi
     (rc=0; (cd "$cwd" && bash -c "$4") || rc=$?; printf '%s\n' "$rc" > "$dir/exit") > "$dir/output" 2>&1 < /dev/null &
-    printf '%s\n' "$!" > "$dir/pid"
-    printf '{"result":{"type":"pane_command_sent"}}\n' ;;
+    printf '%s\n' "$!" > "$dir/pid" ;;
   'pane read')
     test "$4" = --source; test "$5" = recent-unwrapped
-    if [ "$#" -gt 5 ]; then test "$6" = --lines; test "$7" = 1; text=$(tail -n 1 "$dir/output")
-    else text=$(cat "$dir/output"); fi
-    if [ -f "$stub/goal-mode" ]; then text=$(printf 'old shell › ❯\n%s' "$text"); fi
-    jq -cn --arg text "$text" '{result:{type:"pane_read",read:{text:$text}}}' ;;
+    if [ "$#" -gt 5 ]; then test "$6" = --lines; test "$7" = 1; tail -n 1 "$dir/output"
+    else cat "$dir/output"; fi ;;
   'pane send-keys')
     test "$4" = Enter
-    touch "$DV_STATE/${id#w-}/trust-enter"
-    printf '{"result":{"type":"pane_keys_sent"}}\n' ;;
+    touch "$DV_STATE/${id#w-}/trust-enter" ;;
   'agent prompt')
+    require_agent "$@"
     if [ -f "$stub/goal-mode" ] && [[ "$4" = '/goal '* ]]; then
       [ -f "$dir/goal-ready" ] || touch "$dir/early-prompt"
       count=0; [ ! -f "$dir/goal-attempts" ] || count=$(cat "$dir/goal-attempts")
       count=$((count + 1)); printf '%s\n' "$count" > "$dir/goal-attempts"
-      if [ "$(cat "$stub/goal-mode")" != retry ] || [ "$count" = 1 ]; then error agent_not_ready; fi
-      if [ "$count" = 2 ]; then error agent_blocked; fi
+      if [ "$(cat "$stub/goal-mode")" != retry ] || [ "$count" = 1 ]; then
+        error agent_not_ready "agent $3 is no longer the pane foreground process"
+      fi
+      if [ "$count" = 2 ]; then error agent_blocked "agent $3 is blocked and requires interactive input"; fi
     fi
     if [ -f "$stub/blocked" ]; then
       if [ "$(cat "$stub/blocked")" = once ]; then rm "$stub/blocked"; fi
-      # Deliberately exit zero: callers must inspect the JSON, not only exit status.
-      printf '{"error":{"code":"agent_blocked","message":"approval pending"}}\n'
-      exit 0
+      error agent_blocked "agent $3 is blocked and requires interactive input"
     fi
-    if [ -f "$stub/prompt-error" ]; then
-      printf '{"error":{"code":"agent_prompt_stalled","message":"not ready"}}\n'
-      exit 0
-    fi
+    if [ -f "$stub/prompt-error" ]; then error agent_not_ready "agent $3 is no longer the pane foreground process"; fi
     case "$4" in
       '/goal '*) printf '%s\n' "$4" > "$DV_STATE/${id#w-}/goal-input" ;;
       *) printf '%s\n' "$4" >> "$DV_STATE/${id#w-}/sent-input" ;;
     esac
-    printf '{"result":{"type":"agent_prompted","agent":{"agent_status":"working"}}}\n' ;;
+    agent_reply agent_prompted ;;
   'agent wait')
+    require_agent "$@"
     test "$4" = --until; test "$#" = 11; test "${10}" = --timeout
     test "${11}" -gt 0
-    if [ -f "$stub/blocked" ]; then error timeout; fi
-    printf '{"result":{"type":"agent_info","agent":{"agent_status":"idle"}}}\n' ;;
-  'agent get'|'pane get')
-    status=idle; [ ! -f "$dir/status" ] || status=$(cat "$dir/status")
-    agent=$(jq -r .agent "$DV_STATE/${id#w-}/meta")
-    ready=true
+    if [ -f "$stub/blocked" ]; then error timeout 'timed out waiting for agent status'; fi
+    agent_reply agent_info ;;
+  'agent get')
+    require_agent "$@"
     if [ -f "$stub/goal-mode" ]; then
       count=0; [ ! -f "$dir/goal-checks" ] || count=$(cat "$dir/goal-checks")
       count=$((count + 1)); printf '%s\n' "$count" > "$dir/goal-checks"
-      if [ "$count" = 1 ] || [ "$(cat "$stub/goal-mode")" = never-ready ]; then status=unknown; ready=false
-      elif [ "$count" = 2 ]; then ready=false
-      else touch "$dir/goal-ready"; fi
+      if [ "$count" = 1 ] || [ "$(cat "$stub/goal-mode")" = never-ready ]; then
+        error agent_not_found "agent target $3 not found"
+      fi
+      touch "$dir/goal-ready"
     fi
-    jq -cn --arg key "$1" --arg status "$status" --arg agent "$agent" --argjson ready "$ready" \
-      '{result:{($key):{agent:(if $status=="unknown" then null else $agent end),agent_status:$status,interactive_ready:$ready}}}' ;;
+    agent_reply agent_info ;;
+  'pane get')
+    pane_json | jq -c '{id:"cli:pane:get",result:{pane:.,type:"pane_info"}}' ;;
   *) printf 'Unexpected herdr call\n' >&2; exit 1 ;;
 esac
