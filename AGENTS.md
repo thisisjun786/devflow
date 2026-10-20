@@ -8,3 +8,9 @@
 - 실제 이슈 전달은 해당 브리프의 승인을 따릅니다. base에 직접 push·force push·원격 브랜치 삭제는 금지합니다.
 - 리뷰는 최종 `codex review --base main` 한 번 또는 PR 봇 리뷰 한 번입니다. P0·P1만 한 번 고치고 재리뷰하지 않습니다.
 - 상태 파일과 사용자 설정을 덮어쓰지 않고, dirty worktree는 제거하지 않습니다.
+
+## CI
+
+- main 대상 PR에서는 Linux 검사만 실행합니다.
+- main 병합 후 push에서는 macOS를 포함한 전체 matrix를 실행합니다.
+- PR 실행에 macOS를 추가하지 않습니다.
