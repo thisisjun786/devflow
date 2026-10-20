@@ -36,6 +36,11 @@ elif [ "$agent" = codex ] && [[ " $* " != *' exec '* ]]; then
     wait_path "$state/goal-input"
   fi
 fi
+if [ -f "$CASE_DIR/herdr/question-mode" ]; then
+  printf '%s\n' "$PPID" > "$state/wrapper.pid"
+  printf '%s\n' "$$" > "$state/held.pid"
+  while [ ! -f "$state/release" ]; do sleep 0.05; done
+fi
 printf 'native output before done\n'
 "$ROOT/tests/fixtures/agent"
 printf 'native output after done\n'

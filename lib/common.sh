@@ -57,8 +57,10 @@ is_github() {
 shell_join() { printf '%q ' "$@"; }
 # One compact JSON line is shared by SSH, the queue, and the reconciliation path.
 event_json() {
+  local episode=${6:-}
+  if [ "$1" = question ] && [ -z "$episode" ]; then episode="$(now):$$:$RANDOM"; fi
   jq -cn --arg kind "$1" --arg issue "$2" --arg message "$3" --arg host "$4" --arg head "$5" \
-    --argjson time "$(now)" '{id:([$host,$issue,$kind,$head]|join(":")),kind:$kind,issue:$issue,message:$message,host:$host,head:$head,time:$time}'
+    --arg episode "$episode" --argjson time "$(now)" '{id:(([$host,$issue,$kind,$head] + (if $kind=="question" then [$episode] else [] end))|join(":")),kind:$kind,issue:$issue,message:$message,host:$host,head:$head,time:$time}'
 }
 send_text() {
   local text=$1 buffer="dv-$ISSUE-$$"

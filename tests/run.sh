@@ -21,6 +21,11 @@ setup() {
   trap teardown EXIT
 }
 teardown() {
+  # Failed question assertions must not leave the deliberately held fake agent.
+  local pidfile
+  for pidfile in "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid; do
+    [ ! -f "$pidfile" ] || kill "$(cat "$pidfile")" 2>/dev/null || true
+  done
   if command -v tmux >/dev/null; then tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true; fi
   if [ -f "$DV_HOME/watch.pid" ]; then kill "$(cat "$DV_HOME/watch.pid")" 2>/dev/null || true; fi
   if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$CASE_DIR"; else rm -rf "$CASE_DIR"; fi
@@ -290,6 +295,7 @@ case_agent_cli() {
   wait_file "$DV_STATE/C-1/events.log"
   grep '^/goal .*brief.md' "$DV_STATE/C-1/goal-input"
   jq -e 'index("gpt-6-astra")!=null and index("hooks")!=null and index("plugins.\"crw@crw\".enabled=false")!=null and any(.[]; contains("trust_level=\"trusted\""))' "$DV_STATE/C-1/args.json"
+  jq -e 'index("tools.experimental_request_user_input.enabled=false") as $i | $i!=null and .[$i-1]=="-c"' "$DV_STATE/C-1/args.json"
   # Assert literal shell metacharacters survive paste without evaluation.
   # shellcheck disable=SC2016
   dv send C-1 'extra instruction $literal `safe`'
@@ -300,9 +306,11 @@ case_agent_cli() {
   DV_CODEX_DISABLE_CRW=0 DV_CODEX_DISABLE_HOOKS=0 dv start "$REPO" C-2 exec --mode exec
   wait_done C-2
   jq -e 'index("exec")!=null and index("hooks")==null and index("plugins.\"crw@crw\".enabled=false")==null' "$DV_STATE/C-2/args.json"
+  jq -e 'index("tools.experimental_request_user_input.enabled=false") as $i | $i!=null and .[$i-1]=="-c"' "$DV_STATE/C-2/args.json"
   dv start "$REPO" C-3 claude --agent claude
   wait_file "$DV_STATE/C-3/events.log"
   jq -e 'index("opus")!=null and index("xhigh")!=null and index("--dangerously-skip-permissions")!=null' "$DV_STATE/C-3/args.json"
+  jq -e 'index("--disallowedTools") as $i | $i!=null and .[$i+1]=="AskUserQuestion"' "$DV_STATE/C-3/args.json"
   dv start "$REPO" C-4 devin --agent devin
   wait_file "$DV_STATE/C-4/events.log"
   test -f "$DV_STATE/C-4/trust-enter"
@@ -399,6 +407,147 @@ wait_native() {
   wait_file "$DV_STATE/$1/events.log"
   test "$(cat "$DV_STATE/$1/agent.exit")" = 0
 }
+case_question_cli() {
+  repo question-cli; herdr_setup
+  dv start "$REPO" Q-1 flags --mode exec; wait_native Q-1
+  jq -e 'index("tools.experimental_request_user_input.enabled=false") as $i | $i!=null and .[$i-1]=="-c"' "$DV_STATE/Q-1/args.json"
+  dv start "$REPO" Q-2 flags --agent claude; wait_native Q-2
+  jq -e 'index("--disallowedTools") as $i | $i!=null and .[$i+1]=="AskUserQuestion"' "$DV_STATE/Q-2/args.json"
+}
+question_setup() {
+  repo questions; herdr_setup
+  export DV_BLOCKED_GRACE=1
+  mkdir -p "$CASE_DIR/herdr"
+  touch "$CASE_DIR/herdr/question-mode"
+  if [ "${QUESTION_LATE_DETECTION:-0}" = 1 ]; then touch "$CASE_DIR/herdr/late-detection"; fi
+  dv start "$REPO" Q-1 questions --agent "${1:-codex}"
+  wait_file "$DV_STATE/Q-1/held.pid"
+  qdir="$CASE_DIR/herdr/w-Q-1"
+}
+question_state() {
+  local seq=1
+  [ ! -f "$qdir/seq" ] || seq=$(cat "$qdir/seq")
+  printf '%s\n' "$((seq + 1))" > "$qdir/seq"
+  printf '%s\n' "$1" > "$qdir/status"
+}
+question_count() {
+  if [ -f "$DV_STATE/Q-1/events.log" ]; then
+    jq -s '[.[] | select(.kind=="question")] | length' "$DV_STATE/Q-1/events.log"
+  else printf '0\n'; fi
+}
+wait_questions() {
+  for _ in {1..100}; do
+    [ "$(question_count)" != "$1" ] || return 0
+    sleep 0.05
+  done
+  printf 'Expected %s question events, got %s\n' "$1" "$(question_count)" >&2
+  return 1
+}
+question_pending() {
+  dv status Q-1 --json | jq -e --argjson pending "$1" '.[0].question_pending==$pending'
+}
+question_finish() {
+  touch "$DV_STATE/Q-1/release"
+  wait_native Q-1
+  question_pending false
+  test "$(find "$CASE_DIR/herdr" -name 'wait-*.pid' | wc -l | tr -d ' ')" = 0
+}
+case_question_episodes() {
+  question_setup
+  sleep 1.2
+  test "$(question_count)" = 0
+  printf 'old transcript\n\033[31m  Which in-scope option?  \033[0m\n  1. route\n  2. handler\n' > "$qdir/output"
+  question_state blocked
+  wait_questions 1
+  question_pending true
+  dv status Q-1 | grep 'agent=blocked'
+  sleep 1.2
+  test "$(question_count)" = 1
+  jq -se '.[0] | .kind=="question" and .delivered and (.message|contains("Which in-scope option?")) and (.message|length)<=1000 and (.message|test("[\u0000-\u001f]")|not)' "$DV_STATE/Q-1/events.log"
+  question_state working
+  for _ in {1..100}; do question_pending false >/dev/null && break; sleep 0.05; done
+  question_pending false
+  question_state blocked
+  wait_questions 2
+  sleep 1.2
+  test "$(question_count)" = 2
+  jq -se '[.[]|select(.kind=="question")]|length==2 and (map(.id)|unique|length)==2' "$DV_HOME/kick.q"
+  jq -se --slurpfile events "$DV_STATE/Q-1/events.log" 'map(.id)==($events|map(.id))' "$DV_HOME/kick.q"
+  jq -se 'any(.[]; .==["pane","read","w-Q-1:p1","--source","visible","--lines","8"])' "$CASE_DIR/herdr/calls"
+  export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1 DV_HOSTS=''
+  dv-watch & watcher=$!
+  for _ in {1..100}; do
+    [ "$(find "$DV_HOME/workers" -name '*.finished' 2>/dev/null | wc -l | tr -d ' ')" = 2 ] && break
+    sleep 0.05
+  done
+  touch "$DV_HOME/stop"; wait "$watcher"
+  test "$(find "$DV_HOME/workers" -name '*.finished' | wc -l | tr -d ' ')" = 2
+  question_finish
+}
+case_question_grace() {
+  question_setup
+  question_state blocked
+  for _ in {1..100}; do
+    if jq -se 'any(.[]; .[0:2]==["agent","wait"] and index("--timeout")!=null)' "$CASE_DIR/herdr/calls" >/dev/null; then break; fi
+    sleep 0.05
+  done
+  jq -se 'any(.[]; .[0:2]==["agent","wait"] and index("--timeout")!=null)' "$CASE_DIR/herdr/calls"
+  question_state idle
+  sleep 1.2
+  test "$(question_count)" = 0
+  question_pending false
+  question_finish
+}
+case_question_exit() {
+  question_setup
+  question_state blocked
+  question_finish
+  sleep 1.2
+  test "$(question_count)" = 0
+}
+case_question_wait_failure() {
+  question_setup
+  printf 'agent wait\n' > "$CASE_DIR/herdr/fail"
+  question_state blocked
+  sleep 1.2
+  test "$(question_count)" = 0
+  question_pending false
+  question_finish
+}
+case_question_startup() {
+  export QUESTION_LATE_DETECTION=1
+  question_setup
+  question_state blocked
+  wait_questions 1
+  jq -se 'any(.[]; .[0:2]==["pane","wait-output"] and index("visible")!=null)' "$CASE_DIR/herdr/calls"
+  question_finish
+}
+case_question_signal() {
+  question_setup
+  kill "$(cat "$DV_STATE/Q-1/held.pid")"
+  wait_file "$CASE_DIR/herdr/w-Q-1/exit"
+  test "$(cat "$DV_STATE/Q-1/agent.exit")" -ne 0
+  question_pending false
+  test "$(find "$CASE_DIR/herdr" -name 'wait-*.pid' | wc -l | tr -d ' ')" = 0
+  sleep 1.2
+  test "$(question_count)" = 0
+}
+question_other_agent() {
+  question_setup "$1"
+  # Trimming is bounded even if the visible terminal has extremely long lines.
+  head -c 4000 /dev/zero | tr '\0' x > "$qdir/output"
+  printf ' last question\n' >> "$qdir/output"
+  question_state blocked
+  wait_questions 1
+  question_pending true
+  jq -se '.[0].message | length==1000 and endswith("last question")' "$DV_STATE/Q-1/events.log"
+  question_state unknown
+  for _ in {1..100}; do question_pending false >/dev/null && break; sleep 0.05; done
+  question_pending false
+  question_finish
+}
+case_question_claude() { question_other_agent claude; }
+case_question_devin() { question_other_agent devin; }
 case_herdr_start_clean() {
   repo herdr; herdr_setup; unset DV_HERDR
   dv start "$REPO" H-1 native --brief "$CASE_DIR/brief"
@@ -777,7 +926,7 @@ case_polish_parallel() {
 source "$ROOT/tests/codex-startup.sh"
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
+for name in question_startup question_signal question_claude question_devin question_cli question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
