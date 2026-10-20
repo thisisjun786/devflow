@@ -10,6 +10,8 @@ done
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 # shellcheck source=lib/bidding.sh
 source "$DV_ROOT/lib/bidding.sh"
+# shellcheck source=lib/manager.sh
+source "$DV_ROOT/lib/manager.sh"
 need jq
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
@@ -97,7 +99,7 @@ reap() {
   local live='' pid record slot event_id rc
   active=0
   for pid in $pids; do
-    if kill -0 "$pid" 2>/dev/null; then live="$live $pid"; else wait "$pid" || true; fi
+    if kill -0 "$pid" 2>/dev/null; then live="$live $pid"; active=$((active + 1)); else wait "$pid" || true; fi
   done
   pids=$live
   for record in "$DV_HOME/pending/"*.json; do
@@ -108,7 +110,10 @@ reap() {
     fi
     pid=''; [ ! -f "$slot.pid" ] || pid=$(cat "$slot.pid")
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      active=$((active + 1)); continue
+      # Tracked children (including managers) were counted above. Add only
+      # pending workers inherited from a previous watcher here.
+      case " $live " in *" $pid "*) ;; *) active=$((active + 1)) ;; esac
+      continue
     fi
     if [ -f "$slot.exit" ]; then rc=$(cat "$slot.exit")
     elif [ -n "$pid" ]; then rc=125
@@ -187,6 +192,7 @@ reconcile() {
 while [ ! -e "$DV_HOME/stop" ]; do
   reap
   retry_pending
+  manager_dispatch
   pulls
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
@@ -203,6 +209,22 @@ while [ ! -e "$DV_HOME/stop" ]; do
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
         continue
+      fi
+      prompt="$DV_HOME/workers/$(now)-$$-$cursor.prompt.md"
+      cat "$DV_ROOT/templates/worker-prompt.md" > "$prompt"
+      # Literal Markdown fences.
+      # shellcheck disable=SC2016
+      printf '\n작업자 호스트(DV_HOST): `%s`\n' "$DV_HOST" >> "$prompt"
+      # shellcheck disable=SC2016
+      printf '\n이벤트(JSON 데이터):\n```json\n%s\n```\n' "$line" >> "$prompt"
+      routed=0
+      manager_enqueue "$line" "$prompt" "$cursor" >> "$DV_HOME/manager.log" 2>&1 || routed=$?
+      if [ "$routed" = 0 ]; then
+        printf '%s\n' "$id" >> "$DV_HOME/seen"
+        cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
+        continue
+      elif [ "$routed" != 1 ]; then
+        break # Persistence failed: retain the cursor so the event can retry.
       fi
       # Persist before advancing the queue. Failed/unacknowledged work survives
       # a watcher restart, while in-flight duplicate IDs stay suppressed.

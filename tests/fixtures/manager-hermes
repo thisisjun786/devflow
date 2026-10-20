@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016
+set -euo pipefail
+stub="$CASE_DIR/hermes"
+args=$(printf '%s\n' "$@" | jq -R . | jq -s .)
+resume=''; prompt=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in --resume) resume=$2; shift 2 ;; --query-file) prompt=$2; shift 2 ;; *) shift ;; esac
+done
+test -f "$prompt"
+# Short mutex for deterministic stub records; model turns remain concurrent.
+until (set -C; : > "$stub/lock") 2>/dev/null; do sleep 0.01; done
+n=1; [ ! -f "$stub/calls" ] || n=$(( $(wc -l < "$stub/calls") + 1 ))
+cp "$prompt" "$stub/prompt-$n"
+jq -cn --arg resume "$resume" --arg cwd "$PWD" --argjson args "$args" '{resume:$resume,cwd:$cwd,args:$args}' >> "$stub/calls"
+if [ -n "$resume" ] && [ -f "$stub/fail-resume" ]; then
+  rm "$stub/fail-resume" "$stub/lock"; printf 'Session not found\n' >&2; exit 1
+fi
+sid=$resume
+if [ -z "$sid" ] && [ -f "$stub/fail-fresh" ]; then
+  rm "$stub/fail-fresh" "$stub/lock"; exit 1
+fi
+if [ -z "$sid" ]; then
+  count=0; [ ! -f "$stub/count" ] || count=$(cat "$stub/count")
+  count=$((count + 1)); printf '%s\n' "$count" > "$stub/count"; sid="session-$count"
+fi
+if ! (set -C; : > "$stub/active-$sid") 2>/dev/null; then touch "$stub/overlap"; fi
+active=$(find "$stub" -name 'active-*' -type f | wc -l | tr -d ' ')
+if [ "$active" -gt 1 ]; then touch "$stub/parallel"; fi
+if [ "$active" -gt "${DV_MAX_WORKERS:-4}" ]; then touch "$stub/over-capacity"; fi
+rm "$stub/lock"
+sleep "${HERMES_HOLD:-0.01}"
+rm "$stub/active-$sid"
+printf '%s\n' "$sid" >> "$stub/finished"
+# Spoofed answer text must never become the session handle.
+printf 'session_id: bogus-stdout\n'
+[ -f "$stub/no-id" ] || printf '\nsession_id: %s\n' "$sid" >&2

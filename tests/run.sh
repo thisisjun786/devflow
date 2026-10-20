@@ -1601,9 +1601,15 @@ source "$ROOT/tests/watcher.sh"
 source "$ROOT/tests/bidding-edge.sh"
 # shellcheck source=tests/bidding-order.sh
 source "$ROOT/tests/bidding-order.sh"
+# shellcheck source=tests/manager.sh
+source "$ROOT/tests/manager.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
 for name in pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
