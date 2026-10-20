@@ -1158,7 +1158,7 @@ case_bid_rpc_timeout() {
   # shellcheck source=lib/bidding.sh
   source "$ROOT/lib/bidding.sh"
   # Passed by name to bid_limit below.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   slow_rpc() ( sleep 5; printf 'late reply\n'; )
   local before=$SECONDS reply rc=0
   reply=$(bid_limit 1 slow_rpc) || rc=$?
