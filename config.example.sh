@@ -42,6 +42,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_WORKER_CMD:=}" # shell command; receives prompt file path; default Hermes below
 : "${DV_HERMES_BIN:=hermes}"
 : "${DV_WATCH_INTERVAL:=3}" # local queue read interval, seconds
+: "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
 : "${DV_MAX_WORKERS:=4}" # 1..4
 : "${DV_RECONCILE_INTERVAL:=1800}" # remote status safety net, seconds
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)

@@ -12,7 +12,8 @@ source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 source "$DV_ROOT/lib/bidding.sh"
 need jq
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
-mkdir -p "$DV_HOME/workers"
+[[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
+mkdir -p "$DV_HOME/workers" "$DV_HOME/pending"
 # A single queue reader owns the cursor and its child processes.
 # A SIGKILLed watcher cannot remove its own lock (no trap runs on SIGKILL), so a lock whose recorded pid is gone is
 # stale and must be taken over; otherwise launchd restarts the process and it dies on 'watcher lock exists' forever.
@@ -34,6 +35,7 @@ finish() {
   local pid
   for pid in $pull_pids; do if is_pull "$pid"; then kill "$pid" 2>/dev/null || true; fi; done
   for pid in $pids; do wait "$pid" || true; done
+  reap
   rm -f "$DV_HOME/watch.pid"
   rmdir "$DV_HOME/.watch-lock"
 }
@@ -68,16 +70,83 @@ pulls() {
   done
   pull_pids=$live
 }
+worker_start() {
+  local slot=$1 event prompt pid
+  event=$(cat "$slot.json")
+  prompt=$(mktemp "$DV_HOME/workers/$(now)-$$.XXXXXX")
+  mv "$prompt" "$prompt.prompt.md"; prompt="$prompt.prompt.md"
+  cat "$DV_ROOT/templates/worker-prompt.md" > "$prompt"
+  # shellcheck disable=SC2016
+  printf '\n작업자 호스트(DV_HOST): `%s`\n' "$DV_HOST" >> "$prompt"
+  # shellcheck disable=SC2016
+  printf '\n이벤트(JSON 데이터):\n```json\n%s\n```\n' "$event" >> "$prompt"
+  (
+    trap - EXIT INT TERM
+    rc=0
+    if [ -n "$DV_WORKER_CMD" ]; then
+      bash -c "$DV_WORKER_CMD \"\$@\"" dv-worker "$prompt" || rc=$?
+    else
+      "$DV_HERMES_BIN" -p sion chat -Q --yolo -t terminal,connections -s devflow --query-file "$prompt" || rc=$?
+    fi
+    printf '%s\n' "$rc" > "$slot.exit.tmp"; mv "$slot.exit.tmp" "$slot.exit"
+  ) > "${prompt%.prompt.md}.log" 2>&1 &
+  pid=$!; printf '%s\n' "$pid" > "$slot.pid"
+  pids="$pids $pid"; active=$((active + 1))
+}
 reap() {
-  local live='' pid
+  local live='' pid record slot event_id rc
   active=0
   for pid in $pids; do
-    if kill -0 "$pid" 2>/dev/null; then live="$live $pid"; active=$((active + 1)); else wait "$pid" || true; fi
+    if kill -0 "$pid" 2>/dev/null; then live="$live $pid"; else wait "$pid" || true; fi
   done
   pids=$live
+  for record in "$DV_HOME/pending/"*.json; do
+    [ -f "$record" ] || continue
+    slot=${record%.json}; event_id=$(jq -r .id "$record")
+    if grep -Fxq -- "$event_id" "$DV_HOME/seen"; then
+      rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry"; continue
+    fi
+    pid=''; [ ! -f "$slot.pid" ] || pid=$(cat "$slot.pid")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      active=$((active + 1)); continue
+    fi
+    if [ -f "$slot.exit" ]; then rc=$(cat "$slot.exit")
+    elif [ -n "$pid" ]; then rc=125
+    else continue; fi
+    if [ "$rc" = 0 ]; then
+      printf '%s\n' "$event_id" >> "$DV_HOME/seen"
+      rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry"
+    else
+      printf 'worker failed (exit %s), retrying: %s\n' "$rc" "$event_id" >> "$DV_HOME/watch.log"
+      printf '%s\n' "$(( $(now) + DV_WORKER_RETRY ))" > "$slot.retry"
+      rm -f "$slot.pid" "$slot.exit"
+    fi
+  done
+}
+retry_pending() {
+  local record slot retry
+  for record in "$DV_HOME/pending/"*.json; do
+    [ "$active" -lt "$DV_MAX_WORKERS" ] || break
+    [ -f "$record" ] || continue
+    slot=${record%.json}
+    # Only reap may clear an attempt. A worker can finish between reap and
+    # this scan; restarting it here would replay a successful operation.
+    [ ! -f "$slot.pid" ] && [ ! -f "$slot.exit" ] || continue
+    retry=0; [ ! -f "$slot.retry" ] || retry=$(cat "$slot.retry")
+    [ "$(now)" -ge "$retry" ] || continue
+    worker_start "$slot"
+  done
+}
+pending_event() {
+  local record
+  for record in "$DV_HOME/pending/"*.json; do
+    [ -f "$record" ] || continue
+    if jq -e --arg id "$1" '.id==$id' "$record" >/dev/null; then return 0; fi
+  done
+  return 1
 }
 reconcile() {
-  local host rows row issue head id
+  local host rows row issue head id remote
   for host in $DV_HOSTS; do
     # The watcher's own host needs no ssh (and may have no key to itself).
     if [ "$host" = "$DV_HOST" ]; then
@@ -87,6 +156,17 @@ reconcile() {
     fi
     if true; then
       if ! printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null 2>&1; then continue; fi
+      # Liveness is checked on the issue's host; a PID from another host is
+      # meaningless locally. The helper preserves a healthy waiter's lock/log.
+      while IFS= read -r issue; do
+        [[ "$issue" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || continue
+        if [ "$host" = "$DV_HOST" ]; then
+          dv _pr-wait-start "$issue" >> "$DV_HOME/reconcile.log" 2>&1 || true
+        else
+          remote=$(shell_join dv _pr-wait-start "$issue")
+          ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$remote" >> "$DV_HOME/reconcile.log" 2>&1 || true
+        fi
+      done < <(printf '%s\n' "$rows" | jq -r '.[] | select(.status=="pr") | .issue')
       while IFS= read -r row; do
         issue=$(printf '%s' "$row" | jq -r .issue)
         head=$(printf '%s' "$row" | jq -r '.head // .start_head // ""')
@@ -94,12 +174,13 @@ reconcile() {
         if ! jq -se --arg id "$id" 'any(.[]; .id==$id)' "$DV_HOME/kick.q" >/dev/null 2>&1; then
           "$DV_ROOT/bin/dv-kick" 'done' "$issue" 'Recovered by status safety net' "$host" "$head"
         fi
-      done < <(printf '%s\n' "$rows" | jq -c '.[] | select(.status=="done")')
+      done < <(printf '%s\n' "$rows" | jq -c '.[] | select(.status=="done" or ((.status=="pr" or .status=="ready") and .done_at!=null))')
     fi
   done
 }
 while [ ! -e "$DV_HOME/stop" ]; do
   reap
+  retry_pending
   pulls
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
@@ -109,7 +190,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
     [ -n "$line" ] || break
     if ! id=$(printf '%s\n' "$line" | jq -er '.id | select(type=="string")'); then
       printf 'invalid queue line %s\n' "$((cursor + 1))" >> "$DV_HOME/watch.log"
-    elif ! grep -Fxq -- "$id" "$DV_HOME/seen"; then
+    elif ! grep -Fxq -- "$id" "$DV_HOME/seen" && ! pending_event "$id"; then
       # Deterministic scheduling is driven by this existing queue, never a bid poll.
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then break; fi
       if [ "$(printf '%s\n' "$line" | jq -r .kind)" = submitted ]; then
@@ -117,20 +198,11 @@ while [ ! -e "$DV_HOME/stop" ]; do
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
         continue
       fi
-      prompt="$DV_HOME/workers/$(now)-$$-$cursor.prompt.md"
-      cat "$DV_ROOT/templates/worker-prompt.md" > "$prompt"
-      # Literal Markdown fences.
-      # shellcheck disable=SC2016
-      printf '\n작업자 호스트(DV_HOST): `%s`\n' "$DV_HOST" >> "$prompt"
-      # shellcheck disable=SC2016
-      printf '\n이벤트(JSON 데이터):\n```json\n%s\n```\n' "$line" >> "$prompt"
-      if [ -n "$DV_WORKER_CMD" ]; then
-        bash -c "$DV_WORKER_CMD \"\$@\"" dv-worker "$prompt" > "${prompt%.prompt.md}.log" 2>&1 &
-      else
-        "$DV_HERMES_BIN" -p sion chat -Q --yolo -t terminal,connections -s devflow --query-file "$prompt" > "${prompt%.prompt.md}.log" 2>&1 &
-      fi
-      pids="$pids $!"; active=$((active + 1))
-      printf '%s\n' "$id" >> "$DV_HOME/seen"
+      # Persist before advancing the queue. Failed/unacknowledged work survives
+      # a watcher restart, while in-flight duplicate IDs stay suppressed.
+      slot="$DV_HOME/pending/$cursor"
+      printf '%s\n' "$line" > "$slot.json.tmp"; mv "$slot.json.tmp" "$slot.json"
+      worker_start "$slot"
     fi
     cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
   done

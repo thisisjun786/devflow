@@ -20,7 +20,9 @@ case "$*" in
     jq -n --rawfile body "$GH_STUB_DIR/live-body" '{body:$body}' ;;
   'pr checks '*) jq -e 'length>0 and all(.conclusion=="SUCCESS")' "$GH_STUB_DIR/checks" >/dev/null ;;
   'pr view '*)
+    touch "$GH_STUB_DIR/viewed"
     head=$(git rev-parse HEAD)
+    [ ! -f "$GH_STUB_DIR/head" ] || head=$(cat "$GH_STUB_DIR/head")
     state=OPEN
     [ ! -f "$GH_STUB_DIR/merged" ] || state=MERGED
     jq -n --arg head "$head" --arg state "$state" --slurpfile checks "$GH_STUB_DIR/checks" --slurpfile reviews "$GH_STUB_DIR/reviews" \
