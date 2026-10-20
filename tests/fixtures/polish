@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016
+set -euo pipefail
+printf '%s\n' "$1" > "$CASE_DIR/polish-prompt"
+body="$DV_STATE/POL-1/pr-body.md"
+case "$POLISH_MODE" in
+  success) sed 's/It is worth noting that this fixes/This fixes/' "$body" ;;
+  code) sed '/^```bash$/,/^```$/d' "$body" ;;
+  tilde) sed '/^~~~~md$/,/^~~~~$/d' "$body" ;;
+  indented) sed '/^    /d' "$body" ;;
+  quoted) sed 's/quoted code stays/quoted code changed/' "$body" ;;
+  inline) sed 's/`dv pr DF-18`/dv pr DF-18/' "$body" ;;
+  url) sed 's@https://example.test/other@https://example.test/other-changed@' "$body" ;;
+  empty) printf ' \n\t\n' ;;
+  failure) echo 'fake model failed' >&2; exit 7 ;;
+  timeout) sleep 30 & child=$!; printf '%s\n' "$child" > "$CASE_DIR/polish-child.pid"; wait "$child" ;;
+  hold)
+    touch "$CASE_DIR/polish-started"
+    while [ ! -f "$CASE_DIR/polish-release" ]; do sleep 0.1; done
+    cat "$body" ;;
+  *) exit 1 ;;
+esac

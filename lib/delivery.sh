@@ -22,6 +22,7 @@ cmd_pr() {
     } > "$S/pr-body.md"
     pr=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$S/pr-body.md")
     jq -n --arg url "$pr" '{url:$url}' > "$S/pr.json"
+    nohup "$DV_ROOT/bin/dv" polish "$ISSUE" >> "$S/polish.log" 2>&1 < /dev/null &
   fi
   meta_set --arg head "$head" --arg pr "$pr" '.status="pr" | .head=$head | .pr=$pr'
   nohup "$DV_ROOT/bin/dv" pr-wait "$ISSUE" > "$S/pr-wait.log" 2>&1 < /dev/null &

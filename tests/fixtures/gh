@@ -3,6 +3,10 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 case "$*" in
   'pr create '*) echo https://github.com/test/repo/pull/1 ;;
+  'pr edit '*)
+    [ ! -f "$GH_STUB_DIR/edit-fail" ] || exit 1
+    test "$#" = 5 && test "$4" = --body-file
+    cp "$5" "$GH_STUB_DIR/edited-body" ;;
   'pr checks '*) jq -e 'length>0 and all(.conclusion=="SUCCESS")' "$GH_STUB_DIR/checks" >/dev/null ;;
   'pr view '*)
     head=$(git rev-parse HEAD)
