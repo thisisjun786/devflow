@@ -46,7 +46,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_RECONCILE_INTERVAL:=1800}" # remote status safety net, seconds
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)
 : "${DV_PULL_RETRY:=15}" # seconds between restarts of an ended pull stream
-: "${DV_HOSTS=lina-os hx-linux go2-linux}" # SSH aliases for the status safety net (gos is not a dev host)
+: "${DV_HOSTS=lina-os hx-linux amd-linux go2-linux}" # SSH aliases for the status safety net (gos is not a dev host)
 : "${DV_MANAGER_HOST:=lina-os}" # submit/queue manager, independent of the local kick host
 : "${DV_MAX_JOBS:=}" # host capacity; empty = max(1, floor(logical cores / 8))
 : "${DV_MIN_MEMORY_MB:=512}" # reject bids below this available memory

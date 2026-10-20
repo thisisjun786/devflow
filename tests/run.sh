@@ -1211,6 +1211,22 @@ case_submit_order_amd() {
   test "$(jq -r .host "$DV_HOME/submissions/ORDER-2/task.json")" = amd-linux
   touch "$DV_HOME/stop"; wait "$watcher"
 }
+case_submit_order_amd_go2() {
+  bidding_hosts
+  export DV_HOSTS='go2-linux amd-linux'
+  local host
+  for host in amd-linux go2-linux; do
+    mkdir -p "$CASE_DIR/hosts/$host"
+    sed "s/^DV_HOST=.*/DV_HOST=$host/; s#/hosts/lina-os/#/hosts/$host/#g" "$CASE_DIR/hosts/lina-os/config" > "$CASE_DIR/hosts/$host/config"
+    printf '{"status":"submitted","score":100}\n' > "$CASE_DIR/hosts/$host/bid.json"
+  done
+  dv submit "$REPO" ORDER-3 change --brief "$CASE_DIR/brief"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_task ORDER-3 working
+  # Equal scores: amd-linux ranks before go2-linux (jun 10-20: hx -> amd -> go2).
+  test "$(jq -r .host "$DV_HOME/submissions/ORDER-3/task.json")" = amd-linux
+  touch "$DV_HOME/stop"; wait "$watcher"
+}
 case_submit_timeout() {
   bidding_hosts
   touch "$CASE_DIR/hosts/hx-linux/hang-bid" "$CASE_DIR/hosts/go2-linux/drop-award"
@@ -1475,7 +1491,7 @@ source "$ROOT/tests/host.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
+for name in host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?

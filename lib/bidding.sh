@@ -335,7 +335,7 @@ bid_schedule_one() {
     if jq -e --arg host "$host" '.attempts|index($host)!=null' "$dir/task.json" >/dev/null; then continue; fi
     if reply=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" bid --json --repo "$repo" --agent "$agent" < /dev/null 2>> "$dir/dispatch.log") &&
       printf '%s\n' "$reply" | jq -e 'type=="object" and (.score|type=="number") and (.status=="submitted" or .status=="rejected")' >/dev/null 2>&1; then
-      case "$host" in hx|hx-linux) rank=0 ;; go2|go2-linux) rank=1 ;; amd|amd-linux) rank=2 ;; lina-os) rank=3 ;; gos|gos-linux) rank=4 ;; *) rank=5 ;; esac
+      case "$host" in hx|hx-linux) rank=0 ;; amd|amd-linux) rank=1 ;; go2|go2-linux) rank=2 ;; lina-os) rank=3 ;; gos|gos-linux) rank=4 ;; *) rank=5 ;; esac
       printf '%s\n' "$reply" | jq -c --arg host "$host" --arg manager "$DV_MANAGER_HOST" --argjson rank "$rank" \
         '.host=$host | .rank=$rank | .manager=(if $host==$manager or $host=="lina-os" then 1 else 0 end)' >> "$bids"
     else jq -cn --arg host "$host" '{host:$host,status:"rejected",reason:"no valid bid response"}' >> "$bids"; fi
