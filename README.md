@@ -63,9 +63,11 @@ herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 `dv start`가 포커스�
 
 herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있으며, 이때 `dv send`는 `agent_not_found`를 반환합니다.
 
-Claude 기본 실행은 먼저 `~/.claude.json`의 `projects[worktree 경로].hasTrustDialogAccepted=true`를 기록합니다. 없는 파일은 만들고, 다른 키는 보존하며, 같은 디렉터리의 임시 파일을 rename하여 교체합니다. `~/.claude.json.dv-lock` 파일로 dv의 동시 기록을 직렬화하며 약 10초 동안 잠금을 얻지 못하면 시작 실패로 끝납니다. 손상된 JSON과 심볼릭 링크는 보존하고 시작을 거절합니다. SIGKILL 등으로 잠금이 남으면 실행 중인 기록 작업이 없는지 확인한 뒤 운영자가 잠금 파일을 제거해야 합니다. 이 잠금을 사용하지 않는 Claude 자체나 다른 도구의 동시 설정 변경까지 직렬화하지는 않습니다.
+Claude 기본 실행은 먼저 `~/.claude.json`의 `projects[worktree 경로].hasTrustDialogAccepted=true`를 기록합니다. `CLAUDE_CONFIG_DIR`가 비어 있지 않으면 Claude Code와 같이 `$CLAUDE_CONFIG_DIR/.claude.json`에 기록하고 `$CLAUDE_CONFIG_DIR/settings.json`에서 설정을 읽습니다. `CLAUDE_CONFIG_DIR`를 명시적으로 `~/.claude`로 지정해도 신뢰·온보딩 파일은 그 디렉터리 **안의** `.claude.json`입니다. `dv host check`도 같은 프로필을 읽으며, 선택한 프로필에 파일이 없거나 손상되어도 기본 프로필로 돌아가지 않습니다.
 
-`~/.claude.json`의 `hasCompletedOnboarding`과 `~/.claude/settings.json`의 `skipDangerousModePermissionPrompt`가 모두 true여야 Claude를 띄웁니다. 남은 온보딩이 있으면 `start-failed` 상태와 실패 이벤트를 남기며 화면에 키를 보내지 않습니다. 기기에서 `claude --dangerously-skip-permissions`를 한 번 대화형으로 실행해 테마·보안 안내·바이패스 경고를 끝내고 `dv host check`로 확인하세요. dv는 온보딩 플래그를 대신 설정하지 않습니다. `DV_AGENT_CMD_claude`로 전체 명령을 지정하면 이 준비 절차도 해당 명령에서 관리합니다.
+없는 프로필 디렉터리와 신뢰 파일은 만들고(새 파일 권한 600), 다른 키는 보존하며, 같은 디렉터리의 임시 파일을 rename하여 교체합니다. 기존 파일은 `cp -p`로 소유권·권한·ACL을 복사한 뒤 내용을 갱신하고 원래 mode를 복원합니다. Linux의 GNU cp와 macOS의 cp는 `-p`로 ACL도 보존합니다. 복사·권한 복원·쓰기 중 오류가 나면 원본을 교체하지 않습니다. 선택한 파일 옆의 `.claude.json.dv-lock`으로 dv의 동시 기록을 직렬화하며 약 10초 동안 잠금을 얻지 못하면 시작 실패로 끝납니다. 손상된 JSON과 심볼릭 링크는 보존하고 시작을 거절합니다. SIGKILL 등으로 잠금이 남으면 실행 중인 기록 작업이 없는지 확인한 뒤 운영자가 잠금 파일을 제거해야 합니다. 이 잠금을 사용하지 않는 Claude 자체나 다른 도구의 동시 설정 변경까지 직렬화하지는 않습니다.
+
+선택한 프로필의 `.claude.json`에서 `hasCompletedOnboarding`, `settings.json`에서 `skipDangerousModePermissionPrompt`가 모두 true여야 Claude를 띄웁니다. 환경 변수가 없거나 비어 있으면 각각 `~/.claude.json`과 `~/.claude/settings.json`을 읽습니다. 남은 온보딩이 있으면 `start-failed` 상태와 실패 이벤트를 남기며 화면에 키를 보내지 않습니다. 같은 `CLAUDE_CONFIG_DIR` 환경에서 `claude --dangerously-skip-permissions`를 한 번 대화형으로 실행해 테마·보안 안내·바이패스 경고를 끝내고 `dv host check`로 확인하세요. dv는 온보딩 플래그를 대신 설정하지 않습니다. `DV_AGENT_CMD_claude`로 전체 명령을 지정하면 이 준비 절차도 해당 명령에서 관리합니다.
 
 `DV_AGENT_QUESTIONS=sion`이 기본값이며 herdr에서 Codex의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 켜 둡니다. `DV_AGENT_QUESTIONS=off`이면 두 에이전트의 질문 도구를 끕니다. 질문 감시자가 없는 tmux에서는 항상 이 off 인자를 전달합니다. Codex goal·exec에 모두 적용하며, `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 질문 도구 설정도 해당 명령에서 정합니다.
 
