@@ -6,6 +6,7 @@
 - 개발 중 리뷰 루프·설계 비평·크로스체크·CRW/relay를 실행하지 않습니다.
 - base 브랜치 직접 push, force push, 원격 브랜치 삭제는 금지합니다.
 - 커밋 메시지는 `<ISSUE>: ...` 형식입니다.
+- docker는 hx-linux·amd-linux에 있다(10-21, jun은 docker 그룹). 에이전트 세션이 그룹 추가 전에 시작됐으면 `docker`가 권한 오류를 내니 `sg docker -c '<명령>'`으로 돌린다. go2-linux에는 없다.
 - 작업용 리눅스 기기(hx-linux, go2-linux 등)에서는 jun 계정 sudo로 작업에 필요한 시스템 패키지를 직접 설치해도 됩니다(준 10-20). 설치한 것은 보고서에 한 줄 남깁니다. lina-os와 gos-linux의 시스템 설정은 바꾸지 않습니다.
 - `$DV_STATE/<ISSUE>/report.md`에 바꾼 것, 시험 명령·결과, red/green, 남은 것을 기록합니다.
 - GitHub 저장소면 커밋 후 `dv pr <ISSUE>`까지 실행합니다. 마지막에 `dv done <ISSUE>`를 실행합니다.
