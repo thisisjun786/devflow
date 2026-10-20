@@ -78,6 +78,7 @@ bid_agent() {
   local agent=$1 override bin probe
   override="DV_AGENT_CMD_$agent"; override=${!override}
   [ -z "$override" ] || return 0 # explicit trusted custom launcher
+  [ "$agent" != codex ] || codex_environment || return 1
   probe="DV_AGENT_READY_$agent"; probe=${!probe}
   if [ -n "$probe" ]; then bid_limit "$DV_BID_TIMEOUT" bash -c "$probe" >/dev/null 2>&1; return; fi
   case "$agent" in
@@ -95,7 +96,7 @@ bid_settings() {
 }
 cmd_bid() {
   bid_settings
-  local repo='' agent=$DV_AGENT json=0 resources capacity active ready=false backend=false
+  local repo='' agent=$DV_AGENT json=0 resources capacity active ready=false backend=false trust=true root
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -112,12 +113,17 @@ cmd_bid() {
   bid_repo "$repo"
   [ -n "$repo" ] || BID_REPO_OK=true
   if bid_agent "$agent"; then ready=true; fi
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ -n "$repo" ]; then
+    root=$BID_REPO
+    if [ "$BID_CLONED" = true ]; then root=$(codex_repo_root "$BID_REPO") || root=''; fi
+    if ! codex_repo_allowed "$root" 2>/dev/null; then trust=false; fi
+  fi
   if { [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; } || command -v tmux >/dev/null; then backend=true; fi
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
-    --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" \
+    --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
     --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" \
     '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready,capacity:$capacity,active:$active,free_slots:([0,($capacity-$active)]|max)} |
-    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" else "" end) |
+    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" else "" end) |
     .status=(if .reason=="" then "submitted" else "rejected" end) |
     .score=(100*.free_slots/.capacity - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end))' |
     if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason]|@tsv'; fi

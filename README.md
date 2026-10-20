@@ -110,7 +110,18 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 
 감시 호스트의 `$DV_HOME/kick.q`와 `events.log`는 JSON Lines입니다. 이벤트 ID(host/issue/kind/head)로 중복을 무시하며, 작업자 로그·프롬프트는 `workers/`에 남습니다. 3초 간격은 로컬 파일 읽기이며 원격 안전망은 30분 간격 `ssh HOST dv status --json`입니다(감시 호스트 자신은 ssh 없이). 원격 개발 호스트는 감시 호스트의 dv-watch가 `DV_PULL_HOSTS`에 적힌 호스트마다 `dv-kick-pull <host>`를 띄워, 그 호스트의 `kick.q`를 ssh 한 줄기로 `tail -f` 해 받아 옵니다(끊기면 dv-watch가 다시 띄움, 별도 데몬 없음). 개발 호스트에서 감시 호스트로 가는 ssh 키가 필요 없고, 폴링 없이 쓰는 즉시 도착하며, 줄 위치와 파일 inode를 이 쪽 큐에 쓴 뒤에만 저장해, 전달 실패·재접속·큐 교체 때도 빠짐없이 이어 받습니다. 원격 쪽은 그 호스트의 devflow 설정(DV_HOME)을 읽습니다. 그 호스트의 `DV_KICK_HOST`는 자기 자신(로컬 큐)으로 둡니다. `$DV_HOME/stop`을 만들면 새 작업을 멈추고 실행 중인 작업자를 기다립니다. 재시작할 때 stop 파일을 지우세요. 비정상 종료의 잠금은 PID와 실제 프로세스를 확인한 뒤 사람이 지웁니다.
 
-Codex goal은 tmux에서 TUI 입력 마커를 기다린 후 `/goal`을 붙여넣고 Enter를 보냅니다. herdr에서는 Codex 감지를 기다린 뒤 `agent prompt`로 제출하고, 준비되지 않았거나 차단됐으면 시작 제한 시간 안에서 재시도합니다. hook 신뢰 창이 보이면 자동 승인이나 입력 없이 `codex hook trust required` failed 이벤트를 보내고 주입을 중단합니다. 제출 성공 후에도 `DV_START_WAIT`초 안에 herdr의 `working` 또는 화면의 `Pursuing goal`을 확인합니다. 같은 `/goal`이 입력 칸에 남아 있으면 1초 뒤 Enter를 한 번만 더 보내고, 시작이 확인되지 않으면 `codex goal did not start` failed 이벤트를 보냅니다. 실패한 시작은 `dv status`에서 `start-failed`로 표시하며, 터미널은 사람이 확인할 수 있게 남깁니다. 신뢰 문제를 해결한 뒤 `dv send`로 다시 지시할 수 있습니다. 폴더 신뢰는 해당 실행의 CLI 설정으로 worktree와 원본 저장소 루트에 모두 적용하며 사용자 설정 파일은 수정하지 않습니다.
+Codex goal은 tmux에서 TUI 입력 마커를 기다린 후 `/goal`을 붙여넣고 Enter를 보냅니다. herdr에서는 Codex 감지를 기다린 뒤 `agent prompt`로 제출하고, 준비되지 않았거나 차단됐으면 시작 제한 시간 안에서 재시도합니다. hook 또는 폴더 신뢰 창이 보이면 자동 승인이나 입력 없이 `codex hook trust required` 또는 `codex folder trust required` failed 이벤트를 보내고 주입을 중단합니다. 제출 성공 후에도 `DV_START_WAIT`초 안에 herdr의 `working` 또는 화면의 `Pursuing goal`을 확인합니다. 같은 `/goal`이 입력 칸에 남아 있으면 1초 뒤 Enter를 한 번만 더 보내고, 시작이 확인되지 않으면 `codex goal did not start` failed 이벤트를 보냅니다. 실패한 시작은 `dv status`에서 `start-failed`로 표시하며, 터미널은 사람이 확인할 수 있게 남깁니다. 신뢰 문제를 해결한 뒤 `dv send`로 다시 지시할 수 있습니다.
+
+Codex 기본 실행기는 운영자 설정 `~/.config/devflow/config.sh`의 `DV_TRUSTED_REPOS`에 있는 저장소만 시작합니다. 기본값은 빈 목록이며, 각 줄에 원본 저장소의 절대 경로 하나를 적습니다. 공백이 있는 경로도 지원하고, 부모 디렉터리나 glob은 허용 범위를 넓히지 않습니다. 심볼릭 링크는 실제 경로로 비교하며 linked worktree는 원본 저장소 루트를 확인합니다. 처음 clone할 호스트에도 예상 clone 경로를 미리 등록해야 합니다. 예:
+
+```bash
+DV_TRUSTED_REPOS="$HOME/code/my-app
+$HOME/code/another-app"
+```
+
+Codex 0.163의 폴더 온보딩은 CLI 신뢰 덮어쓰기만으로 생략되지 않습니다. 따라서 허용 목록을 확인한 뒤 `${CODEX_HOME:-$HOME/.codex}/config.toml`에 원본 저장소의 신뢰 항목이 없으면 추가합니다. 기존 바이트와 권한은 보존하고, 여러 dv 시작은 잠금으로 중복 추가를 막습니다. 이미 trusted면 변경하지 않으며, untrusted나 신뢰 값 없는 기존 항목, 심볼릭 링크 설정 파일, 해석할 수 없는 형식은 덮어쓰지 않고 시작을 거절합니다. Codex가 쓰는 일반 테이블·문자열, literal 문자열, dotted key를 지원합니다. inline provider/project 테이블과 여러 줄 문자열 등은 운영자가 일반 테이블 형식으로 정리해야 합니다. 저장한 신뢰는 이후 Codex 실행에도 유지되므로 철회하려면 허용 목록과 Codex의 해당 신뢰 항목을 함께 정리합니다. 명시적인 `DV_AGENT_CMD_codex` 사용자 실행기는 이 자동 설정을 사용하지 않습니다.
+
+비로그인 SSH와 오래된 터미널 서버에서도 인증을 준비하도록, Codex 입찰·시작·실제 에이전트 실행 때 호스트의 `DV_CODEX_ENV_FILE`을 읽습니다. 기본값은 `~/.opencodex/codex-auth-env.sh`이며 다른 인증을 쓰면 운영자가 경로를 지정하거나 빈 값으로 끌 수 있습니다. 이 파일은 신뢰할 수 있는 셸 코드여야 합니다. 활성 `model_provider`의 `env_key`가 비어 있으면 `login status`가 성공해도 입찰과 시작을 거절합니다. 파일에서 내보낸 인증 값은 에이전트에 상속하며 pane 명령이나 상태 파일에 넣지 않습니다. 터미널 서버 환경에만 의존하지 않도록 인증 변수는 이 파일에서 준비하세요.
 
 exec는 한 번 실행 후 성공할 때 래퍼가 done을 호출합니다. goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. 시작에 성공했던 에이전트의 재시작은 자동화하지 않습니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리를 받습니다.
 
