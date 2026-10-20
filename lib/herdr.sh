@@ -100,7 +100,7 @@ herdr_question_record() {
     # Stream JSONL, tolerate a partially written tail, and keep only the last
     # matching call. Invalid arguments on that call must not revive an old one.
     if message=$(jq -ner --arg agent "$agent" --arg session "$session_id" '
-      reduce inputs? as $row ({matches:false,question:null};
+      reduce (inputs?) as $row ({matches:false,question:null};
         if $agent=="codex" then
           if $row.type=="session_meta" then .matches=($row.payload.id==$session)
           elif .matches and $row.type=="response_item" and $row.payload.type=="function_call"
