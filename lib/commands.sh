@@ -120,10 +120,16 @@ run_agent() {
           wait "$helper" || true
         fi ;;
       claude)
-        [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
-        args=("$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions)
-        [ "$DV_AGENT_QUESTIONS" != off ] || args+=(--disallowedTools AskUserQuestion)
-        "${args[@]}" -- "$instruction" || rc=$? ;;
+        if ! claude_trust_worktree "$WT"; then
+          agent_start_failed "Claude folder trust could not be recorded in $HOME/.claude.json" ''; rc=1
+        elif ! claude_onboarding | jq -e '.hasCompletedOnboarding and .skipDangerousModePermissionPrompt' >/dev/null; then
+          agent_start_failed 'Claude onboarding incomplete: 기기에서 claude를 한 번 대화형으로 실행해 온보딩을 끝내라 (--dangerously-skip-permissions 경고 포함)' ''; rc=1
+        else
+          [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
+          args=("$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions)
+          [ "$DV_AGENT_QUESTIONS" != off ] || args+=(--disallowedTools AskUserQuestion)
+          "${args[@]}" -- "$instruction" || rc=$?
+        fi ;;
       devin)
         [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
         accept_devin_trust & helper=$!
@@ -138,7 +144,7 @@ run_agent() {
   if [ "$mode" = exec ]; then
     if [ "$rc" -eq 0 ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
     else "$DV_ROOT/bin/dv" kick failed "$ISSUE" "agent exited $rc"; fi
-  # Codex startup failures already emitted failed through codex_start_failed.
+  # Startup failures already emitted failed through agent_start_failed.
   elif [ ! -f "$S/done.json" ] && ! jq -e '.status=="start-failed"' "$S/meta" >/dev/null; then
     "$DV_ROOT/bin/dv" kick failed "$ISSUE" "goal agent exited $rc without dv done"
   fi
@@ -151,12 +157,13 @@ stop_question_sentinel() {
     sentinel=''
   fi
 }
-codex_start_failed() {
+agent_start_failed() {
   local reason=$1 screen=$2
   printf '%s\n%s\n' "$screen" "$reason" >> "$S/log"
   meta_set --arg reason "$reason" 'if .status=="running" then .status="start-failed" | .failure_reason=$reason else . end'
   "$DV_ROOT/bin/dv" kick failed "$ISSUE" "$reason"
 }
+codex_start_failed() { agent_start_failed "$@"; }
 codex_screen() {
   # Use the current viewport: history can contain dismissed trust prompts or
   # an earlier /goal. Logs still use recent-unwrapped through herdr_snapshot.
