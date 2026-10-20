@@ -146,7 +146,7 @@ pending_event() {
   return 1
 }
 reconcile() {
-  local host rows row issue head id remote
+  local host rows row issue head id remote event_host token recovered
   for host in $DV_HOSTS; do
     # The watcher's own host needs no ssh (and may have no key to itself).
     if [ "$host" = "$DV_HOST" ]; then
@@ -170,9 +170,13 @@ reconcile() {
       while IFS= read -r row; do
         issue=$(printf '%s' "$row" | jq -r .issue)
         head=$(printf '%s' "$row" | jq -r '.head // .start_head // ""')
-        id="$host:$issue:done:$head"
+        # Use the source's identity, not the SSH alias used to reach it.
+        event_host=$(printf '%s' "$row" | jq -r --arg host "$host" '.host // $host')
+        token=$(printf '%s' "$row" | jq -r '.award_token // ""')
+        recovered=$(event_json 'done' "$issue" 'Recovered by status safety net' "$event_host" "$head" '' "$token")
+        id=$(printf '%s' "$recovered" | jq -r .id)
         if ! jq -se --arg id "$id" 'any(.[]; .id==$id)' "$DV_HOME/kick.q" >/dev/null 2>&1; then
-          "$DV_ROOT/bin/dv-kick" 'done' "$issue" 'Recovered by status safety net' "$host" "$head"
+          "$DV_ROOT/bin/dv-kick" 'done' "$issue" 'Recovered by status safety net' "$event_host" "$head" "$id" "$token"
         fi
       done < <(printf '%s\n' "$rows" | jq -c '.[] | select(.status=="done" or
         ((.status=="pr" or .status=="ready") and .done_at!=null and
