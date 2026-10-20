@@ -1,0 +1,20 @@
+# name	version	install	scope
+# system = distribution version; bundled = supplied by the pinned node archive.
+go	1.27.3	archive	all
+node	24.20.0	archive	all
+npm	bundled	node	all
+uv	0.11.32	archive	all
+gh	2.46.0	archive	all
+gitleaks	8.30.1	archive	all
+herdr	0.9.1	binary	all
+codex-cli	0.163.0	check	all
+devin	3000.11.92	check	all
+claude-code	2.1.304	npm	all
+pnpm	10.33.3	npm	all
+shellcheck	system	apt	all
+jq	system	apt	all
+tmux	system	apt	all
+sqlite3	system	apt	all
+git	system	apt	all
+zsh	system	apt	all
+agy	system	check	lina-os
