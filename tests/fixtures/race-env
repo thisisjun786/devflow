@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Sourced only by the lock regression cases through BASH_ENV.
+sleep() {
+  # Exercise all lock retries without adding ten seconds to the suite.
+  if [ "${DV_TEST_RACE:-}" = timeout ] && [ "$*" = 0.1 ]; then return 0; fi
+  command sleep "$@"
+}
 mkdir() {
   if [ "${DV_TEST_RACE:-}" = admission ] && [ "$*" = "$DV_STATE/.admission-lock" ]; then
     # uutils 0.8.0 can report success to both concurrent mkdir callers.

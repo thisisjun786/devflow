@@ -7,6 +7,9 @@ start_worktree() (
   lock="$common/devflow-worktree.lock"
   owned_lock "$lock" "$$" || fail 'repository worktree creation busy'
   trap 'owned_unlock "$lock" "$$"' EXIT
+  # A timeout must leave the issue available for retry. Claim its state only
+  # after admission to Git; retain it if the Git operation itself fails.
+  mkdir "$S" || fail 'issue was started concurrently'
   git -C "$REPO" worktree add -b "$BRANCH" "$WT" "$1"
 )
 cmd_start() {
@@ -55,7 +58,6 @@ cmd_start() {
   start_sha=$(git -C "$REPO" rev-parse --verify "$ref^{commit}")
   lower=$(printf '%s' "$ISSUE" | tr '[:upper:]' '[:lower:]')
   BRANCH="$agent/$lower-$slug"; WT="$DV_WORK/$(basename "$REPO")-$ISSUE"
-  mkdir "$S" || fail 'issue was started concurrently'
   start_worktree "$start_sha"
   cat "$DV_ROOT/templates/rules.md" > "$S/brief.md"
   printf '\nIssue: %s\nWorktree: %s\nReport: %s/report.md\n\n' "$ISSUE" "$WT" "$S" >> "$S/brief.md"

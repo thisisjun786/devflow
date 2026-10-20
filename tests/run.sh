@@ -157,6 +157,23 @@ case_parallel() {
   test ! -e "$REPO/.git/devflow-worktree.lock"
   test "$(cat "$REPO/dirty")" = keep
   start T-10; wait_done T-10
+  case_parallel_timeout
+}
+case_parallel_timeout() {
+  needs_tmux; repo parallel-timeout
+  local lock="$REPO/.git/devflow-worktree.lock"
+  mkdir "$lock"
+  printf '%s\n' "$$" > "$lock/pid-$$"
+  ln "$lock/pid-$$" "$lock/owner"
+  if BASH_ENV="$ROOT/tests/fixtures/race-env" DV_TEST_RACE=timeout DV_TEST_ACTOR=timeout \
+    start TIMEOUT-1 > "$CASE_DIR/timeout-output" 2>&1; then return 1; fi
+  grep 'repository worktree creation busy' "$CASE_DIR/timeout-output"
+  test ! -e "$DV_STATE/TIMEOUT-1"
+  test "$(cat "$lock/owner")" = "$$"
+  rm "$lock/pid-$$" "$lock/owner"
+  rmdir "$lock"
+  # Retrying the same issue succeeds once the other owner releases the lock.
+  start TIMEOUT-1; wait_done TIMEOUT-1
 }
 wait_contender() {
   local tries
