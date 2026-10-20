@@ -15,24 +15,28 @@ host_rows() {
 host_command() {
   case "$1" in codex-cli) echo codex ;; claude-code) echo claude ;; *) printf '%s\n' "$1" ;; esac
 }
-host_limit() {
+host_limit() (
   local seconds=$1 child timer rc=0
   shift
+  # Bash job control assigns a separate group, including inherited stdout
+  # holders. A direct-child kill cannot bound command substitution otherwise.
+  set -m
   "$@" & child=$!
   (
-    trap 'kill "$sleeper" 2>/dev/null || true; exit' TERM INT
-    sleep "$seconds" & sleeper=$!
-    wait "$sleeper" || exit
-    kill "$child" 2>/dev/null || exit
-    sleep 1 & sleeper=$!
-    wait "$sleeper" || exit
-    kill -KILL "$child" 2>/dev/null || true
+    set +m
+    sleep "$seconds"
+    kill -TERM -- "-$child" 2>/dev/null || exit
+    sleep 1
+    kill -KILL -- "-$child" 2>/dev/null || true
   ) </dev/null >/dev/null 2>&1 & timer=$!
+  set +m
   wait "$child" || rc=$?
-  kill "$timer" 2>/dev/null || true
+  # The leader may exit before descendants, including after TERM.
+  kill -KILL -- "-$child" 2>/dev/null || true
+  kill -TERM -- "-$timer" 2>/dev/null || true
   wait "$timer" 2>/dev/null || true
   return "$rc"
-}
+)
 host_shell_path() {
   local mode=$1 output shell=${DV_HOST_SHELL:-${SHELL:-/bin/bash}}
   local args=(-i "HOME=$HOME" "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "SHELL=$shell"
@@ -63,14 +67,19 @@ host_measure() {
     if [ -n "$version" ] && { [ "$expected" = system ] || [ "$expected" = bundled ] || [ "$version" = "$expected" ]; }; then status=ok; fi
     # A standalone install must not remain tied to an old checkout's binary.
     if [ "$name" = gitleaks ] && [ -L "$bin" ]; then status=wrong-version; reason=symlink; fi
+    if [ "$name" = npm ] && [ "$expected" = bundled ] && ! host_npm_bundled "$bin" "$path"; then
+      status=wrong-version; reason=not-bundled
+    fi
   fi
   jq -cn --arg path "$bin" --arg version "$version" --arg status "$status" --arg reason "$reason" \
     '{path:$path,version:$version,status:$status,reason:$reason}'
 }
 host_auth() {
   local name=$1 path=$2 bin output
-  if [ "$name" = codex ]; then bin=$(host_resolve "$path" "$DV_CODEX_BIN")
-  else bin=$(host_resolve "$path" "$name"); fi
+  case "$name" in
+    codex) bin=$DV_CODEX_BIN ;; claude) bin=$DV_CLAUDE_BIN ;; devin) bin=$DV_DEVIN_BIN ;; *) bin=$name ;;
+  esac
+  bin=$(host_resolve "$path" "$bin")
   if [ -z "$bin" ] || [ ! -x "$bin" ]; then echo missing; return; fi
   case "$name" in codex) set -- login status ;; *) set -- auth status ;; esac
   if output=$(PATH="$path" host_limit 10 "$bin" "$@" 2>/dev/null); then
@@ -89,6 +98,16 @@ host_realpath() {
   done
   [ -e "$path" ] || return 1
   printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd -P)" "$(basename "$path")"
+}
+host_npm_bundled() {
+  local bin=$1 path=$2 actual prefix node pinned
+  actual=$(host_realpath "$bin") || return 1
+  prefix=$(cd "$HOME/node" && pwd -P) || return 1
+  case "$actual" in "$prefix/bin/npm"|"$prefix/lib/node_modules/npm/"*) ;; *) return 1 ;; esac
+  node=$(host_resolve "$path" node)
+  [ "$(host_realpath "$node")" = "$prefix/bin/node" ] || return 1
+  pinned=$(host_rows | awk -F '\t' '$1=="node" {print $2}') || return 1
+  [ -n "$pinned" ] && [ "$(host_version "$node" node)" = "$pinned" ]
 }
 host_codex_launcher() {
   local path=$1 proxy=$2 bin status=missing actual expected
@@ -210,8 +229,8 @@ host_publish() {
   local source=$1 target=$2 backup=''
   mkdir -p "$(dirname "$target")"
   if [ -e "$target" ] || [ -L "$target" ]; then
-    backup="$target.dv-backup.$(date +%s).$$"
-    if [ -e "$backup" ] || [ -L "$backup" ]; then fail "backup exists: $backup"; fi
+    backup=$(mktemp -d "$target.dv-backup.XXXXXX") || fail 'cannot reserve backup'
+    rmdir "$backup"
     mv "$target" "$backup"
   fi
   if ! mv "$source" "$target"; then
@@ -219,6 +238,29 @@ host_publish() {
     fail "install failed: $target"
   fi
   [ -z "$backup" ] || printf 'Kept previous install: %s\n' "$backup"
+}
+host_download_verify() {
+  local name=$1 version=$2 url=$3 file=$4 metadata=$5 checksum_url expected actual asset
+  asset=${url##*/}
+  case "$name" in
+    go) checksum_url='https://go.dev/dl/?mode=json&include=all' ;;
+    node) checksum_url="${url%/*}/SHASUMS256.txt" ;;
+    uv) checksum_url="$url.sha256" ;;
+    gh) checksum_url="${url%/*}/gh_${version}_checksums.txt" ;;
+    gitleaks) checksum_url="${url%/*}/gitleaks_${version}_checksums.txt" ;;
+    herdr) checksum_url="https://api.github.com/repos/herdrdev/herdr/releases/tags/v$version" ;;
+    *) fail "no checksum source for $name" ;;
+  esac
+  curl --fail --location --silent --show-error --connect-timeout 15 --max-time 300 --output "$metadata" "$checksum_url"
+  case "$name" in
+    go) expected=$(jq -er --arg asset "$asset" '[.[].files[] | select(.filename==$asset) | .sha256] | select(length==1) | .[0]' "$metadata") || fail "missing checksum: $asset" ;;
+    herdr) expected=$(jq -er --arg asset "$asset" '[.assets[] | select(.name==$asset) | .digest | select(startswith("sha256:")) | ltrimstr("sha256:")] | select(length==1) | .[0]' "$metadata") || fail "missing checksum: $asset" ;;
+    *) expected=$(awk -v asset="$asset" '$2==asset || $2=="*"asset {print $1}' "$metadata") ;;
+  esac
+  [[ "$expected" =~ ^[a-fA-F0-9]{64}$ ]] || fail "invalid checksum: $asset"
+  if command -v sha256sum >/dev/null; then actual=$(sha256sum "$file")
+  else actual=$(shasum -a 256 "$file"); fi
+  [ "${actual%% *}" = "$expected" ] || fail "checksum mismatch: $asset"
 }
 host_download_install() {
   local name=$1 version=$2 stage=$3 arch=$4 url file source target machine node_arch leaks_arch
@@ -235,6 +277,7 @@ host_download_install() {
   esac
   file="$stage/download"
   curl --fail --location --silent --show-error --connect-timeout 15 --max-time 300 --output "$file" "$url"
+  host_download_verify "$name" "$version" "$url" "$file" "$stage/checksum"
   if [ "$name" = herdr ]; then mv "$file" "$source"; chmod +x "$source"
   else tar -xzf "$file" -C "$stage"; fi
   [ "$(host_version "$source" "$name")" = "$version" ] || fail "downloaded $name has unexpected version"
@@ -268,7 +311,7 @@ host_sync() (
     target=$(host_target "$name"); current=''
     if [ -x "$target" ]; then current=$(host_version "$target" "$name") || true; fi
     # npm belongs to the node distribution: repair the archive if it is broken.
-    if [ "$name" = node ] && ! host_version "$HOME/node/bin/npm" npm >/dev/null; then current=''; fi
+    if [ "$name" = node ] && { ! host_version "$HOME/node/bin/npm" npm >/dev/null || ! host_npm_bundled "$HOME/node/bin/npm" "$PATH"; }; then current=''; fi
     if [ -n "$current" ] && { [ "$version" = bundled ] || [ "$current" = "$version" ]; } &&
       { [ "$name" != gitleaks ] || [ ! -L "$target" ]; }; then continue; fi
     printf 'Install: %s %s\n' "$name" "$version"
@@ -280,8 +323,13 @@ host_sync() (
       npm)
         [ -x "$HOME/node/bin/npm" ] || fail 'install node/npm first'
         package=$name; [ "$name" != claude-code ] || package=@anthropic-ai/claude-code
-        "$HOME/node/bin/npm" install --global --prefix "$HOME/node" "$package@$version"
-        [ "$(host_version "$target" "$name")" = "$version" ] || fail "installed $name has unexpected version" ;;
+        stage=$(mktemp -d "$HOME/.local/.dv-host.XXXXXX")
+        # Copy the contents even when the live prefix itself is a symlink.
+        cp -R "$HOME/node/." "$stage/node"
+        PATH="$stage/node/bin:$PATH" "$stage/node/bin/npm" install --global --prefix "$stage/node" "$package@$version"
+        [ "$(host_version "$stage/node/bin/$(host_command "$name")" "$name")" = "$version" ] || fail "installed $name has unexpected version"
+        host_publish "$stage/node" "$HOME/node"
+        rm -rf "$stage"; stage='' ;;
       node) fail 'npm missing from node; restore the pinned node archive before retrying' ;;
       *) fail "unsupported installer: $install" ;;
     esac

@@ -12,6 +12,10 @@ case "$*" in
       shift
     done
     echo https://github.com/test/repo/pull/1 ;;
+  'pr edit '*)
+    [ ! -f "$GH_STUB_DIR/edit-fail" ] || exit 1
+    test "$4" = --body-file
+    cp "$5" "$GH_STUB_DIR/live-body" ;;
   'api --method PATCH repos/'*)
     [ ! -f "$GH_STUB_DIR/edit-fail" ] || exit 1
     test "$#" = 6 && test "$4" = "${GH_STUB_PR_ENDPOINT:-repos/test/repo/pulls/1}" && test "$5" = -F

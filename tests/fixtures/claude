@@ -2,6 +2,6 @@
 set -euo pipefail
 touch "$DV_STATE/$DV_ISSUE/claude-launched"
 # The trust record must be committed before the executable is entered.
-jq -e --arg path "$PWD" '.projects[$path].hasTrustDialogAccepted==true' "$HOME/.claude.json"
+jq -e --arg path "$(pwd -P)" '.projects[$path].hasTrustDialogAccepted==true' "$HOME/.claude.json"
 touch "$DV_STATE/$DV_ISSUE/trust-before-launch"
 "$ROOT/tests/fixtures/agent"

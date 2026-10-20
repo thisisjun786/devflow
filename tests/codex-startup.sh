@@ -84,8 +84,13 @@ case_codex_repo_trust() {
   dv start "$REPO" HS-1 trust --mode exec
   wait_native HS-1
   wt=$(jq -r .worktree "$DV_STATE/HS-1/meta")
-  jq -e --arg root "projects.$(jq -Rn --arg path "$REPO" '$path').trust_level=\"trusted\"" \
-    --arg wt "projects.$(jq -Rn --arg path "$wt" '$path').trust_level=\"trusted\"" \
+  # Git resolves /var -> /private/var on macOS and removes duplicate slashes.
+  # Assert the paths Codex actually uses to look up trust, on either OS.
+  local canonical_repo canonical_wt
+  canonical_repo=$(cd "$REPO" && pwd -P)
+  canonical_wt=$(cd "$wt" && pwd -P)
+  jq -e --arg root "projects.$(jq -Rn --arg path "$canonical_repo" '$path').trust_level=\"trusted\"" \
+    --arg wt "projects.$(jq -Rn --arg path "$canonical_wt" '$path').trust_level=\"trusted\"" \
     'index($root)!=null and index($wt)!=null' "$DV_STATE/HS-1/args.json"
   dv clean HS-1
 }

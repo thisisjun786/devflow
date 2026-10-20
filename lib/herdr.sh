@@ -97,21 +97,50 @@ herdr_question_record() {
   esac
   [ -d "$root" ] || return 1
   while IFS= read -r file; do
-    # Stream JSONL, tolerate a partially written tail, and keep only the last
-    # matching call. Invalid arguments on that call must not revive an old one.
+    # Stream JSONL, tolerate a partial tail, and retain every outstanding call.
     if message=$(jq -ner --arg agent "$agent" --arg session "$session_id" '
-      reduce (inputs?) as $row ({matches:false,question:null};
+      def decoded: if type=="string" then try fromjson catch null else . end;
+      def call($id; $question; $async):
+        .next+=1 | .calls[$id // "__legacy__"]={question:$question,async:$async,answered:[],order:.next};
+      def output($id; $value):
+        if $id!=null and .calls[$id]!=null then
+          # Async tool output acknowledges delivery to the UI, not an answer.
+          if .calls[$id].async and (($value|decoded|if type=="object" then .accepted else null end)!=false) then .
+          else del(.calls[$id]) end
+        else . end;
+      def answer($item):
+        if ($item|type)=="array" and ($item|length)==3 and
+          ($item[0]|type)=="string" and ($item[0]|split(".")|last)=="request_user_input_async" and
+          ($item[1]|type)=="string" and ($item[2]|type)=="number" then
+          $item[1] as $id | $item[2] as $index | (.calls[$id].question.questions // [] | length) as $count |
+          if .calls[$id].async and $index>=0 and $index<$count and ($index|floor)==$index then
+            .calls[$id].answered |= (. + [$index] | unique) |
+            if (.calls[$id].answered|length)==$count then del(.calls[$id]) else . end
+          else . end
+        else . end;
+      reduce (inputs?) as $row ({matches:false,calls:{},next:0};
         if $agent=="codex" then
           if $row.type=="session_meta" then .matches=($row.payload.id==$session)
           elif .matches and $row.type=="response_item" and $row.payload.type=="function_call"
-            and (($row.payload.name // "") | contains("request_user_input")) then
-            .question=($row.payload.arguments | if type=="string" then try fromjson catch null else . end)
+            and (($row.payload.name // "" | split(".") | last) | .=="request_user_input" or .=="request_user_input_async") then
+            call($row.payload.call_id; ($row.payload.arguments|decoded); ($row.payload.name|endswith("request_user_input_async")))
+          elif .matches and $row.type=="response_item" and $row.payload.type=="function_call_output" then
+            output($row.payload.call_id; $row.payload.output)
+          elif .matches and $row.type=="response_item" and $row.payload.type=="message" and $row.payload.role=="user" then
+            reduce ($row.payload.content[]? | .text? | select(type=="string") |
+              try (capture("^<send_user_message_question_reply>\\s*(?<answers>[\\s\\S]*)\\s*</send_user_message_question_reply>$").answers |
+                fromjson | .[] | .questionItemId | decoded) catch empty) as $item (.; answer($item))
           else . end
-        elif $row.sessionId==$session and $row.type=="assistant" then
+        elif $row.sessionId==$session then
           reduce $row.message.content[]? as $item (.;
-            if $item.type=="tool_use" and $item.name=="AskUserQuestion" then .question=$item.input else . end)
+            if $item.type=="tool_use" and $item.name=="AskUserQuestion" then call($item.id; $item.input; false)
+            elif $item.type=="tool_result" then output($item.tool_use_id; $item.content)
+            else . end)
         else . end)
-      | .question | select(type=="object") | tojson | .[0:2000]
+      | .calls | to_entries | sort_by(.value.order) |
+        map(select(.value.question|type=="object") |
+          {key:($session+":"+.key),message:(.value.question|tojson|.[0:2000]),record:true}) |
+        select(length>0) | tojson
     ' "$file" 2>/dev/null); then
       printf '%s\n' "$message"
       return 0
@@ -121,12 +150,14 @@ herdr_question_record() {
 }
 herdr_question_sentinel() {
   local question_bin question_tmp question_child='' question_owner_subshell=$BASH_SUBSHELL seq info message first=1
+  local records record key status sent='{}' sent_seq='' episode=0 pending_keys
   question_bin=$(herdr_bin) || return 0
   question_tmp=$(mktemp -d "$S/.question.XXXXXX") || return 0
   trap herdr_question_cleanup EXIT
   trap 'exit 0' INT TERM
   while :; do
-    if ! herdr_question_wait agent wait "$HERDR_PANE" --until blocked; then
+    # Bound the subscription so a question in a still-working session is read.
+    if ! herdr_question_wait agent wait "$HERDR_PANE" --until blocked --timeout 1000; then
       # agent.wait cannot subscribe before an agent is detected (herdr 0.9.1).
       # Wait once for the application's banner through herdr's output waiter;
       # do not poll agent.get while the process is starting.
@@ -135,33 +166,63 @@ herdr_question_sentinel() {
         herdr_question_wait pane wait-output "$HERDR_PANE" --regex '(?m)^[^[:alnum:]]*(OpenAI Codex|Claude Code|Devin)' --source visible --timeout "$((DV_START_WAIT * 1000))" || break
         continue
       fi
-      break
+      jq -e '.error.code=="timeout"' "$question_tmp/error" >/dev/null 2>&1 || break
+      info=$(herdr_cmd agent get "$HERDR_PANE") || break
+    else
+      info=$(cat "$question_tmp/reply")
     fi
     first=0
-    seq=$(jq -er '.result.agent | select(.agent_status=="blocked") | .state_change_seq' "$question_tmp/reply") || break
-    if herdr_question_wait agent wait "$HERDR_PANE" --until idle --until working --until 'done' --until unknown --timeout "$((DV_BLOCKED_GRACE * 1000))"; then continue; fi
-    # Only a server timeout means that the grace period elapsed; transport,
-    # missing-pane and detection errors must not fabricate a question.
-    jq -e '.error.code=="timeout"' "$question_tmp/error" >/dev/null 2>&1 || break
-    info=$(herdr_cmd agent get "$HERDR_PANE") || break
-    # A leave/re-enter race belongs to a fresh episode with a fresh grace period.
-    printf '%s\n' "$info" | jq -e --argjson seq "$seq" '.result.agent | .agent_status=="blocked" and .state_change_seq==$seq' >/dev/null || continue
-    if ! message=$(herdr_question_record "$info"); then
-      message=$(herdr_cmd pane read "$HERDR_PANE" --source visible --lines 8) || message='Blocked pane; screen unavailable'
-      # Screen fallback keeps the existing cleanup; JSON question text stays exact.
-      message=$(printf '%s\n' "$message" | jq -Rrs '
-        gsub("\u001b\\[[0-?]*[ -/]*[@-~]"; "") |
-        gsub("\u001b\\][^\u0007]*(\u0007|\u001b\\\\)"; "") |
-        gsub("[\u0000-\u001f\u007f]"; " ") | gsub("\\s+"; " ") |
-        sub("^ +"; "") | sub(" +$"; "") | .[-1000:]')
+    status=$(printf '%s\n' "$info" | jq -r .result.agent.agent_status)
+    seq=$(printf '%s\n' "$info" | jq -er .result.agent.state_change_seq) || break
+    records=$(herdr_question_record "$info") || records='[]'
+    if [ "$records" = '[]' ] && [ "$status" = blocked ] && [ "$seq" != "$sent_seq" ]; then
+      if herdr_question_wait agent wait "$HERDR_PANE" --until idle --until working --until 'done' --until unknown --timeout "$((DV_BLOCKED_GRACE * 1000))"; then continue; fi
+      # Only server timeout means grace elapsed, never transport/detection errors.
+      jq -e '.error.code=="timeout"' "$question_tmp/error" >/dev/null 2>&1 || break
+      info=$(herdr_cmd agent get "$HERDR_PANE") || break
+      printf '%s\n' "$info" | jq -e --argjson seq "$seq" '.result.agent | .agent_status=="blocked" and .state_change_seq==$seq' >/dev/null || continue
+      # The writer can append the question while grace is running.
+      records=$(herdr_question_record "$info") || records='[]'
+      if [ "$records" = '[]' ]; then
+        message=$(herdr_cmd pane read "$HERDR_PANE" --source visible --lines 8) || message='Blocked pane; screen unavailable'
+        # Screen fallback keeps the existing cleanup; JSON question text stays exact.
+        message=$(printf '%s\n' "$message" | jq -Rrs '
+          gsub("\u001b\\[[0-?]*[ -/]*[@-~]"; "") |
+          gsub("\u001b\\][^\u0007]*(\u0007|\u001b\\\\)"; "") |
+          gsub("[\u0000-\u001f\u007f]"; " ") | gsub("\\s+"; " ") |
+          sub("^ +"; "") | sub(" +$"; "") | .[-1000:]')
+        records=$(jq -cn --arg key "blocked:$seq" --arg message "$message" '[{key:$key,message:$message,record:false}]')
+      fi
     fi
-    jq -cn --argjson seq "$seq" --argjson owner "$$" '{seq:$seq,owner:$owner}' > "$question_tmp/pending"
-    mv "$question_tmp/pending" "$S/question.pending"
-    DV_QUESTION_EPISODE="$HERDR_PANE:$$:$seq" "$DV_ROOT/bin/dv" kick question "$ISSUE" "$message"
-    herdr_question_wait agent wait "$HERDR_PANE" --until idle --until working --until 'done' --until unknown || break
-    rm -f "$S/question.pending"
+    while IFS= read -r record; do
+      key=$(printf '%s\n' "$record" | jq -r .key)
+      if printf '%s\n' "$sent" | jq -e --arg key "$key" '.[$key]==true' >/dev/null; then continue; fi
+      message=$(printf '%s\n' "$record" | jq -r .message)
+      episode=$((episode + 1))
+      DV_QUESTION_EPISODE="$HERDR_PANE:$$:$episode" "$DV_ROOT/bin/dv" kick question "$ISSUE" "$message"
+      # kick deliberately exits successfully even on delivery failure. Only a
+      # matching delivered event can publish the pending marker.
+      if jq -se --arg suffix ":$HERDR_PANE:$$:$episode" 'any(.[]; .kind=="question" and .delivered and (.id|endswith($suffix)))' "$S/events.log" >/dev/null; then
+        sent=$(printf '%s\n' "$sent" | jq -c --arg key "$key" '.[$key]=true')
+        if [ "$status" = blocked ]; then sent_seq=$seq; fi
+      fi
+    done < <(printf '%s\n' "$records" | jq -c '.[]')
+    pending_keys=$(printf '%s\n' "$records" | jq -c --argjson sent "$sent" '[.[]|select(.record and $sent[.key]==true)|.key]')
+    if [ "$pending_keys" != '[]' ] || { [ "$status" = blocked ] && printf '%s\n' "$sent" | jq -e --arg key "blocked:$seq" '.[$key]==true' >/dev/null; }; then
+      jq -cn --argjson seq "$seq" --argjson owner "$$" --argjson keys "$pending_keys" '{seq:$seq,owner:$owner,keys:$keys}' > "$question_tmp/pending"
+      mv "$question_tmp/pending" "$S/question.pending"
+    else
+      rm -f "$S/question.pending"
+    fi
+    if [ "$status" = blocked ]; then
+      if ! herdr_question_wait agent wait "$HERDR_PANE" --until idle --until working --until 'done' --until unknown --timeout 1000; then
+        jq -e '.error.code=="timeout"' "$question_tmp/error" >/dev/null 2>&1 || break
+      fi
+    elif [ "$records" = '[]' ]; then
+      sent_seq=''
+    fi
   done
-  printf 'dv: question sentinel stopped: %s\n' "$(cat "$question_tmp/error")" >> "$S/log"
+  printf 'dv: question sentinel stopped: %s\n' "$(cat "$question_tmp/error")"
 }
 herdr_clean() {
   local workspace reply rc=0

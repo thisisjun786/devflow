@@ -99,9 +99,11 @@ run_agent() {
   # Native herdr snapshots are collected at done/clean; tmux keeps its TTY log.
   if [ "$BACKEND" = tmux ]; then
     tmux_dv pipe-pane -o -t "$SESSION:0.0" "cat >> $(shell_join "$S/log")"
+    # This backend has no question watcher to deliver answers to the operator.
+    DV_AGENT_QUESTIONS=off
   else
     [[ "$DV_BLOCKED_GRACE" =~ ^[1-9][0-9]*$ ]] || fail 'DV_BLOCKED_GRACE must be a positive integer'
-    herdr_question_sentinel & sentinel=$!
+    herdr_question_sentinel >> "$S/question.log" 2>&1 & sentinel=$!
     trap 'stop_question_sentinel' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -120,7 +122,7 @@ run_agent() {
         fi
         args=("$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\"" -s danger-full-access -a never)
         [ "$DV_AGENT_QUESTIONS" != off ] || args+=(-c tools.experimental_request_user_input.enabled=false)
-        args+=(-c "projects.$(jq -Rn --arg path "$WT" '$path').trust_level=\"trusted\"")
+        args+=(-c "projects.$(jq -Rn --arg path "$(pwd -P)" '$path').trust_level=\"trusted\"")
         # Codex resolves a linked worktree's trust against the original repo.
         args+=(-c "projects.$(jq -Rn --arg path "$(codex_repo_root "$REPO")" '$path').trust_level=\"trusted\"")
         if [ "$BACKEND" = tmux ] && [ "$DV_CODEX_DISABLE_HOOKS" = 1 ]; then args+=(--disable hooks); fi
@@ -135,7 +137,7 @@ run_agent() {
           wait "$helper" || true
         fi ;;
       claude)
-        if ! claude_trust_worktree "$WT"; then
+        if ! claude_trust_worktree "$(pwd -P)"; then
           agent_start_failed "Claude folder trust could not be recorded in $HOME/.claude.json" ''; rc=1
         elif ! claude_onboarding | jq -e '.hasCompletedOnboarding and .skipDangerousModePermissionPrompt' >/dev/null; then
           agent_start_failed 'Claude onboarding incomplete: 기기에서 claude를 한 번 대화형으로 실행해 온보딩을 끝내라 (--dangerously-skip-permissions 경고 포함)' ''; rc=1
@@ -326,7 +328,7 @@ cmd_kick() {
   return 0
 }
 cmd_status() {
-  local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending done_head
+  local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   {
@@ -345,9 +347,13 @@ cmd_status() {
           # A live pane may be running a custom command with no detected agent.
           alive=$(printf '%s\n' "$info" | jq -r '.pane_id!=null')
           pending="$(dirname "$path")/question.pending"
-          if [ "$agent_status" = blocked ] && [ -f "$pending" ] &&
-            printf '%s\n' "$info" | jq -e --slurpfile pending "$pending" '.state_change_seq==$pending[0].seq' >/dev/null 2>&1 &&
-            kill -0 "$(jq -r .owner "$pending")" 2>/dev/null; then question_pending=true; fi
+          if [ -f "$pending" ] && kill -0 "$(jq -r .owner "$pending")" 2>/dev/null; then
+            if jq -e '((.keys // [])|length)>0 or (.key // "")!=""' "$pending" >/dev/null; then
+              record=$(herdr_question_record "$(printf '%s\n' "$info" | jq '{result:{agent:.}}')") || record='[]'
+              if printf '%s\n' "$record" | jq -e --slurpfile pending "$pending" 'any(.[]; .key as $key | ($pending[0].keys // [$pending[0].key]) | index($key)!=null)' >/dev/null 2>&1; then question_pending=true; fi
+            elif [ "$agent_status" = blocked ] &&
+              printf '%s\n' "$info" | jq -e --slurpfile pending "$pending" '.state_change_seq==$pending[0].seq' >/dev/null 2>&1; then question_pending=true; fi
+          fi
           if live_last=$(herdr_read "$pane" --lines 1 2>/dev/null); then
             last=$(printf '%s\n' "$live_last" | tail -n 1 | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r')
           fi

@@ -378,14 +378,15 @@ case_worker_prompt_host() {
   grep -F "작업자 호스트(DV_HOST): \`test-host\`" "$DV_HOME/workers/"*.prompt.md
 }
 assert_question_args() {
-  local issue=$1 agent=$2
+  local issue=$1 agent=$2 mode=${DV_AGENT_QUESTIONS:-sion}
+  if [ "$(jq -r .backend "$DV_STATE/$issue/meta")" = tmux ]; then mode=off; fi
   if [ "$agent" = codex ]; then
-    jq -e --arg mode "${DV_AGENT_QUESTIONS:-sion}" '
+    jq -e --arg mode "$mode" '
       index("tools.experimental_request_user_input.enabled=false") as $i |
       if $mode=="off" then $i!=null and .[$i-1]=="-c" else $i==null end
     ' "$DV_STATE/$issue/args.json"
   else
-    jq -e --arg mode "${DV_AGENT_QUESTIONS:-sion}" '
+    jq -e --arg mode "$mode" '
       index("--disallowedTools") as $i |
       if $mode=="off" then $i!=null and .[$i+1]=="AskUserQuestion"
       else $i==null and index("AskUserQuestion")==null end
@@ -579,8 +580,8 @@ question_record_setup() {
     '{questions:[{id:"format",header:"형식",question:($text+"\n  keep  spaces"),options:[{label:"JSON",description:"Recommended"},{label:"CSV",description:"Alternative"}]}]}' > "$CASE_DIR/exact-question.json"
 }
 question_codex_call() {
-  jq -cn --arg name "$1" --slurpfile question "$2" \
-    '{type:"response_item",payload:{type:"function_call",name:$name,arguments:($question[0]|tojson)}}' >> "$codex_record"
+  jq -cn --arg name "$1" --arg id "${3:-$1}" --slurpfile question "$2" \
+    '{type:"response_item",payload:{type:"function_call",call_id:$id,name:$name,arguments:($question[0]|tojson)}}' >> "$codex_record"
 }
 question_record_assert() {
   question_state blocked
@@ -596,6 +597,7 @@ case_question_codex_record() {
   question_record_setup
   printf '{"questions":[{"question":"old question"}]}\n' > "$CASE_DIR/old-question.json"
   question_codex_call request_user_input "$CASE_DIR/old-question.json"
+  jq -cn '{type:"response_item",payload:{type:"function_call_output",call_id:"request_user_input",output:"answered"}}' >> "$codex_record"
   # A different session's file must not win, regardless of its modification time.
   cp "$codex_record" "$DV_CODEX_SESSIONS/rollout-2026-10-20-other-session.jsonl"
   question_codex_call functions.request_user_input_async "$CASE_DIR/exact-question.json"
@@ -628,7 +630,7 @@ case_question_record_fallback() {
         question_codex_call unrelated_tool "$CASE_DIR/exact-question.json" ;;
       invalid-arguments)
         question_codex_call request_user_input "$CASE_DIR/exact-question.json"
-        jq -cn '{type:"response_item",payload:{type:"function_call",name:"request_user_input",arguments:"{unfinished"}}' >> "$codex_record" ;;
+        jq -cn '{type:"response_item",payload:{type:"function_call",call_id:"request_user_input",name:"request_user_input",arguments:"{unfinished"}}' >> "$codex_record" ;;
     esac
     question_state blocked
     count=$((count + 1)); wait_questions "$count"
@@ -1591,6 +1593,8 @@ source "$ROOT/tests/host.sh"
 source "$ROOT/tests/delivery.sh"
 # shellcheck source=tests/claude.sh
 source "$ROOT/tests/claude.sh"
+# shellcheck source=tests/followups.sh
+source "$ROOT/tests/followups.sh"
 # shellcheck source=tests/watcher.sh
 source "$ROOT/tests/watcher.sh"
 # shellcheck source=tests/bidding-edge.sh
@@ -1608,7 +1612,7 @@ for name in codex_allowlist codex_persisted_trust codex_trust_conflict codex_tru
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin; do
+for name in question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
