@@ -290,12 +290,17 @@ cmd__award() (
 )
 bid_hosts() {
   local host
-  # The manager runs resident services. It probes and competes after dev hosts.
+  # Resident-service hosts follow workers; gos is the final fallback after both.
   for host in $DV_HOSTS; do
+    case "$host" in gos|gos-linux) continue ;; esac
     [ "$host" = "$DV_MANAGER_HOST" ] || [ "$host" = lina-os ] || printf '%s\n' "$host"
   done
   for host in $DV_HOSTS; do
+    case "$host" in gos|gos-linux) continue ;; esac
     if [ "$host" = "$DV_MANAGER_HOST" ] || [ "$host" = lina-os ]; then printf '%s\n' "$host"; fi
+  done
+  for host in $DV_HOSTS; do
+    case "$host" in gos|gos-linux) printf '%s\n' "$host" ;; esac
   done
 }
 bid_schedule_one() {
@@ -328,7 +333,8 @@ bid_schedule_one() {
         '.host=$host | .rank=$rank | .manager=(if $host==$manager or $host=="lina-os" then 1 else 0 end)' >> "$bids"
     else jq -cn --arg host "$host" '{host:$host,status:"rejected",reason:"no valid bid response"}' >> "$bids"; fi
   done
-  jq -s 'sort_by(.manager,-(.score//0),.rank,.host)' "$bids" > "$dir/bids.json" || return
+  # Keep scores within each group, but never let gos outrank the manager.
+  jq -s 'sort_by((if .host=="gos" or .host=="gos-linux" then 2 else .manager end),-(.score//0),.rank,.host)' "$bids" > "$dir/bids.json" || return
   rm "$bids"
   rows=$(jq -c '.[]|select(.status=="submitted")' "$dir/bids.json")
   while IFS= read -r row; do
