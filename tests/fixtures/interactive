@@ -9,6 +9,9 @@ elif [[ " $* " != *' exec '* ]] && [ "$(jq -r .agent "$DV_STATE/$DV_ISSUE/meta")
   if [ -f "$CASE_DIR/codex-startup-mode" ] && [ "$(cat "$CASE_DIR/codex-startup-mode")" = hook ]; then
     printf '1 hook needs review\nt trust all · enter review\n'
   fi
+  if [ -f "$CASE_DIR/codex-startup-mode" ] && [ "$(cat "$CASE_DIR/codex-startup-mode")" = folder ]; then
+    printf 'Folder access\nTrust this folder?\n› 1. Trust and continue\n'
+  fi
   printf 'dv-ready> '
   IFS= read -r line
   printf '%s\n' "$line" > "$DV_STATE/$DV_ISSUE/goal-input"

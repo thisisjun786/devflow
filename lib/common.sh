@@ -10,6 +10,8 @@ fi
 source "$DV_ROOT/config.example.sh"
 # shellcheck source=lib/claude.sh
 source "$DV_ROOT/lib/claude.sh"
+# shellcheck source=lib/codex.sh
+source "$DV_ROOT/lib/codex.sh"
 export DV_CONFIG DV_ROOT DV_STATE DV_WORK DV_HOME DV_HOST
 export PATH="$DV_ROOT/bin:$PATH"
 fail() { printf 'dv: %s\n' "$*" >&2; exit 1; }
@@ -45,6 +47,34 @@ meta_set() {
 issue_lock() {
   mkdir "$S/.operation" 2>/dev/null || fail "operation already running: $ISSUE"
   trap 'rmdir "$S/.operation" 2>/dev/null || true' EXIT
+}
+owned_lock() {
+  local path=$1 owner=$2 tries=0 holder
+  while :; do
+    # mkdir alone is not an ownership claim: uutils 0.8.0 can report success
+    # to both concurrent creators. A hard link gives exactly one caller owner.
+    mkdir "$path" 2>/dev/null || true
+    if { printf '%s\n' "$owner" > "$path/pid-$owner"; } 2>/dev/null; then
+      if ln "$path/pid-$owner" "$path/owner" 2>/dev/null; then return 0; fi
+      rm "$path/pid-$owner" 2>/dev/null || true
+    fi
+    holder=$(cat "$path/owner" 2>/dev/null) || holder=''
+    if [[ "$holder" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$holder" 2>/dev/null; then
+      owned_unlock "$path" "$holder"
+    fi
+    tries=$((tries+1)); [ "$tries" -lt 100 ] || return 1
+    sleep 0.1
+  done
+}
+owned_unlock() {
+  local path=$1 owner=$2
+  # Only the remover of this exact owner's marker may unlink the claim.
+  # This also elects a single reaper when several callers find a dead owner.
+  if rm "$path/pid-$owner" 2>/dev/null; then
+    rm "$path/owner"
+    # A contender may already have populated the directory for its next claim.
+    rmdir "$path" 2>/dev/null || true
+  fi
 }
 require_worktree() {
   [ -d "$WT" ] || fail 'worktree is missing'

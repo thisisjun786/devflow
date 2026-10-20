@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-} ${2:-}" = 'login status' ]; then exit 0; fi
 state="$DV_STATE/$DV_ISSUE"
 printf '%s\n' "$@" | jq -R . | jq -s . > "$state/args.json"
 agent=$(jq -r .agent "$state/meta")
+if [ "$agent" = codex ] && [ -f "$HOME/.codex/config.toml" ] && grep -q DF43_TEST_TOKEN "$HOME/.codex/config.toml"; then
+  test "${DF43_TEST_TOKEN:-}" = fixture-secret
+  touch "$state/provider-ready"
+fi
 wait_path() {
   for _ in {1..100}; do [ ! -f "$1" ] || return 0; sleep 0.05; done
   return 1

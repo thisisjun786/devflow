@@ -103,7 +103,12 @@ case "$1 $2" in
     # Run only the configured fake agent, directly; no PTY/tmux or real agents.
     cwd=$(jq -r .result.root_pane.cwd "$dir/workspace")
     if [ -z "${DV_AGENT_CMD_codex:-}" ] && [ ! -f "$stub/late-detection" ]; then touch "$dir/detected"; fi
-    (rc=0; (cd "$cwd" && bash -c "$4") || rc=$?; printf '%s\n' "$rc" > "$dir/exit") > "$dir/output" 2>&1 < /dev/null &
+    (rc=0; (
+      cd "$cwd"
+      # A terminal server can have been started before authentication setup.
+      if [ -f "$stub/drop-provider-env" ]; then unset DF43_TEST_TOKEN; fi
+      bash -c "$4"
+    ) || rc=$?; printf '%s\n' "$rc" > "$dir/exit") > "$dir/output" 2>&1 < /dev/null &
     printf '%s\n' "$!" > "$dir/pid" ;;
   'pane read')
     test "$4" = --source
@@ -111,6 +116,11 @@ case "$1 $2" in
     if [ "$5" = visible ] && [ -f "$dir/startup-mode" ]; then
       mode=$(cat "$dir/startup-mode")
       case "$mode" in
+        folder) printf 'Folder access\nTrust this folder?\n› 1. Trust and continue\n  2. Quit\n'; exit ;;
+        folder-late)
+          if [ -f "$DV_STATE/${id#w-}/goal-input" ]; then
+            printf 'Trusting will apply to the repository root:\nTrust this folder?\n› 1. Trust and continue\n'; exit
+          fi ;;
         hook-modal)
           printf 'Hooks need review\n1 hook is new or changed.\nHooks can run outside the sandbox after you trust them.\n\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won\047t run)\n\n  enter confirm · esc skip\n'; exit ;;
         hook) printf '1 hook needs review\nt trust all · enter review\n› \n'; exit ;;

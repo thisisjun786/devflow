@@ -81,6 +81,7 @@ bid_agent() {
   local agent=$1 override bin probe
   override="DV_AGENT_CMD_$agent"; override=${!override}
   [ -z "$override" ] || return 0 # explicit trusted custom launcher
+  [ "$agent" != codex ] || codex_environment || return 1
   probe="DV_AGENT_READY_$agent"; probe=${!probe}
   if [ -n "$probe" ]; then bid_limit "$DV_BID_TIMEOUT" bash -c "$probe" >/dev/null 2>&1; return; fi
   case "$agent" in
@@ -98,7 +99,7 @@ bid_settings() {
 }
 cmd_bid() {
   bid_settings
-  local repo='' agent=$DV_AGENT json=0 resources capacity active ready=false backend=false
+  local repo='' agent=$DV_AGENT json=0 resources capacity active ready=false backend=false trust=true root
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -115,12 +116,17 @@ cmd_bid() {
   bid_repo "$repo"
   [ -n "$repo" ] || BID_REPO_OK=true
   if bid_agent "$agent"; then ready=true; fi
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ -n "$repo" ]; then
+    root=$BID_REPO
+    if [ "$BID_CLONED" = true ]; then root=$(codex_repo_root "$BID_REPO") || root=''; fi
+    if ! codex_repo_allowed "$root" 2>/dev/null; then trust=false; fi
+  fi
   if { [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; } || command -v tmux >/dev/null; then backend=true; fi
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
-    --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" \
+    --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
     --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" \
     '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready,capacity:$capacity,active:$active,free_slots:([0,($capacity-$active)]|max)} |
-    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" else "" end) |
+    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" else "" end) |
     .status=(if .reason=="" then "submitted" else "rejected" end) |
     .score=(100*.free_slots/.capacity - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end))' |
     if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason]|@tsv'; fi
@@ -184,23 +190,11 @@ bid_task_set() {
   jq "$@" "$dir/task.json" > "$tmp" && mv "$tmp" "$dir/task.json"
 }
 bid_lock() {
-  local path=$1 owner=${2:-} tries=0 marker holder
+  local path=$1 owner=${2:-} tries=0
+  if [ -n "$owner" ]; then owned_lock "$path" "$owner"; return; fi
   until mkdir "$path" 2>/dev/null; do
-    if [ -n "$owner" ]; then
-      for marker in "$path"/pid-*; do
-        [ -f "$marker" ] || continue
-        holder=${marker##*/pid-}
-        [[ "$holder" =~ ^[1-9][0-9]*$ ]] || continue
-        if ! kill -0 "$holder" 2>/dev/null && rm "$marker" 2>/dev/null; then
-          # Only the remover of this exact dead owner's marker may remove the
-          # directory. Other contenders cannot remove a newly acquired lock.
-          rmdir "$path" 2>/dev/null || true
-        fi
-      done
-    fi
     tries=$((tries+1)); [ "$tries" -lt 100 ] || return 1; sleep 0.1
   done
-  [ -z "$owner" ] || : > "$path/pid-$owner"
 }
 cmd_cancel() (
   [ "$#" = 1 ] || fail 'usage: dv cancel ISSUE'
@@ -236,7 +230,7 @@ cmd__award() (
   deadline=$(printf '%s\n' "$request" | jq -er '.deadline|select(type=="number" and .==floor and .>0)')
   mkdir -p "$DV_STATE/.awards"
   bid_lock "$DV_STATE/.admission-lock" "$$" || fail 'host admission busy'
-  trap 'if rm "$DV_STATE/.admission-lock/pid-$$" 2>/dev/null; then rmdir "$DV_STATE/.admission-lock"; fi' EXIT
+  trap 'owned_unlock "$DV_STATE/.admission-lock" "$$"' EXIT
   dir="$DV_STATE/.awards/$issue"
   if [ -e "$dir" ]; then
     if ! jq -e --arg token "$token" '.token!=$token and .status=="failed"' "$dir/receipt.json" >/dev/null; then
