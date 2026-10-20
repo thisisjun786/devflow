@@ -12,7 +12,7 @@ test -f "$prompt"
 until (set -C; : > "$stub/lock") 2>/dev/null; do sleep 0.01; done
 n=1; [ ! -f "$stub/calls" ] || n=$(( $(wc -l < "$stub/calls") + 1 ))
 cp "$prompt" "$stub/prompt-$n"
-jq -cn --arg resume "$resume" --argjson args "$args" '{resume:$resume,args:$args}' >> "$stub/calls"
+jq -cn --arg resume "$resume" --arg cwd "$PWD" --argjson args "$args" '{resume:$resume,cwd:$cwd,args:$args}' >> "$stub/calls"
 if [ -n "$resume" ] && [ -f "$stub/fail-resume" ]; then
   rm "$stub/fail-resume" "$stub/lock"; printf 'Session not found\n' >&2; exit 1
 fi

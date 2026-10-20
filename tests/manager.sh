@@ -183,3 +183,71 @@ case_manager_unknown_repo() {
   manager_watch_until 2
   jq -se '.[1].resume==""' "$CASE_DIR/hermes/calls"
 }
+case_manager_reused_issue() {
+  manager_setup
+  git -C "$REPO" remote add origin https://github.com/example/first.git
+  dv manager start "$REPO"
+  local first=$REPO
+  repo second
+  git -C "$REPO" remote add origin https://github.com/example/second.git
+  dv manager start "$REPO"
+  mkdir -p "$DV_HOME/submissions/M-1" "$DV_STATE/M-1"
+  jq -cn --arg repo "$first" '{repo:$repo,host:"other-host",status:"completed",token:"old-award"}' > "$DV_HOME/submissions/M-1/task.json"
+  jq -cn --arg repo "$REPO" --arg host "$DV_HOST" '{repo:$repo,host:$host}' > "$DV_STATE/M-1/meta"
+  dv-kick pr-ready M-1 'reused ID on another host' "$DV_HOST" abc
+  mkdir -p "$DV_HOME/submissions/M-2" "$DV_STATE/M-2"
+  jq -cn --arg repo "$first" --arg host "$DV_HOST" '{repo:$repo,host:$host,status:"completed"}' > "$DV_HOME/submissions/M-2/task.json"
+  jq -cn --arg repo "$REPO" --arg host "$DV_HOST" '{repo:$repo,host:$host}' > "$DV_STATE/M-2/meta"
+  dv-kick pr-ready M-2 'same host, different repository' "$DV_HOST" def
+  manager_watch_until 4
+  jq -se 'length==4 and all(.[2:][]; .resume=="session-2")' "$CASE_DIR/hermes/calls"
+  # A remote event whose host differs from the retained submission must use
+  # the emitting host's metadata. These functions are read-only RPC stubs.
+  (
+    manager_functions
+    DV_HOSTS=worker
+    bid_limit() { shift; "$@"; }
+    bid_rpc() { jq -cn '[{issue:"M-1",host:"worker",repo:"/remote/second"}]'; }
+    ssh() { printf 'https://github.com/example/second.git\n'; }
+    local event
+    event=$(jq -cn '{issue:"M-1",host:"worker"}')
+    test "$(manager_event_repo "$event")" = https://github.com/example/second.git
+  )
+}
+case_manager_moved_checkout() {
+  manager_setup
+  git -C "$REPO" remote add origin https://github.com/example/movable.git
+  dv manager start "$REPO"
+  mv "$REPO" "$CASE_DIR/moved repo"
+  REPO="$CASE_DIR/moved repo"
+  dv manager start "$REPO"
+  jq -e --arg repo "$REPO" '.repo==$repo and .session_id=="session-1"' "$(manager_meta)"
+  manager_event M-1 "$REPO"
+  manager_watch_until 2
+  jq -se --arg repo "$REPO" '.[1].resume=="session-1" and .[1].cwd==$repo and (.[1].args|index("--no-restore-cwd")!=null)' "$CASE_DIR/hermes/calls"
+}
+case_manager_runner_ownership() {
+  manager_setup
+  dv manager start "$REPO"
+  local dir job
+  dir=$(dirname "$(manager_meta)"); job="$dir/pending/00000000000000000001.json"
+  jq -cn --arg prompt "$CASE_DIR/brief" '{prompt:$prompt,event:{id:"unowned"}}' > "$job"
+  if dv _manager-run "$dir" "$job"; then return 1; fi
+  test -f "$job"
+  test ! -f "$dir/run.lock/pid"
+  printf '1\n' > "$dir/run.lock/pid"
+  printf '%s\n' "$job" > "$dir/run.lock/job"
+  if dv _manager-run "$dir" "$job"; then return 1; fi
+  test "$(cat "$dir/run.lock/pid")" = 1
+  printf '%s\n' "$$" > "$dir/run.lock/pid"
+  printf '%s\n' "$dir/pending/another.json" > "$dir/run.lock/job"
+  if dv _manager-run "$dir" "$job"; then return 1; fi
+  test "$(cat "$dir/run.lock/pid")" = "$$"
+  printf '%s\n' "$job" > "$dir/run.lock/job"
+  printf 'other-child\n' > "$dir/run.lock/claim"
+  if dv _manager-run "$dir" "$job"; then return 1; fi
+  test "$(cat "$dir/run.lock/claim")" = other-child
+  test "$(cat "$dir/run.lock/pid")" = "$$"
+  test -f "$job"
+  test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 1
+}

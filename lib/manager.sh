@@ -46,7 +46,7 @@ manager_lock() {
 manager_unlock() {
   local dir=$1
   [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$$" ] || return 0
-  rm -f "$dir/run.lock/pid"
+  rm -f "$dir/run.lock/job" "$dir/run.lock/claim" "$dir/run.lock/pid"
 }
 manager_log() {
   local dir=$1 kind=$2 old=$3 new=$4 rc=$5
@@ -66,11 +66,11 @@ manager_call() (
   cd "$(jq -er .repo "$dir/meta.json")" || return 1
   if [ -n "$DV_WORKER_CMD" ]; then
     set -- "$prompt" --pass-session-id
-    [ -z "$session" ] || set -- "$@" --resume "$session"
+    [ -z "$session" ] || set -- "$@" --resume "$session" --no-restore-cwd
     bash -c "$DV_WORKER_CMD \"\$@\"" dv-worker "$@" > "$log.out" 2> "$log.err"
   else
     set -- -p sion chat -Q --yolo -t terminal,connections -s devflow --pass-session-id
-    [ -z "$session" ] || set -- "$@" --resume "$session"
+    [ -z "$session" ] || set -- "$@" --resume "$session" --no-restore-cwd
     "$DV_HERMES_BIN" "$@" --query-file "$prompt" > "$log.out" 2> "$log.err"
   fi
 )
@@ -134,6 +134,8 @@ manager_start() (
       '{repo:$repo,identity:$key,host:$host,agent:"hermes",enabled:false,session_id:null}' > "$tmp"
     mv "$tmp" "$dir/meta.json"
   fi
+  # The remote identity survives a move; the validated checkout path does not.
+  manager_set "$dir" --arg repo "$repo" '.repo=$repo'
   if ! jq -e '.session_id!=null' "$dir/meta.json" >/dev/null; then
     manager_turn "$dir" '' "$dir/start-$(now)-$$" || fail 'manager initialization failed; see manager logs'
   fi
@@ -172,10 +174,13 @@ manager_event_repo() {
   local line=$1 issue host repo rows
   issue=$(printf '%s\n' "$line" | jq -er '.issue|select(type=="string" and test("^[A-Za-z0-9][A-Za-z0-9_-]*$"))') || return 1
   host=$(printf '%s\n' "$line" | jq -er .host) || return 1
-  if [ -f "$DV_HOME/submissions/$issue/task.json" ]; then
-    jq -er '.repo | select(type=="string" and length>0)' "$DV_HOME/submissions/$issue/task.json"
-  elif [ "$host" = "$DV_HOST" ] && [ -f "$DV_STATE/$issue/meta" ]; then
+  # Current event-side metadata takes precedence over a retained submission,
+  # including a reused identifier on the same host with a different repo.
+  if [ "$host" = "$DV_HOST" ] && [ -f "$DV_STATE/$issue/meta" ]; then
     jq -er --arg host "$host" 'select(.host==$host) | .repo' "$DV_STATE/$issue/meta"
+  elif [ -f "$DV_HOME/submissions/$issue/task.json" ] &&
+    repo=$(jq -er --arg host "$host" 'select(.host==$host) | .repo | select(type=="string" and length>0)' "$DV_HOME/submissions/$issue/task.json"); then
+    printf '%s\n' "$repo"
   else
     case " $DV_HOSTS " in *" $host "*) ;; *) return 1 ;; esac
     rows=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" status "$issue" --json < /dev/null) || return 1
@@ -214,6 +219,9 @@ manager_dispatch() {
     for job in "$dir"/pending/*.json; do
       [ -f "$job" ] || break
       manager_lock "$dir" || break
+      if ! printf '%s\n' "$job" > "$dir/run.lock/job"; then
+        manager_unlock "$dir"; break
+      fi
       "$DV_ROOT/bin/dv" _manager-run "$dir" "$job" > "${job%.json}.log" 2>&1 &
       pids="$pids $!"; active=$((active + 1))
       break
@@ -221,7 +229,14 @@ manager_dispatch() {
   done
 }
 cmd__manager_run() (
+  [ "$#" = 2 ] || fail 'usage: dv _manager-run <manager-directory> <queued-job>'
   local dir=$1 job=$2 prompt rc=0 log
+  [ "$(dirname "$dir")" = "$DV_HOME/managers" ] || fail 'invalid manager directory'
+  [ "$(dirname "$job")" = "$dir/pending" ] && [ -f "$job" ] || fail 'invalid manager job'
+  [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$PPID" ] || fail 'manager runner has no parent reservation'
+  [ "$(cat "$dir/run.lock/job" 2>/dev/null)" = "$job" ] || fail 'manager runner job was not reserved'
+  # Only one child can claim this exact reservation, even if invoked twice.
+  (set -C; printf '%s\n' "$$" > "$dir/run.lock/claim") 2>/dev/null || fail 'manager reservation already claimed'
   # Transfer the watcher's reservation to this child before doing any work.
   printf '%s\n' "$$" > "$dir/run.lock/pid"
   trap 'manager_unlock "$dir"' EXIT
