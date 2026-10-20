@@ -11,6 +11,7 @@ setup() {
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
+  unset DV_AGENT_QUESTIONS
   export DV_POLISH=0 DV_POLISH_TIMEOUT=3 DV_POLISH_CMD="$ROOT/tests/fixtures/polish"
   export GH_STUB_DIR="$CASE_DIR/gh" PATH="$ROOT/tests/fixtures:$ROOT/bin:$PATH"
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
@@ -317,15 +318,32 @@ case_worker_prompt_host() {
   touch "$DV_HOME/stop"; wait "$watcher"
   grep -F "작업자 호스트(DV_HOST): \`test-host\`" "$DV_HOME/workers/"*.prompt.md
 }
+assert_question_args() {
+  local issue=$1 agent=$2
+  if [ "$agent" = codex ]; then
+    jq -e --arg mode "${DV_AGENT_QUESTIONS:-sion}" '
+      index("tools.experimental_request_user_input.enabled=false") as $i |
+      if $mode=="off" then $i!=null and .[$i-1]=="-c" else $i==null end
+    ' "$DV_STATE/$issue/args.json"
+  else
+    jq -e --arg mode "${DV_AGENT_QUESTIONS:-sion}" '
+      index("--disallowedTools") as $i |
+      if $mode=="off" then $i!=null and .[$i+1]=="AskUserQuestion"
+      else $i==null and index("AskUserQuestion")==null end
+    ' "$DV_STATE/$issue/args.json"
+  fi
+}
 case_agent_cli() {
   needs_tmux; repo cli
+  # Exercise the unset default as well as the explicit off override.
+  if [ -n "${1:-}" ]; then export DV_AGENT_QUESTIONS=$1; fi
   export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive"
   export DV_CLAUDE_BIN="$ROOT/tests/fixtures/interactive" DV_DEVIN_BIN="$ROOT/tests/fixtures/interactive"
   dv start "$REPO" C-1 goal --brief "$CASE_DIR/brief"
   wait_file "$DV_STATE/C-1/events.log"
   grep '^/goal .*brief.md' "$DV_STATE/C-1/goal-input"
   jq -e 'index("gpt-6-astra")!=null and index("hooks")!=null and index("plugins.\"crw@crw\".enabled=false")!=null and any(.[]; contains("trust_level=\"trusted\""))' "$DV_STATE/C-1/args.json"
-  jq -e 'index("tools.experimental_request_user_input.enabled=false") as $i | $i!=null and .[$i-1]=="-c"' "$DV_STATE/C-1/args.json"
+  assert_question_args C-1 codex
   # Assert literal shell metacharacters survive paste without evaluation.
   # shellcheck disable=SC2016
   dv send C-1 'extra instruction $literal `safe`'
@@ -336,16 +354,17 @@ case_agent_cli() {
   DV_CODEX_DISABLE_CRW=0 DV_CODEX_DISABLE_HOOKS=0 dv start "$REPO" C-2 exec --mode exec
   wait_done C-2
   jq -e 'index("exec")!=null and index("hooks")==null and index("plugins.\"crw@crw\".enabled=false")==null' "$DV_STATE/C-2/args.json"
-  jq -e 'index("tools.experimental_request_user_input.enabled=false") as $i | $i!=null and .[$i-1]=="-c"' "$DV_STATE/C-2/args.json"
+  assert_question_args C-2 codex
   dv start "$REPO" C-3 claude --agent claude
   wait_file "$DV_STATE/C-3/events.log"
   jq -e 'index("opus")!=null and index("xhigh")!=null and index("--dangerously-skip-permissions")!=null' "$DV_STATE/C-3/args.json"
-  jq -e 'index("--disallowedTools") as $i | $i!=null and .[$i+1]=="AskUserQuestion"' "$DV_STATE/C-3/args.json"
+  assert_question_args C-3 claude
   dv start "$REPO" C-4 devin --agent devin
   wait_file "$DV_STATE/C-4/events.log"
   test -f "$DV_STATE/C-4/trust-enter"
   jq -e 'index("fusion-gpt-6-astra-xhigh-sidekick-swe-2-high")!=null and index("dangerous")!=null and index("--")!=null' "$DV_STATE/C-4/args.json"
 }
+case_agent_cli_off() { case_agent_cli off; }
 case_pr_ready() {
   needs_tmux; repo ready remote; start P-1; wait_done P-1
   head=$(git -C "$(jq -r .worktree "$DV_STATE/P-1/meta")" rev-parse HEAD)
@@ -439,11 +458,15 @@ wait_native() {
 }
 case_question_cli() {
   repo question-cli; herdr_setup
+  export DV_AGENT_QUESTIONS=${1:-sion}
   dv start "$REPO" Q-1 flags --mode exec; wait_native Q-1
-  jq -e 'index("tools.experimental_request_user_input.enabled=false") as $i | $i!=null and .[$i-1]=="-c"' "$DV_STATE/Q-1/args.json"
+  assert_question_args Q-1 codex
   dv start "$REPO" Q-2 flags --agent claude; wait_native Q-2
-  jq -e 'index("--disallowedTools") as $i | $i!=null and .[$i+1]=="AskUserQuestion"' "$DV_STATE/Q-2/args.json"
+  assert_question_args Q-2 claude
+  dv start "$REPO" Q-3 flags; wait_native Q-3
+  assert_question_args Q-3 codex
 }
+case_question_cli_off() { case_question_cli off; }
 question_setup() {
   repo questions; herdr_setup
   export DV_BLOCKED_GRACE=1
@@ -978,7 +1001,7 @@ case_polish_parallel() {
 source "$ROOT/tests/codex-startup.sh"
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
+for name in herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

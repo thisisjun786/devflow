@@ -32,9 +32,11 @@ herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 `dv start`가 포커스�
 
 herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있으며, 이때 `dv send`는 `agent_not_found`를 반환합니다.
 
-기본 실행에서 Codex의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 끕니다. 에이전트는 브리프 안에서 직접 결정하고 보고서의 "결정"에 이유를 남깁니다. `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 같은 설정을 사용자 지정 명령에 넣어야 합니다.
+`DV_AGENT_QUESTIONS=sion`이 기본값이며 Codex의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 켜 둡니다. `DV_AGENT_QUESTIONS=off`이면 두 에이전트의 질문 도구를 끄는 기존 동작을 사용합니다. tmux·herdr와 Codex goal·exec에 모두 적용하며, `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 질문 도구 설정도 해당 명령에서 정합니다.
 
-herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wait`로 상태 전환을 기다립니다. `blocked`가 `DV_BLOCKED_GRACE`초(기본 20) 지속되면 마지막 화면 8줄을 정리해 최대 1,000자로 `question` 이벤트를 한 번 보내고, 차단이 풀린 뒤 다음 에피소드를 기다립니다. `dv status --json`의 `question_pending`은 알림을 보낸 에피소드가 열려 있는 동안 true입니다. 시온은 브리프 안에서 답하고 이슈에 기록하며, 준의 판단이 필요한 경우에만 알립니다. tmux에는 이 감시자가 없습니다.
+에이전트는 브리프 안의 작거나 되돌릴 수 있는 선택을 직접 결정하고 보고서의 "결정"에 이유를 남깁니다. 설계 방향·범위·사용자에게 보이는 동작·데이터 형식처럼 결과를 바꾸는 선택만 시온에게 물으며, 선택지 2–3개와 추천안을 제시합니다. Codex의 `request_user_input_async`는 질문을 열어 둔 채 작업을 계속할 수 있으므로, 답에 의존하지 않는 작업은 진행합니다.
+
+herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wait`로 상태 전환을 기다립니다. `blocked`가 `DV_BLOCKED_GRACE`초(기본 20) 지속되면 마지막 화면 8줄을 정리해 최대 1,000자로 `question` 이벤트를 한 번 보내고, 차단이 풀린 뒤 다음 에피소드를 기다립니다. `dv status --json`의 `question_pending`은 알림을 보낸 에피소드가 열려 있는 동안 true입니다. 시온은 준의 맥락(기억·이전 결정·이슈)을 바탕으로 답하고 이유를 이슈에 기록하며, 되돌릴 수 없는 행동·외부 효과·비용·권한에 관한 질문만 준에게 올립니다. tmux에는 이 감시자가 없습니다.
 
 | 명령 | 기능 |
 |---|---|
