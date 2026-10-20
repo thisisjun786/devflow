@@ -47,7 +47,8 @@ case_codex_trust_parallel() {
   local first second
   dv start "$REPO" TRUST-1 trust --mode exec > "$CASE_DIR/first" 2>&1 & first=$!
   dv start "$REPO" TRUST-2 trust --mode exec > "$CASE_DIR/second" 2>&1 & second=$!
-  wait "$first"; wait "$second"
+  if ! wait "$first"; then cat "$CASE_DIR/first"; return 1; fi
+  if ! wait "$second"; then cat "$CASE_DIR/second"; return 1; fi
   wait_native TRUST-1; wait_native TRUST-2
   test "$(grep -c 'trust_level = "trusted"' "$HOME/.codex/config.toml")" = 1
   dv clean TRUST-1; dv clean TRUST-2

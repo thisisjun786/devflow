@@ -141,11 +141,13 @@ codex_trust_repo() (
   umask 077
   mkdir -p "$config_dir" || return 1
   config="$config_dir/config.toml"; lock="$config_dir/.dv-trust-lock"
-  until mkdir "$lock" 2>/dev/null; do
+  # Exclusive shell creation also works with mkdir implementations that can
+  # report success to two racing creators of the same directory.
+  until (set -C; : > "$lock") 2>/dev/null; do
     tries=$((tries + 1)); [ "$tries" -lt 100 ] || { printf 'dv: Codex trust config busy\n' >&2; return 1; }
     sleep 0.1
   done
-  trap 'rmdir "$lock"' EXIT
+  trap 'rm -f "$lock"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   if [ -L "$config" ] || { [ -e "$config" ] && [ ! -f "$config" ]; }; then
