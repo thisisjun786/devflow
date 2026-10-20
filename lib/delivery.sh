@@ -86,29 +86,33 @@ cmd_review() {
 }
 github_land_method() (
   # Isolate repository configuration from the caller's head/base and cleanup.
-  local override=${DV_LAND_METHOD:-} method settings
+  local override=${DV_LAND_METHOD:-} method settings pr repository
   cd "$WT" || exit
   if [ -f .devflow ]; then
     # Repository-owned shell configuration is trusted, as with local land.
     # shellcheck source=/dev/null
-    source ./.devflow || fail 'could not load repository land configuration'
+    source ./.devflow >&2 || fail 'could not load repository land configuration'
   fi
   method=${override:-${DV_LAND_METHOD:-}}
-  settings=$(gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed) || fail 'could not read repository merge methods'
+  pr=$(jq -er .url "$S/pr.json") || fail 'could not read PR URL'
+  if [[ "$pr" =~ ^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$ ]]; then
+    repository="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+  else fail 'invalid PR URL'; fi
+  settings=$(gh api "repos/$repository") || fail 'could not read repository merge methods'
   case "$method" in
     '')
       method=$(printf '%s\n' "$settings" | jq -r '
-        if .squashMergeAllowed==true then "squash"
-        elif .mergeCommitAllowed==true then "merge"
-        elif .rebaseMergeAllowed==true then "rebase" else empty end') || fail 'invalid repository merge methods'
+        if .allow_squash_merge==true then "squash"
+        elif .allow_merge_commit==true then "merge"
+        elif .allow_rebase_merge==true then "rebase" else empty end') || fail 'invalid repository merge methods'
       [ -n "$method" ] || fail 'repository allows no PR merge method' ;;
     squash|merge|rebase) ;;
     *) fail 'DV_LAND_METHOD must be squash, merge or rebase' ;;
   esac
   printf '%s\n' "$settings" | jq -e --arg method "$method" '
-    if $method=="merge" then .mergeCommitAllowed==true
-    elif $method=="squash" then .squashMergeAllowed==true
-    else .rebaseMergeAllowed==true end' >/dev/null || fail "repository does not allow $method"
+    if $method=="merge" then .allow_merge_commit==true
+    elif $method=="squash" then .allow_squash_merge==true
+    else .allow_rebase_merge==true end' >/dev/null || fail "repository does not allow $method"
   printf '%s\n' "$method"
 )
 cmd_land() {

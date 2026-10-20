@@ -4,7 +4,9 @@ printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 case "$*" in
   'repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed')
     [ ! -f "$GH_STUB_DIR/repo-fail" ] || exit 1
-    if [ -f "$GH_STUB_DIR/repo-methods" ]; then cat "$GH_STUB_DIR/repo-methods"
+    if [ "${GH_REPO:-}" = other/repo ]; then
+      printf '{"mergeCommitAllowed":true,"squashMergeAllowed":false,"rebaseMergeAllowed":false}\n'
+    elif [ -f "$GH_STUB_DIR/repo-methods" ]; then cat "$GH_STUB_DIR/repo-methods"
     else printf '{"mergeCommitAllowed":true,"squashMergeAllowed":true,"rebaseMergeAllowed":true}\n'; fi ;;
   'pr create '*)
     while [ "$#" -gt 0 ]; do
@@ -19,6 +21,13 @@ case "$*" in
     cp "${6#body=@}" "$GH_STUB_DIR/edited-body"
     cp "${6#body=@}" "$GH_STUB_DIR/live-body" ;;
   'api repos/'*)
+    if [ "$#" = 2 ] && [ "$2" = "repos/${GH_STUB_LAND_REPO:-test/repo}" ]; then
+      [ ! -f "$GH_STUB_DIR/repo-fail" ] || exit 1
+      if [ -f "$GH_STUB_DIR/repo-methods" ]; then
+        jq '{allow_merge_commit:.mergeCommitAllowed,allow_squash_merge:.squashMergeAllowed,allow_rebase_merge:.rebaseMergeAllowed}' "$GH_STUB_DIR/repo-methods"
+      else printf '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}\n'; fi
+      exit
+    fi
     [ ! -f "$GH_STUB_DIR/read-fail" ] || exit 1
     test "$#" = 2 && test "$2" = "${GH_STUB_PR_ENDPOINT:-repos/test/repo/pulls/1}"
     jq -n --rawfile body "$GH_STUB_DIR/live-body" '{body:$body}' ;;

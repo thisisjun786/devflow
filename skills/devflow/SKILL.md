@@ -14,7 +14,7 @@ herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISS
 3. 감시 호스트의 `dv-kick`은 이벤트를 파일에 쓰기만 합니다. `dv-watch`가 3초마다 로컬 큐를 읽고 시온 작업자를 최대 4개 실행합니다. 30분마다 상태 조회로 유실된 done 이벤트만 보완합니다(자기 호스트는 ssh 없이). 모델 폴링을 하지 않습니다. 10-19부터 감시 호스트는 lina-os(systemd user `dev.devflow.watch.service`, `DV_KICK_HOST=lina-os`)입니다.
 4. done에서 보고서·diff·시험을 직접 확인합니다. GitHub는 PR이 없으면 `dv pr`, 로컬은 `dv review` 한 번을 실행합니다. PR 체크와 봇 리뷰 완료/시간 초과는 pr-ready 이벤트로 받습니다.
 5. 리뷰 P0·P1만 `dv send <ISSUE> '<수정 지시>'`로 한 번 처리합니다. 이슈 상태 폴더에 review-fix.sent를 남겨 후속 이벤트에서도 중복 수정·재리뷰를 막습니다. 수정 후 커밋·관련 시험·PR push(`dv pr`)·done까지 지시합니다. 종료된 tmux는 자동 재시작하지 않으므로 차단으로 기록합니다.
-6. 현재 PR head의 CI 전체가 초록이면 `dv land`로 squash merge합니다. 로컬은 `.devflow` 또는 설정의 `DV_TEST_CMD`를 후보 병합 결과에서 통과한 뒤 base를 갱신합니다. fast-forward 기본이며 `DV_LAND_MODE=merge`는 merge 커밋입니다. 원격 브랜치는 남습니다.
+6. 현재 PR head의 CI 전체가 초록이면 `dv land`로 저장소가 허용하는 병합 방식(squash 우선)을 사용합니다. 로컬은 `.devflow` 또는 설정의 `DV_TEST_CMD`를 후보 병합 결과에서 통과한 뒤 base를 갱신합니다. fast-forward 기본이며 `DV_LAND_MODE=merge`는 merge 커밋입니다. 원격 브랜치는 남습니다.
 7. Linear 이슈에 결과를 한 줄 남깁니다. 준에게는 막힐 때만 알립니다.
 
 | 명령 | 용도 |
