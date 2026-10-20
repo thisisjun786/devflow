@@ -8,6 +8,8 @@ while [ -L "$DV_ENTRY" ]; do
 done
 # shellcheck source=lib/common.sh
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+# shellcheck source=lib/herdr.sh
+source "$DV_ROOT/lib/herdr.sh"
 # shellcheck source=lib/commands.sh
 source "$DV_ROOT/lib/commands.sh"
 # shellcheck source=lib/delivery.sh

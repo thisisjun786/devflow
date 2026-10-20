@@ -19,11 +19,15 @@ cmd_start() {
   case "$mode" in goal|exec) ;; *) fail 'mode must be goal or exec' ;; esac
   [ "$agent" = codex ] || [ "$mode" = goal ] || fail 'exec mode is Codex-only'
   [ -z "$brief" ] || [ -f "$brief" ] || fail 'brief file not found'
-  need git; need jq; need tmux
+  need git; need jq
+  BACKEND=tmux
+  if [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
   mkdir -p "$DV_STATE" "$DV_WORK"
   S="$DV_STATE/$ISSUE"; SESSION="dv-$ISSUE"
   [ ! -e "$S" ] || fail 'issue state already exists'
-  ! tmux_dv has-session -t "=$SESSION" 2>/dev/null || fail 'tmux session already exists'
+  if [ "$BACKEND" = tmux ]; then
+    ! tmux_dv has-session -t "=$SESSION" 2>/dev/null || fail 'tmux session already exists'
+  fi
   if git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
     git -C "$REPO" fetch origin
     if [ -z "$base" ]; then
@@ -50,16 +54,21 @@ cmd_start() {
   if [ -n "$brief" ]; then cat "$brief" >> "$S/brief.md"; else printf 'Complete issue %s.\n' "$ISSUE" >> "$S/brief.md"; fi
   jq -n --arg issue "$ISSUE" --arg repo "$REPO" --arg worktree "$WT" --arg branch "$BRANCH" \
     --arg base "$base" --arg start_head "$start_sha" --arg agent "$agent" --arg mode "$mode" --arg slug "$slug" \
-    --arg host "$DV_HOST" --argjson started "$(now)" \
-    '{issue:$issue,repo:$repo,worktree:$worktree,branch:$branch,base:$base,start_head:$start_head,agent:$agent,mode:$mode,slug:$slug,host:$host,started:$started,status:"running"}' > "$S/meta"
+    --arg host "$DV_HOST" --arg backend "$BACKEND" --argjson started "$(now)" \
+    '{issue:$issue,repo:$repo,worktree:$worktree,branch:$branch,base:$base,start_head:$start_head,agent:$agent,mode:$mode,slug:$slug,host:$host,started:$started,backend:$backend,status:"running"}' > "$S/meta"
   : > "$S/log"
-  # tmux server environment can predate this shell. Pass the task's exported DV_* values explicitly.
+  # Terminal server environments can predate this shell. Pass exported DV_* values explicitly.
   local env_args=() key launcher
   while IFS= read -r key; do
     case "$key" in DV_*|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
   done < <(compgen -e)
   launcher=$(shell_join env "PATH=$PATH" "${env_args[@]}" "$DV_ROOT/bin/dv" _agent "$ISSUE")
-  tmux_dv new-session -d -s "$SESSION" -c "$WT" "$launcher"
+  if [ "$BACKEND" = herdr ]; then
+    if ! herdr_start "$launcher"; then
+      meta_set '.status="start-failed"'
+      fail 'herdr startup failed; state retained for dv clean (no tmux fallback)'
+    fi
+  else tmux_dv new-session -d -s "$SESSION" -c "$WT" "$launcher"; fi
   printf '%s %s %s\n' "$ISSUE" "$BRANCH" "$WT"
 }
 run_agent() {
@@ -69,8 +78,10 @@ run_agent() {
   agent=$(jq -r .agent "$S/meta"); mode=$(jq -r .mode "$S/meta")
   override="DV_AGENT_CMD_$agent"; override=${!override}
   instruction="Read $S/brief.md and complete everything it asks. Finish with dv done $ISSUE."
-  # pipe-pane preserves a real TTY for interactive agents.
-  tmux_dv pipe-pane -o -t "$SESSION:0.0" "cat >> $(shell_join "$S/log")"
+  # Native herdr snapshots are collected at done/clean; tmux keeps its TTY log.
+  if [ "$BACKEND" = tmux ]; then
+    tmux_dv pipe-pane -o -t "$SESSION:0.0" "cat >> $(shell_join "$S/log")"
+  fi
   if [ -n "$override" ]; then
     bash -c "$override" || rc=$?
   else
@@ -79,7 +90,7 @@ run_agent() {
       codex)
         args=("$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\"" -s danger-full-access -a never)
         args+=(-c "projects.$(jq -Rn --arg path "$WT" '$path').trust_level=\"trusted\"")
-        [ "$DV_CODEX_DISABLE_HOOKS" != 1 ] || args+=(--disable hooks)
+        if [ "$BACKEND" = tmux ] && [ "$DV_CODEX_DISABLE_HOOKS" = 1 ]; then args+=(--disable hooks); fi
         [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
         if [ "$mode" = exec ]; then "${args[@]}" exec "$instruction" || rc=$?
         else
@@ -104,7 +115,7 @@ run_agent() {
 inject_goal() {
   local instruction=$1 end=$(( $(now) + DV_START_WAIT )) pane
   while [ "$(now)" -lt "$end" ]; do
-    pane=$(tmux_dv capture-pane -p -t "$SESSION:0.0" 2>/dev/null) || return 1
+    pane=$(read_session 2>/dev/null) || return 1
     if printf '%s\n' "$pane" | grep -Eq "$DV_READY_PATTERN"; then send_text "/goal $instruction"; return; fi
     sleep 0.2
   done
@@ -114,9 +125,9 @@ inject_goal() {
 accept_devin_trust() {
   local end=$(( $(now) + DV_START_WAIT )) pane
   while [ "$(now)" -lt "$end" ]; do
-    pane=$(tmux_dv capture-pane -p -t "$SESSION:0.0" 2>/dev/null) || return 0
+    pane=$(read_session 2>/dev/null) || return 0
     if printf '%s\n' "$pane" | grep -Eiq 'trust (this|the) (folder|directory)|do you trust'; then
-      tmux_dv send-keys -t "$SESSION:0.0" Enter; return
+      session_enter; return
     fi
     sleep 0.2
   done
@@ -129,6 +140,9 @@ cmd_done() {
     note=$2
   fi
   require_worktree
+  if [ "$BACKEND" = herdr ]; then
+    herdr_snapshot || printf 'dv: warning: could not capture herdr log for %s\n' "$ISSUE" >&2
+  fi
   head=$(git -C "$WT" rev-parse HEAD)
   files=$(git -C "$WT" diff --name-only "$(jq -r .start_head "$S/meta")" "$head" | wc -l | tr -d ' ')
   tmp=$(mktemp "$S/.done.XXXXXX")
@@ -161,21 +175,34 @@ cmd_kick() {
   return 0
 }
 cmd_status() {
-  local selected='' json=0 path row alive last elapsed
+  local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   {
     for path in "$DV_STATE"/*/meta; do
       [ -f "$path" ] || continue
       [ -z "$selected" ] || [ "$(basename "$(dirname "$path")")" = "$selected" ] || continue
-      alive=false
-      if command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then alive=true; fi
+      alive=false; tmux_alive=false; agent_status=unknown
+      backend=$(jq -r '.backend // "tmux"' "$path")
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
+      if [ "$backend" = herdr ]; then
+        pane=$(jq -r '.herdr_pane // empty' "$path")
+        if [ -n "$pane" ]; then
+          info=$(herdr_info "$pane" 2>/dev/null) || info='{}'
+          agent_status=$(printf '%s\n' "$info" | jq -r '.agent_status // "unknown"')
+          alive=$(printf '%s\n' "$info" | jq -r '.agent!=null')
+          if live_last=$(herdr_read "$pane" --lines 1 2>/dev/null); then
+            last=$(printf '%s\n' "$live_last" | tail -n 1 | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r')
+          fi
+        fi
+      elif command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then
+        alive=true; tmux_alive=true
+      fi
       elapsed=$(( $(now) - $(jq -r .started "$path") ))
-      row=$(jq -c --argjson tmux "$alive" --argjson elapsed "$elapsed" --arg last "$last" '.+{tmux:$tmux,elapsed:$elapsed,last_log:$last}' "$path")
+      row=$(jq -c --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --arg last "$last" '.+{backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last}' "$path")
       if [ "$json" = 1 ]; then printf '%s\n' "$row"
-      else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s","tmux="+(.tmux|tostring),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
+      else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
     done
   } | if [ "$json" = 1 ]; then jq -s .; else cat; fi
 }
@@ -186,7 +213,9 @@ cmd_clean() {
 }
 clean_worktree() {
   if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; fi
-  tmux_dv kill-session -t "=$SESSION" 2>/dev/null || true
+  if [ "$BACKEND" = herdr ]; then
+    herdr_clean || fail 'herdr workspace not closed; worktree and saved id retained'
+  else tmux_dv kill-session -t "=$SESSION" 2>/dev/null || true; fi
   if [ -d "$WT" ]; then (cd "$REPO" && git worktree remove "$WT"); fi
   if git -C "$REPO" show-ref --verify --quiet "refs/heads/$BRANCH" && git -C "$REPO" merge-base --is-ancestor "$BRANCH" "$BASE"; then
     git -C "$REPO" branch -d "$BRANCH"

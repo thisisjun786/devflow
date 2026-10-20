@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+stub="$CASE_DIR/herdr"
+mkdir -p "$stub"
+printf '%s\n' "$@" | jq -R . | jq -sc . >> "$stub/calls"
+error() { jq -cn --arg code "$1" '{error:{code:$code,message:$code}}'; exit 1; }
+if [ -f "$stub/fail" ] && [ "$(cat "$stub/fail")" = "$1 $2" ]; then error stub_failure; fi
+if [ "$1 $2" != 'workspace create' ]; then
+  id=${3%%:*}; dir="$stub/$id"
+  if [ ! -f "$dir/workspace" ]; then error "${1}_not_found"; fi
+fi
+case "$1 $2" in
+  'workspace create')
+    shift 2
+    cwd=''; label=''; no_focus=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --cwd) cwd=$2; shift 2 ;;
+        --label) label=$2; shift 2 ;;
+        --no-focus) no_focus=1; shift ;;
+        *) exit 1 ;;
+      esac
+    done
+    test "$no_focus" = 1; test -d "$cwd"
+    id="w-${label#dv-}"; dir="$stub/$id"
+    mkdir "$dir"
+    jq -n --arg id "$id" --arg label "$label" --arg cwd "$cwd" \
+      '{result:{workspace:{workspace_id:$id,label:$label},root_pane:{pane_id:($id+":t1:p1"),cwd:$cwd}}}' > "$dir/workspace"
+    printf '$ \n' > "$dir/output"
+    cat "$dir/workspace" ;;
+  'workspace get') cat "$dir/workspace" ;;
+  'workspace close')
+    rm "$dir/workspace"
+    printf '{"result":{"type":"workspace_closed"}}\n' ;;
+  'pane wait-output')
+    test "$3" = "$id:t1:p1"
+    shift 3; pattern=''; timeout=''
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --regex) pattern=$2; shift 2 ;;
+        --timeout) timeout=$2; shift 2 ;;
+        *) exit 1 ;;
+      esac
+    done
+    test -n "$pattern"; test "$timeout" -gt 0
+    touch "$dir/ready"
+    printf '{"result":{"type":"pane_output_matched"}}\n' ;;
+  'pane run')
+    test "$3" = "$id:t1:p1"; test "$#" = 4; test -f "$dir/ready"
+    # Run only the configured fake agent, directly; no PTY/tmux or real agents.
+    cwd=$(jq -r .result.root_pane.cwd "$dir/workspace")
+    (rc=0; (cd "$cwd" && bash -c "$4") || rc=$?; printf '%s\n' "$rc" > "$dir/exit") > "$dir/output" 2>&1 < /dev/null &
+    printf '%s\n' "$!" > "$dir/pid"
+    printf '{"result":{"type":"pane_command_sent"}}\n' ;;
+  'pane read')
+    test "$4" = --source; test "$5" = recent-unwrapped
+    if [ "$#" -gt 5 ]; then test "$6" = --lines; test "$7" = 1; text=$(tail -n 1 "$dir/output")
+    else text=$(cat "$dir/output"); fi
+    jq -cn --arg text "$text" '{result:{type:"pane_read",read:{text:$text}}}' ;;
+  'pane send-keys')
+    test "$4" = Enter
+    touch "$DV_STATE/${id#w-}/trust-enter"
+    printf '{"result":{"type":"pane_keys_sent"}}\n' ;;
+  'agent prompt')
+    if [ -f "$stub/blocked" ]; then
+      if [ "$(cat "$stub/blocked")" = once ]; then rm "$stub/blocked"; fi
+      # Deliberately exit zero: callers must inspect the JSON, not only exit status.
+      printf '{"error":{"code":"agent_blocked","message":"approval pending"}}\n'
+      exit 0
+    fi
+    if [ -f "$stub/prompt-error" ]; then
+      printf '{"error":{"code":"agent_prompt_stalled","message":"not ready"}}\n'
+      exit 0
+    fi
+    case "$4" in
+      '/goal '*) printf '%s\n' "$4" > "$DV_STATE/${id#w-}/goal-input" ;;
+      *) printf '%s\n' "$4" >> "$DV_STATE/${id#w-}/sent-input" ;;
+    esac
+    printf '{"result":{"type":"agent_prompted","agent":{"agent_status":"working"}}}\n' ;;
+  'agent wait')
+    test "$4" = --until; test "$#" = 11; test "${10}" = --timeout
+    test "${11}" -gt 0
+    if [ -f "$stub/blocked" ]; then error timeout; fi
+    printf '{"result":{"type":"agent_info","agent":{"agent_status":"idle"}}}\n' ;;
+  'agent get'|'pane get')
+    status=idle; [ ! -f "$dir/status" ] || status=$(cat "$dir/status")
+    agent=$(jq -r .agent "$DV_STATE/${id#w-}/meta")
+    jq -cn --arg key "$1" --arg status "$status" --arg agent "$agent" \
+      '{result:{($key):{agent:(if $status=="unknown" then null else $agent end),agent_status:$status}}}' ;;
+  *) printf 'Unexpected herdr call\n' >&2; exit 1 ;;
+esac

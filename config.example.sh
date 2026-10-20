@@ -12,7 +12,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_DEVIN_BIN:=$HOME/.local/bin/devin}"
 : "${DV_CODEX_MODEL:=gpt-6-astra}"
 : "${DV_CODEX_EFFORT:=xhigh}"
-: "${DV_CODEX_DISABLE_HOOKS:=1}" # 0 keeps installed hooks enabled
+: "${DV_CODEX_DISABLE_HOOKS:=1}" # tmux only; herdr always keeps its state hooks enabled
 : "${DV_CODEX_DISABLE_CRW:=1}" # 0 keeps installed crw plugin enabled
 : "${DV_CLAUDE_MODEL:=opus}"
 : "${DV_CLAUDE_EFFORT:=xhigh}"
@@ -23,6 +23,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_AGENT_CMD_claude:=}"
 : "${DV_AGENT_CMD_devin:=}"
 : "${DV_TMUX_SOCKET:=}" # empty uses the normal tmux server
+: "${DV_HERDR:=1}" # native herdr backend when installed; 0 uses tmux
 : "${DV_START_WAIT:=30}" # seconds to wait for Codex prompt / Devin trust menu
 : "${DV_READY_PATTERN:=›|❯|dv-ready>}" # Codex TUI input marker
 : "${DV_SEND_DELAY:=0.3}" # let bracketed paste settle before Enter

@@ -10,6 +10,7 @@ setup() {
   export DV_KICK="$ROOT/bin/dv-kick" DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
+  export DV_HERDR=0
   export GH_STUB_DIR="$CASE_DIR/gh" PATH="$ROOT/tests/fixtures:$ROOT/bin:$PATH"
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
   mkdir -p "$GH_STUB_DIR" "$DV_STATE" "$DV_WORK" "$DV_HOME"
@@ -386,9 +387,170 @@ case_land_checkout_race() {
   jq -e '.status=="done"' "$DV_STATE/RACE-1/meta"
 }
 
+herdr_setup() {
+  export DV_HERDR=1 DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/herdr-agent"
+  export DV_CLAUDE_BIN="$ROOT/tests/fixtures/herdr-agent" DV_DEVIN_BIN="$ROOT/tests/fixtures/herdr-agent"
+}
+wait_native() {
+  wait_file "$CASE_DIR/herdr/w-$1/exit"
+  test "$(cat "$CASE_DIR/herdr/w-$1/exit")" = 0
+  wait_file "$DV_STATE/$1/agent.exit"
+  wait_file "$DV_STATE/$1/events.log"
+  test "$(cat "$DV_STATE/$1/agent.exit")" = 0
+}
+case_herdr_start_clean() {
+  repo herdr; herdr_setup; unset DV_HERDR
+  dv start "$REPO" H-1 native --brief "$CASE_DIR/brief"
+  wait_native H-1
+  wt=$(jq -r .worktree "$DV_STATE/H-1/meta")
+  jq -e '.backend=="herdr" and .herdr_workspace=="w-H-1" and .herdr_pane=="w-H-1:t1:p1"' "$DV_STATE/H-1/meta"
+  if command -v tmux >/dev/null && tmux -L "$DV_TMUX_SOCKET" has-session -t '=dv-H-1' 2>/dev/null; then return 1; fi
+  jq -se --arg wt "$wt" '.[0]==["workspace","create","--label","dv-H-1","--cwd",$wt,"--no-focus"] and .[1][0:3]==["pane","wait-output","w-H-1:t1:p1"] and .[2][0:3]==["pane","run","w-H-1:t1:p1"] and (.[2][3]|contains("tmux")|not)' "$CASE_DIR/herdr/calls"
+  jq -e 'index("hooks")==null and index("plugins.\"crw@crw\".enabled=false")!=null' "$DV_STATE/H-1/args.json"
+  grep '^/goal .*brief.md' "$DV_STATE/H-1/goal-input"
+  grep -F 'native output before done' "$DV_STATE/H-1/log"
+  # Metadata controls existing issues, even when creation is disabled later.
+  # shellcheck disable=SC2016
+  DV_HERDR=0 dv send H-1 'literal $text `safe`'
+  # shellcheck disable=SC2016
+  grep -Fx 'literal $text `safe`' "$DV_STATE/H-1/sent-input"
+  for status in working idle 'done' blocked; do
+    printf '%s\n' "$status" > "$CASE_DIR/herdr/w-H-1/status"
+    dv status H-1 --json | jq -e --arg status "$status" '.[0] | .backend=="herdr" and .alive and (.tmux|not) and .agent_status==$status and .last_log=="native output after done"'
+    dv status H-1 | grep "agent=$status"
+  done
+  jq -se 'any(.[]; .==["pane","read","w-H-1:t1:p1","--source","recent-unwrapped","--lines","1"])' "$CASE_DIR/herdr/calls"
+  printf 'dirty\n' > "$wt/dirty"
+  if dv clean H-1; then return 1; fi
+  test -f "$CASE_DIR/herdr/w-H-1/workspace"
+  rm "$wt/dirty"
+  DV_HERDR=0 dv clean H-1
+  test ! -d "$wt"; test ! -f "$CASE_DIR/herdr/w-H-1/workspace"
+  grep -F 'native output after done' "$DV_STATE/H-1/log"
+  dv clean H-1
+  jq -se '[.[]|select(.[0:2]==["workspace","close"])]==[["workspace","close","w-H-1"]]' "$CASE_DIR/herdr/calls"
+  dv status H-1 --json | jq -e '.[0] | (.alive|not) and .last_log=="native output after done"'
+}
+case_herdr_send_retry() {
+  repo herdr-send; herdr_setup
+  dv start "$REPO" H-2 native; wait_native H-2
+  printf 'once\n' > "$CASE_DIR/herdr/blocked"
+  dv send H-2 retry
+  grep -Fx retry "$DV_STATE/H-2/sent-input"
+  jq -se '[.[]|select(.[0:2]==["agent","prompt"] and .[3]=="retry")]|length==2' "$CASE_DIR/herdr/calls"
+  jq -se 'any(.[]; .[0:3]==["agent","wait","w-H-2:t1:p1"])' "$CASE_DIR/herdr/calls"
+  printf 'always\n' > "$CASE_DIR/herdr/blocked"
+  if dv send H-2 still-blocked; then return 1; fi
+  jq -se '[.[]|select(.[0:2]==["agent","prompt"] and .[3]=="still-blocked")]|length==2' "$CASE_DIR/herdr/calls"
+  rm "$CASE_DIR/herdr/blocked"
+  touch "$CASE_DIR/herdr/prompt-error"
+  if dv send H-2 stalled; then return 1; fi
+  jq -se '[.[]|select(.[0:2]==["agent","prompt"] and .[3]=="stalled")]|length==1' "$CASE_DIR/herdr/calls"
+  test "$(wc -l < "$DV_STATE/H-2/sent-input" | tr -d ' ')" = 1
+  dv clean H-2
+}
+case_herdr_agents_land() {
+  repo herdr-agents; herdr_setup
+  dv start "$REPO" H-3 native --agent devin; wait_native H-3
+  test -f "$DV_STATE/H-3/trust-enter"
+  jq -se 'any(.[]; .==["pane","send-keys","w-H-3:t1:p1","Enter"])' "$CASE_DIR/herdr/calls"
+  dv start "$REPO" H-4 native --agent claude; wait_native H-4
+  jq -e 'index("opus")!=null and index("--dangerously-skip-permissions")!=null' "$DV_STATE/H-4/args.json"
+  dv start "$REPO" H-5 native --mode exec; wait_native H-5
+  jq -e 'index("exec")!=null and index("hooks")==null' "$DV_STATE/H-5/args.json"
+  DV_TEST_CMD='test -f H-5.txt' dv land H-5
+  test ! -f "$CASE_DIR/herdr/w-H-5/workspace"
+  test -f "$CASE_DIR/herdr/w-H-3/workspace"; test -f "$CASE_DIR/herdr/w-H-4/workspace"
+  dv clean H-3; dv clean H-4
+}
+case_herdr_disabled_legacy() {
+  needs_tmux; repo herdr-disabled; start H-6; wait_done H-6
+  jq -e '.backend=="tmux"' "$DV_STATE/H-6/meta"
+  jq 'del(.backend)' "$DV_STATE/H-6/meta" > "$CASE_DIR/legacy"
+  mv "$CASE_DIR/legacy" "$DV_STATE/H-6/meta"
+  DV_HERDR=1 dv status H-6 --json | jq -e '.[0].backend=="tmux"'
+  DV_HERDR=1 dv clean H-6
+  test ! -e "$CASE_DIR/herdr/calls"
+}
+herdr_isolated_path() {
+  # Exclude user PATH and ~/.local/bin so native tests cannot reach real herdr.
+  mkdir -p "$CASE_DIR/path" "$CASE_DIR/empty-home"
+  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed tail wc grep rm touch; do
+    ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"
+  done
+  if [ "${1:-}" = tmux ]; then ln -s "$(command -v tmux)" "$CASE_DIR/path/tmux"; fi
+  export PATH="$ROOT/bin:$CASE_DIR/path"
+}
+case_herdr_missing() {
+  needs_tmux; repo missing; herdr_isolated_path tmux
+  export DV_HERDR=1
+  HOME="$CASE_DIR/empty-home" start H-7 2> "$CASE_DIR/start.err"
+  wait_done H-7
+  HOME="$CASE_DIR/empty-home" dv clean H-7 2> "$CASE_DIR/clean.err"
+  test ! -e "$CASE_DIR/herdr/calls"
+  if grep -i herdr "$CASE_DIR/start.err" "$CASE_DIR/clean.err"; then return 1; fi
+  jq -e '.backend=="tmux" and .herdr_workspace==null' "$DV_STATE/H-7/meta"
+}
+case_herdr_home_no_tmux() {
+  repo herdr-home; herdr_setup
+  mkdir -p "$CASE_DIR/empty-home/.local/bin"
+  ln -s "$ROOT/tests/fixtures/herdr" "$CASE_DIR/empty-home/.local/bin/herdr"
+  herdr_isolated_path
+  if command -v tmux >/dev/null; then return 1; fi
+  HOME="$CASE_DIR/empty-home" dv start "$REPO" H-8 native
+  wait_native H-8
+  jq -e '.backend=="herdr"' "$DV_STATE/H-8/meta"
+  HOME="$CASE_DIR/empty-home" dv send H-8 hello
+  HOME="$CASE_DIR/empty-home" dv status H-8 --json | jq -e '.[0].alive'
+  HOME="$CASE_DIR/empty-home" dv clean H-8
+  test ! -f "$CASE_DIR/herdr/w-H-8/workspace"
+}
+case_herdr_failure() {
+  repo herdr-failure; herdr_setup; mkdir -p "$CASE_DIR/herdr"
+  n=0
+  for stage in 'workspace create' 'pane wait-output' 'pane run'; do
+    n=$((n + 1)); issue="HF-$n"
+    printf '%s\n' "$stage" > "$CASE_DIR/herdr/fail"
+    if dv start "$REPO" "$issue" native 2> "$CASE_DIR/start.err"; then return 1; fi
+    grep -F 'herdr startup failed' "$CASE_DIR/start.err"
+    jq -e '.backend=="herdr" and .status=="start-failed"' "$DV_STATE/$issue/meta"
+    test ! -e "$DV_STATE/$issue/agent.exit"
+    rm "$CASE_DIR/herdr/fail"
+    dv clean "$issue"
+    test ! -f "$CASE_DIR/herdr/w-$issue/workspace"
+  done
+}
+case_herdr_clean_safety() {
+  repo herdr-safety; herdr_setup
+  dv start "$REPO" H-9 native; wait_native H-9
+  wt=$(jq -r .worktree "$DV_STATE/H-9/meta")
+  # A reused id with a different label belongs to somebody else.
+  jq '.result.workspace.label="another workspace"' "$CASE_DIR/herdr/w-H-9/workspace" > "$CASE_DIR/other"
+  mv "$CASE_DIR/other" "$CASE_DIR/herdr/w-H-9/workspace"
+  if dv clean H-9; then return 1; fi
+  test -d "$wt"; test -f "$CASE_DIR/herdr/w-H-9/workspace"
+  jq '.result.workspace.label="dv-H-9"' "$CASE_DIR/herdr/w-H-9/workspace" > "$CASE_DIR/other"
+  mv "$CASE_DIR/other" "$CASE_DIR/herdr/w-H-9/workspace"
+  printf 'workspace close\n' > "$CASE_DIR/herdr/fail"
+  if dv clean H-9; then return 1; fi
+  test -d "$wt"
+  jq -e '.herdr_workspace=="w-H-9"' "$DV_STATE/H-9/meta"
+  printf 'pane read\n' > "$CASE_DIR/herdr/fail"
+  cp "$DV_STATE/H-9/log" "$CASE_DIR/log-before"
+  dv 'done' H-9
+  cmp "$CASE_DIR/log-before" "$DV_STATE/H-9/log"
+  rm "$CASE_DIR/herdr/fail"
+  printf 'agent get\n' > "$CASE_DIR/herdr/fail"
+  dv status H-9 --json | jq -e '.[0].alive' # pane get fallback
+  rm "$CASE_DIR/herdr/fail"
+  rm "$CASE_DIR/herdr/w-H-9/workspace" # manually closed in herdr
+  dv clean H-9
+  test ! -d "$wt"
+}
+
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race; do
+for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

@@ -27,6 +27,8 @@ load_issue() {
   export BASE
   BASE=$(jq -er .base "$S/meta")
   SESSION="dv-$ISSUE"
+  BACKEND=$(jq -r '.backend // "tmux"' "$S/meta")
+  HERDR_PANE=$(jq -r '.herdr_pane // empty' "$S/meta")
 }
 meta_set() {
   local tries=0 tmp
@@ -60,9 +62,18 @@ event_json() {
 }
 send_text() {
   local text=$1 buffer="dv-$ISSUE-$$"
+  if [ "$BACKEND" = herdr ]; then herdr_send_text "$text"; return; fi
   tmux_dv has-session -t "=$SESSION" 2>/dev/null || fail 'agent tmux is not alive'
   printf '%s' "$text" | tmux_dv load-buffer -b "$buffer" -
   tmux_dv paste-buffer -d -p -b "$buffer" -t "$SESSION:0.0"
   sleep "$DV_SEND_DELAY"
   tmux_dv send-keys -t "$SESSION:0.0" Enter
+}
+read_session() {
+  if [ "$BACKEND" = herdr ]; then herdr_read "$HERDR_PANE"
+  else tmux_dv capture-pane -p -t "$SESSION:0.0"; fi
+}
+session_enter() {
+  if [ "$BACKEND" = herdr ]; then herdr_cmd pane send-keys "$HERDR_PANE" Enter >/dev/null
+  else tmux_dv send-keys -t "$SESSION:0.0" Enter; fi
 }
