@@ -634,6 +634,8 @@ case_herdr_undetected() {
   # This case checks an undetected command's exact output, not cancellation
   # during sentinel initialization. Wait for its first subscription so killing
   # a still-starting mktemp cannot append a Broken pipe diagnostic to the pane.
+  # The override expands paths in the launched agent's environment.
+  # shellcheck disable=SC2016
   export DV_HERDR=1 DV_AGENT_CMD_codex='
     for _ in {1..100}; do
       if [ -s "$CASE_DIR/herdr/calls" ] && jq -se '\''any(.[]; .[0:2]==["agent","wait"])'\'' "$CASE_DIR/herdr/calls" >/dev/null; then
