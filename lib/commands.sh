@@ -90,6 +90,8 @@ run_agent() {
       codex)
         args=("$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\"" -s danger-full-access -a never)
         args+=(-c "projects.$(jq -Rn --arg path "$WT" '$path').trust_level=\"trusted\"")
+        # Codex resolves a linked worktree's trust against the original repo.
+        args+=(-c "projects.$(jq -Rn --arg path "$REPO" '$path').trust_level=\"trusted\"")
         if [ "$BACKEND" = tmux ] && [ "$DV_CODEX_DISABLE_HOOKS" = 1 ]; then args+=(--disable hooks); fi
         [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
         if [ "$mode" = exec ]; then "${args[@]}" exec "$instruction" || rc=$?
@@ -112,9 +114,66 @@ run_agent() {
   fi
   return "$rc"
 }
-inject_goal() {
-  local instruction=$1 end=$(( $(now) + DV_START_WAIT )) pane
+codex_start_failed() {
+  local reason=$1 screen=$2
+  printf '%s\n%s\n' "$screen" "$reason" >> "$S/log"
+  meta_set --arg reason "$reason" 'if .status=="running" then .status="start-failed" | .failure_reason=$reason else . end'
+  "$DV_ROOT/bin/dv" kick failed "$ISSUE" "$reason"
+}
+codex_screen() {
+  # Use the current viewport: history can contain dismissed trust prompts or
+  # an earlier /goal. Logs still use recent-unwrapped through herdr_snapshot.
+  if [ "$BACKEND" = herdr ]; then herdr_cmd pane read "$HERDR_PANE" --source visible
+  else read_session; fi
+}
+codex_hook_trust_required() {
+  printf '%s\n' "$1" | grep -Eiq 'hooks? needs? review|t[[:space:]]+trust all.*enter[[:space:]]+review'
+}
+codex_goal_pending() {
+  # Match the last composer, including wrapped lines, never a transcript echo.
+  # Strip whitespace on both sides because terminal wrapping can split words.
+  printf '%s\n' "$1" | awk -v goal="/goal $2" '
+    /^[[:space:]]*(›|❯|dv-ready>)[[:space:]]*/ {
+      input=$0; sub(/^[[:space:]]*(›|❯|dv-ready>)[[:space:]]*/, "", input)
+      capture=1; next
+    }
+    /^[[:space:]]*$/ { capture=0 }
+    capture { input=input $0 }
+    END { gsub(/[[:space:]]/, "", input); gsub(/[[:space:]]/, "", goal); exit(input!=goal) }
+  '
+}
+wait_codex_goal() {
+  local instruction=$1 end=$(( $(now) + DV_START_WAIT )) screen='' agent retried=0 retry_at=$(( $(now) + 1 ))
   while [ "$(now)" -lt "$end" ]; do
+    if screen=$(codex_screen 2>/dev/null); then
+      if codex_hook_trust_required "$screen"; then
+        codex_start_failed 'codex hook trust required' "$screen"; return 1
+      fi
+      if codex_goal_pending "$screen" "$instruction"; then
+        # Let the original submit settle; only the same pending input permits
+        # one extra Enter. Never re-paste the instruction or accept a dialog.
+        if [ "$retried" = 0 ] && [ "$(now)" -ge "$retry_at" ]; then
+          retried=1
+          session_enter || true
+        fi
+      elif printf '%s\n' "$screen" | grep -Eq '(^|[•*][[:space:]]+)Pursuing goal([[:space:]]|$)'; then return 0
+      elif [ "$BACKEND" = herdr ] && agent=$(herdr_cmd agent get "$HERDR_PANE" 2>/dev/null) &&
+        printf '%s\n' "$agent" | jq -e '.result.agent | .agent=="codex" and .agent_status=="working"' >/dev/null 2>&1; then return 0; fi
+    fi
+    sleep 0.2
+  done
+  codex_start_failed 'codex goal did not start' "$screen"
+  return 1
+}
+inject_goal() {
+  local instruction=$1 end=$(( $(now) + DV_START_WAIT )) pane screen=''
+  while [ "$(now)" -lt "$end" ]; do
+    # A prompt marker and even an agent can be present behind the hook modal.
+    # If the screen cannot be read, do not send uninspected input.
+    if ! screen=$(codex_screen 2>/dev/null); then sleep 0.2; continue; fi
+    if codex_hook_trust_required "$screen"; then
+      codex_start_failed 'codex hook trust required' "$screen"; return 1
+    fi
     if [ "$BACKEND" = herdr ]; then
       # Pane history can contain an old shell prompt. Require detected Codex,
       # then let agent prompt validate foreground/readiness (0.9.1 does not
@@ -125,15 +184,19 @@ inject_goal() {
         printf '%s\n' "$pane" | jq -e '.result.agent.agent=="codex"' >/dev/null 2>&1 &&
         [ "$(now)" -lt "$end" ] &&
         pane=$(herdr_cmd agent prompt "$HERDR_PANE" "/goal $instruction" 2>/dev/null) &&
-        printf '%s\n' "$pane" | jq -e '.error==null and .result.type=="agent_prompted"' >/dev/null 2>&1; then return; fi
+        printf '%s\n' "$pane" | jq -e '.error==null and .result.type=="agent_prompted"' >/dev/null 2>&1; then
+        wait_codex_goal "$instruction"; return $?
+      fi
     else
-      pane=$(read_session 2>/dev/null) || return 1
-      if printf '%s\n' "$pane" | grep -Eq "$DV_READY_PATTERN"; then send_text "/goal $instruction"; return; fi
+      if printf '%s\n' "$screen" | grep -Eq "$DV_READY_PATTERN" && send_text "/goal $instruction"; then
+        wait_codex_goal "$instruction"; return $?
+      fi
     fi
     sleep 0.2
   done
   printf 'Codex prompt not detected; use dv send to submit /goal.\n' >> "$S/log"
-  "$DV_ROOT/bin/dv" kick failed "$ISSUE" 'Codex prompt not detected'
+  codex_start_failed 'Codex prompt not detected' "$screen"
+  return 1
 }
 accept_devin_trust() {
   local end=$(( $(now) + DV_START_WAIT )) pane
@@ -162,7 +225,7 @@ cmd_done() {
   jq -n --arg head "$head" --argjson files "$files" --arg report "$S/report.md" --arg note "$note" \
     --argjson done_at "$(now)" '{head:$head,files:$files,report:$report,note:$note,done_at:$done_at}' > "$tmp"
   mv "$tmp" "$S/done.json"
-  meta_set --arg head "$head" --argjson done_at "$(now)" '.head=$head | .done_at=$done_at | if .status=="running" then .status="done" else . end'
+  meta_set --arg head "$head" --argjson done_at "$(now)" '.head=$head | .done_at=$done_at | if .status=="running" or .status=="start-failed" then .status="done" | del(.failure_reason) else . end'
   cmd_kick 'done' "$ISSUE" "$note"
 }
 cmd_kick() {

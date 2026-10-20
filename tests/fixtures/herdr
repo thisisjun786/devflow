@@ -53,6 +53,7 @@ case "$1 $2" in
     test "$no_focus" = 1; test -d "$cwd"
     id="w-${label#dv-}"; dir="$stub/$id"
     mkdir "$dir"
+    if [ -f "$stub/startup-mode" ]; then cp "$stub/startup-mode" "$dir/startup-mode"; fi
     jq -cn --arg id "$id" --arg label "$label" --arg cwd "$cwd" \
       '{id:"cli:workspace:create",result:{
         root_pane:{agent_status:"unknown",cwd:$cwd,focused:false,foreground_cwd:$cwd,pane_id:($id+":p1"),revision:0,
@@ -96,11 +97,43 @@ case "$1 $2" in
     (rc=0; (cd "$cwd" && bash -c "$4") || rc=$?; printf '%s\n' "$rc" > "$dir/exit") > "$dir/output" 2>&1 < /dev/null &
     printf '%s\n' "$!" > "$dir/pid" ;;
   'pane read')
-    test "$4" = --source; test "$5" = recent-unwrapped
+    test "$4" = --source
+    case "$5" in visible|recent-unwrapped) ;; *) exit 1 ;; esac
+    if [ "$5" = visible ] && [ -f "$dir/startup-mode" ]; then
+      mode=$(cat "$dir/startup-mode")
+      case "$mode" in
+        hook-modal)
+          printf 'Hooks need review\n1 hook is new or changed.\nHooks can run outside the sandbox after you trust them.\n\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won\047t run)\n\n  enter confirm · esc skip\n'; exit ;;
+        hook) printf '1 hook needs review\nt trust all · enter review\n› \n'; exit ;;
+        hook-actions) printf 't trust all · enter review\n› \n'; exit ;;
+        hook-late)
+          if [ -f "$DV_STATE/${id#w-}/goal-input" ]; then
+            printf '2 hooks need review\nt trust all · enter review\n› '
+            cat "$DV_STATE/${id#w-}/goal-input"; exit
+          fi ;;
+      esac
+      if [ -f "$DV_STATE/${id#w-}/goal-input" ]; then
+        case "$mode" in
+          enter|enter-stuck)
+            if [ ! -f "$dir/retry-enter" ] || [ "$mode" = enter-stuck ]; then
+              printf '› '; fold -w 64 "$DV_STATE/${id#w-}/goal-input" | sed '2,$s/^/  /'
+              printf '\n  gpt-6\n'; exit
+            fi ;;
+          screen-working) printf '• Pursuing goal\n› \n'; exit ;;
+          history) cat "$DV_STATE/${id#w-}/goal-input"; printf '\n› \n'; exit ;;
+        esac
+      fi
+      printf '› \n'; exit
+    fi
     if [ "$#" -gt 5 ]; then test "$6" = --lines; test "$7" = 1; tail -n 1 "$dir/output"
     else cat "$dir/output"; fi ;;
   'pane send-keys')
     test "$4" = Enter
+    if [ -f "$dir/startup-mode" ]; then
+      touch "$dir/retry-enter"
+      if [ "$(cat "$dir/startup-mode")" = enter ]; then printf 'working\n' > "$dir/status"; fi
+      exit
+    fi
     touch "$DV_STATE/${id#w-}/trust-enter" ;;
   'agent prompt')
     require_agent "$@"
@@ -119,7 +152,9 @@ case "$1 $2" in
     fi
     if [ -f "$stub/prompt-error" ]; then error agent_not_ready "agent $3 is no longer the pane foreground process"; fi
     case "$4" in
-      '/goal '*) printf '%s\n' "$4" > "$DV_STATE/${id#w-}/goal-input" ;;
+      '/goal '*)
+        printf '%s\n' "$4" > "$DV_STATE/${id#w-}/goal-input"
+        if [ ! -f "$dir/startup-mode" ]; then printf 'working\n' > "$dir/status"; fi ;;
       *) printf '%s\n' "$4" >> "$DV_STATE/${id#w-}/sent-input" ;;
     esac
     agent_reply agent_prompted ;;

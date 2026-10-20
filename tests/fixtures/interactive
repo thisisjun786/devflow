@@ -6,9 +6,19 @@ if [ "$(jq -r .agent "$DV_STATE/$DV_ISSUE/meta")" = devin ]; then
   IFS= read -r line
   printf '%s\n' "$line" > "$DV_STATE/$DV_ISSUE/trust-enter"
 elif [[ " $* " != *' exec '* ]] && [ "$(jq -r .agent "$DV_STATE/$DV_ISSUE/meta")" = codex ]; then
+  if [ -f "$CASE_DIR/codex-startup-mode" ] && [ "$(cat "$CASE_DIR/codex-startup-mode")" = hook ]; then
+    printf '1 hook needs review\nt trust all · enter review\n'
+  fi
   printf 'dv-ready> '
   IFS= read -r line
   printf '%s\n' "$line" > "$DV_STATE/$DV_ISSUE/goal-input"
+  if [ -f "$CASE_DIR/codex-startup-mode" ]; then
+    printf '\n› \n'
+    IFS= read -r line
+    printf '%s\n' "$line" > "$DV_STATE/$DV_ISSUE/unexpected-input"
+    exit 1
+  fi
+  printf 'Pursuing goal\n'
 fi
 "$ROOT/tests/fixtures/agent"
 if [[ " $* " = *' exec '* ]]; then exit; fi
