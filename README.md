@@ -71,9 +71,9 @@ Claude 기본 실행은 먼저 `~/.claude.json`의 `projects[worktree 경로].ha
 
 에이전트는 브리프 안의 작거나 되돌릴 수 있는 선택을 직접 결정하고 보고서의 "결정"에 이유를 남깁니다. 설계 방향·범위·사용자에게 보이는 동작·데이터 형식처럼 결과를 바꾸는 선택만 시온에게 물으며, 선택지 2–3개와 추천안을 제시합니다. Codex의 `request_user_input_async`는 질문을 열어 둔 채 작업을 계속할 수 있으므로, 답에 의존하지 않는 작업은 진행합니다.
 
-herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wait`로 상태 전환을 기다리며, 약 1초마다 세션 기록의 미응답 질문도 확인합니다. `working` 상태의 비동기 질문도 호출마다 `question` 이벤트를 한 번 보냅니다. 기록에 질문이 없으면 `blocked`가 `DV_BLOCKED_GRACE`초(기본 20) 지속될 때 화면으로 알립니다. 답변된 호출은 재사용하지 않습니다. `dv status --json`의 `question_pending`은 전달에 성공한 질문이 열려 있는 동안 true입니다. 감시자 오류는 pane 대신 이슈의 `question.log`에 기록합니다. 시온은 준의 맥락(기억·이전 결정·이슈)을 바탕으로 답하고 이유를 이슈에 기록하며, 되돌릴 수 없는 행동·외부 효과·비용·권한에 관한 질문만 준에게 올립니다.
+herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wait`로 상태 전환을 기다리며, 약 1초마다 세션 기록의 미응답 질문도 확인합니다. `working` 상태의 비동기 질문도 호출마다 `question` 이벤트를 보냅니다. 전달 성공 뒤에만 전송 기록을 남기므로 실패한 호출은 다음 감시에서 재시도합니다. 겹친 호출도 각각 추적하며, 비동기 도구의 즉시 `accepted:true` 응답은 답변으로 보지 않습니다. 사용자 답변의 `questionItemId`가 그 호출의 모든 질문에 대응하면 닫습니다. 기록에 질문이 없으면 `blocked`가 `DV_BLOCKED_GRACE`초(기본 20) 지속될 때 화면으로 알립니다. 답변된 호출은 재사용하지 않습니다. `dv status --json`의 `question_pending`은 전달에 성공한 질문 중 하나라도 열려 있는 동안 true입니다. 감시자 오류는 pane 대신 이슈의 `question.log`에 기록합니다. 시온은 준의 맥락(기억·이전 결정·이슈)을 바탕으로 답하고 이유를 이슈에 기록하며, 되돌릴 수 없는 행동·외부 효과·비용·권한에 관한 질문만 준에게 올립니다.
 
-질문 본문은 herdr의 `agent_session.value`와 일치하는 세션 기록을 먼저 읽습니다. Codex는 `~/.codex/sessions/**/rollout-*.jsonl`의 마지막 `request_user_input` 계열 function call의 `arguments`, Claude는 `~/.claude/projects/**/<세션 ID>.jsonl`의 마지막 `AskUserQuestion` tool use의 `input`을 사용합니다. 세션 ID를 기록 안에서도 확인하고, 질문·선택지의 JSON을 최대 2,000자로 전달합니다(긴 JSON은 중간에 잘릴 수 있습니다). 기록·질문을 찾지 못하거나 읽을 수 없으면 기존처럼 마지막 화면 8줄을 정리해 최대 1,000자로 보냅니다. 기록 경로는 `DV_CODEX_SESSIONS`·`DV_CLAUDE_SESSIONS`로 지정할 수 있으며, 기본값은 `CODEX_HOME`·`CLAUDE_CONFIG_DIR`도 따릅니다. 기록과 사용자 설정은 읽기만 합니다.
+질문 본문은 herdr의 `agent_session.value`와 일치하는 세션 기록을 먼저 읽습니다. Codex는 `~/.codex/sessions/**/rollout-*.jsonl`의 미응답 `request_user_input` 계열 function call의 `arguments`, Claude는 `~/.claude/projects/**/<세션 ID>.jsonl`의 미응답 `AskUserQuestion` tool use의 `input`을 사용합니다. 호출 ID에 대응하는 답변만 해당 호출을 닫습니다. 세션 ID를 기록 안에서도 확인하고, 질문·선택지의 JSON을 호출당 최대 2,000자로 전달합니다(긴 JSON은 중간에 잘릴 수 있습니다). 기록·질문을 찾지 못하거나 읽을 수 없으면 기존처럼 마지막 화면 8줄을 정리해 최대 1,000자로 보냅니다. 기록 경로는 `DV_CODEX_SESSIONS`·`DV_CLAUDE_SESSIONS`로 지정할 수 있으며, 기본값은 `CODEX_HOME`·`CLAUDE_CONFIG_DIR`도 따릅니다. 기록과 사용자 설정은 읽기만 합니다.
 
 | 명령 | 기능 |
 |---|---|
@@ -112,7 +112,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 
 재시도 영수증은 수용량·준비·만료 검사에 통과한 뒤에만 보관 위치로 옮깁니다. 만료 전 absent 응답이면 호스트와 토큰을 고정한 submitted 상태로 기다리고, 다음 submitted/done/failed/landed 이벤트에서 영수증을 다시 확인합니다. 만료 후에도 absent일 때만 재배정합니다. 낙찰 작업은 meta의 `award_token`과 이벤트의 `token` 및 ID로 시도를 구별합니다. 토큰 없는 이전 버전의 failed 이벤트는 현재 배정 상태를 바꾸지 않으므로 운영자가 결과를 확인해야 합니다. 안전망의 done 복구는 SSH 별칭 대신 원본 meta의 host와 토큰을 사용해 직접 전달·pull과 같은 ID를 만듭니다.
 
-`dv pr`은 공개 본문 `pr.md`가 있으면 그 내용을 그대로 게시하고 자동 퇴고를 시작하지 않습니다. 이미 열린 PR도 `pr.md`가 마지막 게시 본문과 달라지면 `gh pr edit --body-file`로 갱신합니다. 갱신 실패 시 마지막 게시 본문을 보존하므로 다시 실행해 재시도할 수 있습니다. 이전 퇴고가 실행 중이면 완료 후 `dv pr`을 다시 실행해야 합니다.
+`dv pr`은 공개 본문 `pr.md`가 있으면 그 내용을 그대로 게시하고 자동 퇴고를 시작하지 않습니다. 이미 열린 PR도 `pr.md`가 마지막 게시 본문과 달라지면 `gh pr edit --body-file`로 갱신합니다. 갱신 실패 시 마지막 게시 본문을 보존하므로 다시 실행해 재시도할 수 있습니다. 이전 퇴고가 실행 중이면 완료 후 `dv pr`을 다시 실행해야 합니다. 늦게 시작한 퇴고도 `pr.md`가 있거나 공개 본문 게시 이력이 있으면 건너뜁니다. 퇴고 도중 `pr.md`가 생긴 경우에도 게시 직전에 다시 확인합니다.
 
 `pr.md` 없이 PR을 처음 만들면 `dv polish`를 백그라운드로 시작합니다. CI·봇 리뷰와 나란히 돌며 병합을 기다리게 하지 않습니다. 기본 명령은 로컬 `agy --model gemini-4-argon-high -p "<프롬프트>"`이며, `agy`가 없으면 `ssh lina-os`에서 같은 명령을 실행합니다. `DV_POLISH=0`으로 끄거나 `DV_POLISH_CMD`에 퇴고 명령을 지정할 수 있습니다. 명령에는 프롬프트가 마지막 인자로 전달되고, 표준 출력은 본문으로 사용됩니다(예: `DV_POLISH_CMD='my-polisher --model editor'`).
 

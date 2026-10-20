@@ -1,6 +1,105 @@
 #!/usr/bin/env bash
 # Regression cases use only isolated homes, fake agents and local Git remotes.
 # shellcheck disable=SC2016,SC2154
+question_async_reply() {
+  jq -cn --arg call "$1" --argjson index "$2" '
+    [{answer:"choice",questionItemId:(["request_user_input_async",$call,$index]|tojson)}] |
+    {type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:("<send_user_message_question_reply>\n"+tojson+"\n</send_user_message_question_reply>")}]}}' >> "$codex_record"
+}
+case_question_async_ack() {
+  question_record_setup
+  jq -n '{questions:[{title:"First?",options:["A","B"]},{title:"Second?",options:["C","D"]}]}' > "$CASE_DIR/exact-question.json"
+  question_codex_call functions.request_user_input_async "$CASE_DIR/exact-question.json" async-ack
+  jq -cn '{type:"response_item",payload:{type:"function_call_output",call_id:"async-ack",output:"{\"accepted\":true}"}}' >> "$codex_record"
+  wait_questions 1
+  question_pending true
+  question_async_reply another-call 0
+  question_async_reply async-ack 0
+  sleep 1.2
+  question_pending true
+  test "$(question_count)" = 1
+  question_async_reply async-ack 1
+  for _ in {1..100}; do question_pending false >/dev/null && break; sleep 0.05; done
+  question_pending false
+  question_state blocked
+  wait_questions 2
+  jq -se '.[1].message=="screen fallback"' "$DV_STATE/Q-1/events.log"
+  question_finish
+}
+case_question_overlap() {
+  question_record_setup
+  question_codex_call request_user_input_async "$CASE_DIR/exact-question.json" first
+  question_codex_call request_user_input_async "$CASE_DIR/exact-question.json" second
+  wait_questions 2
+  question_async_reply second 0
+  sleep 1.2
+  question_pending true
+  test "$(question_count)" = 2
+  question_async_reply first 0
+  question_pending false
+  question_finish
+}
+case_question_claude_overlap() {
+  question_record_setup claude
+  jq -cn --arg session "$question_session" '{sessionId:$session,type:"assistant",message:{content:[{type:"tool_use",id:"first",name:"AskUserQuestion",input:{questions:[{question:"first"}]}},{type:"tool_use",id:"second",name:"AskUserQuestion",input:{questions:[{question:"second"}]}}]}}' > "$claude_record"
+  wait_questions 2
+  jq -cn --arg session "$question_session" '{sessionId:$session,type:"user",message:{content:[{type:"tool_result",tool_use_id:"second",content:"answer"}]}}' >> "$claude_record"
+  sleep 1.2
+  question_pending true
+  test "$(question_count)" = 2
+  jq -cn --arg session "$question_session" '{sessionId:$session,type:"user",message:{content:[{type:"tool_result",tool_use_id:"first",content:"answer"}]}}' >> "$claude_record"
+  question_pending false
+  question_finish
+}
+case_question_delivery_retry() {
+  cat > "$CASE_DIR/recovering-kick" <<'KICK'
+#!/usr/bin/env bash
+if [ ! -f "$CASE_DIR/kick-online" ]; then exit 1; fi
+exec "$ROOT/bin/dv-kick" "$@"
+KICK
+  chmod +x "$CASE_DIR/recovering-kick"
+  export DV_KICK="$CASE_DIR/recovering-kick"
+  question_record_setup
+  question_codex_call request_user_input_async "$CASE_DIR/exact-question.json" retry
+  wait_questions 1
+  question_pending false
+  touch "$CASE_DIR/kick-online"
+  for _ in {1..100}; do
+    if jq -se 'any(.[]; .kind=="question" and .delivered)' "$DV_STATE/Q-1/events.log" >/dev/null; then break; fi
+    sleep 0.05
+  done
+  jq -se 'any(.[]; .kind=="question" and .delivered)' "$DV_STATE/Q-1/events.log"
+  question_pending true
+  sleep 1.2
+  jq -se '[.[]|select(.kind=="question" and .delivered)]|length==1' "$DV_STATE/Q-1/events.log"
+  question_finish
+}
+case_polish_public_delayed() {
+  polish_setup
+  cp "$CASE_DIR/original" "$DV_STATE/POL-1/pr.md"
+  # Model a previously queued child entering cmd_polish after public prose exists.
+  dv polish POL-1
+  test ! -f "$CASE_DIR/polish-prompt"
+  cmp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
+}
+case_polish_public_during_run() {
+  polish_setup
+  export POLISH_MODE=public-during-run
+  dv polish POL-1
+  test -f "$DV_STATE/POL-1/pr.md"
+  test ! -f "$GH_STUB_DIR/edited-body"
+  cmp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
+}
+case_polish_public_published() {
+  needs_tmux; repo published remote; start PP-1; wait_done PP-1
+  printf 'Public body must stay exact.\n' > "$DV_STATE/PP-1/pr.md"
+  dv pr PP-1
+  wait_pr_ready PP-1
+  rm "$DV_STATE/PP-1/pr.md"
+  DV_POLISH=1 DV_POLISH_CMD='printf "unexpected rewrite\n"' dv polish PP-1
+  test ! -f "$DV_STATE/PP-1/pr-body.orig.md"
+  grep -Fx 'Public body must stay exact.' "$GH_STUB_DIR/live-body"
+}
 case_question_async() {
   question_record_setup
   question_codex_call functions.request_user_input_async "$CASE_DIR/exact-question.json" async-1
@@ -11,7 +110,7 @@ case_question_async() {
   jq -cn '{type:"response_item",payload:{type:"function_call_output",call_id:"unrelated",output:"ok"}}' >> "$codex_record"
   sleep 1.2
   test "$(question_count)" = 1
-  jq -cn '{type:"response_item",payload:{type:"function_call_output",call_id:"async-1",output:"answered"}}' >> "$codex_record"
+  question_async_reply async-1 0
   for _ in {1..100}; do question_pending false >/dev/null && break; sleep 0.05; done
   question_pending false
   question_codex_call functions.request_user_input_async "$CASE_DIR/exact-question.json" async-2

@@ -106,6 +106,7 @@ PROMPT
   # JSON decoding must not add a newline to the live body before comparison.
   jq -ej '.body | select(type=="string")' "$tmp/live.json" > "$tmp/live" || { echo 'invalid live PR body; edit skipped'; return 1; }
   cmp -s "$tmp/original" "$tmp/live" || { echo 'live PR body changed; edit skipped'; return 1; }
+  if [ -e "$S/pr.md" ] || [ -e "$S/pr-public.sent" ]; then echo 'public body supplied; edit skipped'; return 1; fi
   gh api --method PATCH "$endpoint" -F "body=@$tmp/output" > /dev/null || { echo 'gh api PATCH failed; original retained'; return 1; }
   mv "$tmp/output" "$S/pr-body.md" || return 1
   echo 'polish applied'
@@ -117,8 +118,10 @@ cmd_polish() {
   # Independent of operation/meta locks: never delay PR checks or land.
   if [ "$DV_POLISH" = 0 ]; then printf 'disabled (DV_POLISH=0)\n' >> "$S/polish.log"; return 0; fi
   (
+    if [ -e "$S/pr.md" ] || [ -e "$S/pr-public.sent" ]; then echo 'public body supplied; polish skipped'; exit 0; fi
     mkdir "$S/.polish" 2>/dev/null || { echo 'polish already running; skipped'; exit 0; }
     trap 'rm -rf "$S/.polish"' EXIT
+    if [ -e "$S/pr.md" ] || [ -e "$S/pr-public.sent" ]; then echo 'public body supplied; polish skipped'; exit 0; fi
     # land can remove WT while polishing. The repository and issue state survive.
     cd "$REPO" && polish_body "$S/.polish"
   ) >> "$S/polish.log" 2>&1 || printf 'polish failed; PR flow continues\n' >> "$S/polish.log"

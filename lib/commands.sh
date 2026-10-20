@@ -317,9 +317,9 @@ cmd_status() {
           alive=$(printf '%s\n' "$info" | jq -r '.pane_id!=null')
           pending="$(dirname "$path")/question.pending"
           if [ -f "$pending" ] && kill -0 "$(jq -r .owner "$pending")" 2>/dev/null; then
-            if jq -e '(.key // "")!=""' "$pending" >/dev/null; then
-              record=$(herdr_question_record "$(printf '%s\n' "$info" | jq '{result:{agent:.}}')") || record='{}'
-              if printf '%s\n' "$record" | jq -e --slurpfile pending "$pending" '.key==$pending[0].key' >/dev/null 2>&1; then question_pending=true; fi
+            if jq -e '((.keys // [])|length)>0 or (.key // "")!=""' "$pending" >/dev/null; then
+              record=$(herdr_question_record "$(printf '%s\n' "$info" | jq '{result:{agent:.}}')") || record='[]'
+              if printf '%s\n' "$record" | jq -e --slurpfile pending "$pending" 'any(.[]; .key as $key | ($pending[0].keys // [$pending[0].key]) | index($key)!=null)' >/dev/null 2>&1; then question_pending=true; fi
             elif [ "$agent_status" = blocked ] &&
               printf '%s\n' "$info" | jq -e --slurpfile pending "$pending" '.state_change_seq==$pending[0].seq' >/dev/null 2>&1; then question_pending=true; fi
           fi

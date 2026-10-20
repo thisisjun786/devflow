@@ -42,6 +42,8 @@ cmd_pr() {
     fi
   fi
   if [ -n "$public_body" ]; then
+    # Persist ownership even if pr.md is later removed before a queued polish.
+    touch "$S/pr-public.sent"
     rm -f "$public_body"
     rmdir "$S/.polish"
     trap 'rmdir "$S/.operation" 2>/dev/null || true' EXIT

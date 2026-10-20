@@ -550,6 +550,7 @@ case_question_codex_record() {
   question_record_setup
   printf '{"questions":[{"question":"old question"}]}\n' > "$CASE_DIR/old-question.json"
   question_codex_call request_user_input "$CASE_DIR/old-question.json"
+  jq -cn '{type:"response_item",payload:{type:"function_call_output",call_id:"request_user_input",output:"answered"}}' >> "$codex_record"
   # A different session's file must not win, regardless of its modification time.
   cp "$codex_record" "$DV_CODEX_SESSIONS/rollout-2026-10-20-other-session.jsonl"
   question_codex_call functions.request_user_input_async "$CASE_DIR/exact-question.json"
@@ -582,7 +583,7 @@ case_question_record_fallback() {
         question_codex_call unrelated_tool "$CASE_DIR/exact-question.json" ;;
       invalid-arguments)
         question_codex_call request_user_input "$CASE_DIR/exact-question.json"
-        jq -cn '{type:"response_item",payload:{type:"function_call",name:"request_user_input",arguments:"{unfinished"}}' >> "$codex_record" ;;
+        jq -cn '{type:"response_item",payload:{type:"function_call",call_id:"request_user_input",name:"request_user_input",arguments:"{unfinished"}}' >> "$codex_record" ;;
     esac
     question_state blocked
     count=$((count + 1)); wait_questions "$count"
@@ -1513,7 +1514,7 @@ source "$ROOT/tests/bidding-order.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin; do
+for name in question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
