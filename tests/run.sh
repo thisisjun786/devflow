@@ -631,7 +631,17 @@ case_herdr_send_retry() {
 }
 case_herdr_undetected() {
   repo herdr-undetected
-  export DV_HERDR=1 DV_AGENT_CMD_codex='printf "plain text: ❯"'
+  # This case checks an undetected command's exact output, not cancellation
+  # during sentinel initialization. Wait for its first subscription so killing
+  # a still-starting mktemp cannot append a Broken pipe diagnostic to the pane.
+  export DV_HERDR=1 DV_AGENT_CMD_codex='
+    for _ in {1..100}; do
+      if [ -s "$CASE_DIR/herdr/calls" ] && jq -se '\''any(.[]; .[0:2]==["agent","wait"])'\'' "$CASE_DIR/herdr/calls" >/dev/null; then
+        printf "plain text: ❯"; exit 0
+      fi
+      sleep 0.05
+    done
+    exit 1'
   dv start "$REPO" HU-1 native --mode goal
   wait_file "$CASE_DIR/herdr/w-HU-1/exit"
   test "$(cat "$CASE_DIR/herdr/w-HU-1/exit")" = 0
