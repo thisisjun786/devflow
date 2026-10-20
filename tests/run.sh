@@ -244,6 +244,36 @@ case_watch_pull() {
   grep -Fx 'box:W-1:done:h' "$DV_HOME/seen"
   pid=$(cat "$DV_HOME/pull-box.pid"); if kill -0 "$pid" 2>/dev/null; then return 1; fi
 }
+case_question_pull_replay() {
+  export SSH_FIXTURE_EXEC=1 DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1 DV_HOSTS=''
+  mkdir -p "$CASE_DIR/remote-home" "$CASE_DIR/rq"
+  printf 'DV_HOME=%q\n' "$CASE_DIR/rq" > "$CASE_DIR/remote-home/config.sh"
+  local remote_q="$CASE_DIR/rq/kick.q" puller count
+  # Two genuine source events at one head, each with a distinct blocked episode.
+  DV_HOME="$CASE_DIR/rq" DV_QUESTION_EPISODE='w1:p1:123:1' dv-kick question Q-1 first box same-head
+  DV_HOME="$CASE_DIR/rq" DV_QUESTION_EPISODE='w1:p1:123:3' dv-kick question Q-1 second box same-head
+  cp "$remote_q" "$CASE_DIR/source-events"
+  for count in 2 4; do
+    dv-kick-pull box 2>> "$CASE_DIR/pull.err" & puller=$!
+    for _ in {1..100}; do
+      if [ -f "$DV_HOME/kick.q" ] && [ "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = "$count" ]; then break; fi
+      sleep 0.05
+    done
+    kill "$puller"; wait "$puller" || true
+    test "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = "$count"
+    # Replacing the queue's inode models replay after reconnect/checkpoint loss.
+    cp "$CASE_DIR/source-events" "$remote_q.new"; mv "$remote_q.new" "$remote_q"
+  done
+  jq -se --slurpfile source "$CASE_DIR/source-events" \
+    '($source|map(.id)) as $ids | map(.id)==($ids+$ids) and (map(.id)|unique|length)==2' "$DV_HOME/kick.q"
+  dv-watch & watcher=$!
+  for _ in {1..100}; do
+    [ "$(find "$DV_HOME/workers" -name '*.finished' 2>/dev/null | wc -l | tr -d ' ')" = 2 ] && break
+    sleep 0.05
+  done
+  touch "$DV_HOME/stop"; wait "$watcher"
+  test "$(find "$DV_HOME/workers" -name '*.finished' | wc -l | tr -d ' ')" = 2
+}
 
 wait_file() {
   local path=$1
@@ -605,7 +635,11 @@ case_herdr_undetected() {
   dv start "$REPO" HU-1 native --mode goal
   wait_file "$CASE_DIR/herdr/w-HU-1/exit"
   test "$(cat "$CASE_DIR/herdr/w-HU-1/exit")" = 0
-  dv status HU-1 --json | jq -e '.[0] | .alive and .agent_status=="unknown" and .last_log=="plain text: ❯"'
+  dv status HU-1 --json > "$CASE_DIR/undetected-status.json"
+  if ! jq -e '.[0] | .alive and .agent_status=="unknown" and .last_log=="plain text: ❯"' "$CASE_DIR/undetected-status.json"; then
+    cat "$CASE_DIR/undetected-status.json" "$CASE_DIR/herdr/w-HU-1/output"
+    return 1
+  fi
   if dv send HU-1 hello > "$CASE_DIR/send.out" 2> "$CASE_DIR/send.err"; then return 1; fi
   grep -F agent_not_found "$CASE_DIR/send.err"
   test ! -s "$CASE_DIR/send.out"
@@ -618,6 +652,24 @@ case_herdr_undetected() {
   test ! -d "$(jq -r .worktree "$DV_STATE/HU-1/meta")"
   jq -e '.herdr_workspace==null and .herdr_pane==null' "$DV_STATE/HU-1/meta"
 }
+case_herdr_cleanup_owner() (
+  # Reproduce the pre-exec child's inherited EXIT handler deterministically:
+  # a descendant must not remove its live parent's reply/pending files.
+  # shellcheck source=lib/herdr.sh
+  source "$ROOT/lib/herdr.sh"
+  S="$DV_STATE/owner"; mkdir "$S"
+  question_tmp=$(mktemp -d "$S/.question.XXXXXX")
+  # shellcheck disable=SC2034
+  question_owner_subshell=$BASH_SUBSHELL question_child=''
+  touch "$S/question.pending" "$question_tmp/reply"
+  (trap herdr_question_cleanup EXIT; exit 0)
+  if [ ! -f "$question_tmp/reply" ] || [ ! -f "$S/question.pending" ]; then
+    printf 'Child EXIT handler removed live sentinel files\n' >&2
+    exit 1
+  fi
+  herdr_question_cleanup
+  test ! -d "$question_tmp"; test ! -f "$S/question.pending"
+)
 case_herdr_goal_retry() {
   repo goal-retry; herdr_setup; export DV_START_WAIT=4
   mkdir -p "$CASE_DIR/herdr"
@@ -926,7 +978,7 @@ case_polish_parallel() {
 source "$ROOT/tests/codex-startup.sh"
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in question_startup question_signal question_claude question_devin question_cli question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
+for name in herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

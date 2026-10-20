@@ -71,6 +71,11 @@ herdr_question_wait() {
   return "$rc"
 }
 herdr_question_cleanup() {
+  # TERM can reach a forked CLI child before exec resets its inherited EXIT
+  # trap. Only the sentinel owns these files; that child must not remove them.
+  [ "$BASH_SUBSHELL" = "$question_owner_subshell" ] || return 0
+  trap '' INT TERM
+  trap - EXIT
   if [ -n "$question_child" ]; then
     kill "$question_child" 2>/dev/null || true
     wait "$question_child" 2>/dev/null || true
@@ -79,7 +84,7 @@ herdr_question_cleanup() {
   rmdir "$question_tmp"
 }
 herdr_question_sentinel() {
-  local question_bin question_tmp question_child='' seq info message first=1
+  local question_bin question_tmp question_child='' question_owner_subshell=$BASH_SUBSHELL seq info message first=1
   question_bin=$(herdr_bin) || return 0
   question_tmp=$(mktemp -d "$S/.question.XXXXXX") || return 0
   trap herdr_question_cleanup EXIT

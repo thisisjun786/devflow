@@ -248,22 +248,22 @@ cmd_done() {
 }
 cmd_kick() {
   [ "$#" -ge 2 ] || fail 'usage: dv kick kind ISSUE [message]'
-  local kind=$1 issue=$2 message=${3:-} head='' host=$DV_HOST rc=0 line remote episode=''
+  local kind=$1 issue=$2 message=${3:-} head='' host=$DV_HOST rc=0 line remote event_id
   valid_issue "$issue"; mkdir -p "$DV_STATE/$issue"
   if [ -f "$DV_STATE/$issue/meta" ]; then
     head=$(jq -r '.head // .start_head' "$DV_STATE/$issue/meta")
     host=$(jq -r .host "$DV_STATE/$issue/meta")
   fi
-  if [ "$kind" = question ]; then episode=${DV_QUESTION_EPISODE:-$(now):$$:$RANDOM}; fi
-  line=$(event_json "$kind" "$issue" "$message" "$host" "$head" "$episode")
+  line=$(event_json "$kind" "$issue" "$message" "$host" "$head")
+  event_id=$(printf '%s\n' "$line" | jq -r .id)
   if [ -z "$DV_KICK" ] && [ "$DV_KICK_HOST" = "$DV_HOST" ]; then
     # The watcher lives on this host: write to the local queue, no ssh to ourselves.
-    dv-kick "$kind" "$issue" "$message" "$host" "$head" "$episode" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
+    dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   elif [ -n "$DV_KICK" ]; then
-    bash -c "$DV_KICK \"\$@\"" dv-kick "$kind" "$issue" "$message" "$host" "$head" "$episode" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
+    bash -c "$DV_KICK \"\$@\"" dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   else
     # The remote shell often lacks ~/.local/bin: use the installed path explicitly.
-    remote=$(shell_join bash -lc "PATH=\$HOME/.local/bin:\$PATH $(shell_join dv-kick "$kind" "$issue" "$message" "$host" "$head" "$episode")")
+    remote=$(shell_join bash -lc "PATH=\$HOME/.local/bin:\$PATH $(shell_join dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id")")
     ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$DV_KICK_HOST" "$remote" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   fi
   printf '%s\n' "$line" | jq -c --argjson rc "$rc" '. + {delivered:($rc==0),exit:$rc}' >> "$DV_STATE/$issue/events.log"
