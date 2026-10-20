@@ -6,6 +6,146 @@ claude_functions() {
   # shellcheck source=lib/common.sh
   source "$ROOT/lib/common.sh"
 }
+claude_profile_setup() {
+  export CLAUDE_CONFIG_DIR="$CASE_DIR/Claude profile"
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  printf '{"hasCompletedOnboarding":true,"theme":"keep","projects":{"/other":{"history":[1]}}}\n' > "$CLAUDE_CONFIG_DIR/.claude.json"
+  printf '{"skipDangerousModePermissionPrompt":true,"other":"keep"}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+}
+case_claude_profile_onboarding() {
+  claude_functions; claude_profile_setup
+  cp "$HOME/.claude.json" "$CASE_DIR/default-before"
+  cp "$HOME/.claude/settings.json" "$CASE_DIR/default-settings-before"
+  printf '{"hasCompletedOnboarding":false}\n' > "$CLAUDE_CONFIG_DIR/.claude.json"
+  claude_onboarding | jq -e '.hasCompletedOnboarding==false and .skipDangerousModePermissionPrompt==true'
+  printf '{"hasCompletedOnboarding":true}\n' > "$CLAUDE_CONFIG_DIR/.claude.json"
+  printf '{"skipDangerousModePermissionPrompt":false}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+  claude_onboarding | jq -e '.hasCompletedOnboarding==true and .skipDangerousModePermissionPrompt==false'
+  printf '{broken\n' > "$CLAUDE_CONFIG_DIR/.claude.json"
+  printf '{} {}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+  claude_onboarding | jq -e '.hasCompletedOnboarding==false and .skipDangerousModePermissionPrompt==false'
+  rm "$CLAUDE_CONFIG_DIR/.claude.json" "$CLAUDE_CONFIG_DIR/settings.json"
+  claude_onboarding | jq -e '.hasCompletedOnboarding==false and .skipDangerousModePermissionPrompt==false'
+  test ! -e "$CLAUDE_CONFIG_DIR/.claude.json"
+  test ! -e "$CLAUDE_CONFIG_DIR/settings.json"
+  cmp "$HOME/.claude.json" "$CASE_DIR/default-before"
+  cmp "$HOME/.claude/settings.json" "$CASE_DIR/default-settings-before"
+  CLAUDE_CONFIG_DIR='' claude_onboarding | jq -e '.hasCompletedOnboarding and .skipDangerousModePermissionPrompt'
+  # Explicitly selecting ~/.claude still puts the state file inside it.
+  CLAUDE_CONFIG_DIR="$HOME/.claude" claude_onboarding | jq -e '.hasCompletedOnboarding==false and .skipDangerousModePermissionPrompt==true'
+}
+case_claude_profile_trust() {
+  claude_functions; claude_profile_setup
+  cp "$HOME/.claude.json" "$CASE_DIR/default-before"
+  cp "$CLAUDE_CONFIG_DIR/.claude.json" "$CASE_DIR/profile-before"
+  cp "$CLAUDE_CONFIG_DIR/settings.json" "$CASE_DIR/settings-before"
+  local path="$CASE_DIR/work tree/quote\" and \\ slash"
+  # A lock on the default profile must not block a different profile.
+  : > "$HOME/.claude.json.dv-lock"
+  mv() {
+    test "$(dirname "$1")" = "$CLAUDE_CONFIG_DIR" || return 2
+    test -f "$CLAUDE_CONFIG_DIR/.claude.json.dv-lock" || return 2
+    test "$2" = "$CLAUDE_CONFIG_DIR/.claude.json" || return 2
+    command mv "$@"
+  }
+  claude_trust_worktree "$path"
+  unset -f mv
+  jq -e --arg path "$path" --slurpfile before "$CASE_DIR/profile-before" '.==($before[0] | .projects[$path].hasTrustDialogAccepted=true)' "$CLAUDE_CONFIG_DIR/.claude.json"
+  cp "$CLAUDE_CONFIG_DIR/.claude.json" "$CASE_DIR/profile-once"
+  claude_trust_worktree "$path"
+  cmp "$CLAUDE_CONFIG_DIR/.claude.json" "$CASE_DIR/profile-once"
+  cmp "$HOME/.claude.json" "$CASE_DIR/default-before"
+  cmp "$CLAUDE_CONFIG_DIR/settings.json" "$CASE_DIR/settings-before"
+  test -f "$HOME/.claude.json.dv-lock"
+  test ! -e "$CLAUDE_CONFIG_DIR/.claude.json.dv-lock"
+  test -z "$(find "$CLAUDE_CONFIG_DIR" -name '.claude.json.dv-tmp.*' -print)"
+}
+case_claude_profile_create() {
+  claude_functions
+  export CLAUDE_CONFIG_DIR="$CASE_DIR/new profile/nested"
+  cp "$HOME/.claude.json" "$CASE_DIR/default-before"
+  claude_onboarding | jq -e '.hasCompletedOnboarding==false and .skipDangerousModePermissionPrompt==false'
+  test ! -e "$CLAUDE_CONFIG_DIR"
+  claude_trust_worktree /target
+  jq -e '.=={projects:{"/target":{hasTrustDialogAccepted:true}}}' "$CLAUDE_CONFIG_DIR/.claude.json"
+  test -n "$(find "$CLAUDE_CONFIG_DIR/.claude.json" -perm 600 -print)"
+  test ! -e "$CLAUDE_CONFIG_DIR/settings.json"
+  cmp "$HOME/.claude.json" "$CASE_DIR/default-before"
+}
+case_claude_profile_invalid() {
+  claude_functions; claude_profile_setup
+  cp "$HOME/.claude.json" "$CASE_DIR/default-before"
+  printf '{broken\n' > "$CLAUDE_CONFIG_DIR/.claude.json"
+  cp "$CLAUDE_CONFIG_DIR/.claude.json" "$CASE_DIR/profile-before"
+  if claude_trust_worktree /target; then return 1; fi
+  cmp "$CLAUDE_CONFIG_DIR/.claude.json" "$CASE_DIR/profile-before"
+  rm "$CLAUDE_CONFIG_DIR/.claude.json"
+  ln -s "$CASE_DIR/profile-before" "$CLAUDE_CONFIG_DIR/.claude.json"
+  if claude_trust_worktree /target; then return 1; fi
+  test -L "$CLAUDE_CONFIG_DIR/.claude.json"
+  cmp "$HOME/.claude.json" "$CASE_DIR/default-before"
+  test ! -e "$CLAUDE_CONFIG_DIR/.claude.json.dv-lock"
+  test -z "$(find "$CLAUDE_CONFIG_DIR" -name '.claude.json.dv-tmp.*' -print)"
+}
+case_claude_trust_mode() {
+  claude_functions
+  local mode
+  for mode in 600 640 660 400 440 4600 2640; do
+    chmod "$mode" "$HOME/.claude.json"
+    claude_trust_worktree /target
+    test -n "$(find "$HOME/.claude.json" -perm "$mode" -print)"
+  done
+  chmod 600 "$HOME/.claude.json"
+}
+claude_acl() {
+  case "$(uname -s)" in
+    Linux) getfacl -cp "$1" ;;
+    Darwin) ls -le "$1" | sed -n '/^[[:space:]]*[0-9][0-9]*:/p' ;;
+    *) return 1 ;;
+  esac
+}
+case_claude_trust_acl() {
+  claude_functions
+  case "$(uname -s)" in
+    Linux) setfacl -m u:65534:r-- "$HOME/.claude.json" ;;
+    Darwin) chmod +a "$(id -un) allow read" "$HOME/.claude.json" ;;
+    *) return 1 ;;
+  esac
+  claude_acl "$HOME/.claude.json" > "$CASE_DIR/acl-before"
+  test -s "$CASE_DIR/acl-before"
+  claude_trust_worktree /target
+  claude_acl "$HOME/.claude.json" > "$CASE_DIR/acl-after"
+  cmp "$CASE_DIR/acl-before" "$CASE_DIR/acl-after"
+}
+case_claude_trust_copy_failure() {
+  claude_functions
+  cp "$HOME/.claude.json" "$CASE_DIR/before"
+  # Metadata-copy failure must never replace the original with a bare mktemp.
+  cp() { return 1; }
+  if claude_trust_worktree /target; then return 1; fi
+  unset -f cp
+  cmp "$HOME/.claude.json" "$CASE_DIR/before"
+  test ! -e "$HOME/.claude.json.dv-lock"
+  test -z "$(find "$HOME" -name '.claude.json.dv-tmp.*' -print)"
+}
+case_claude_profile_start() {
+  repo claude-profile; herdr_setup; claude_profile_setup
+  export DV_CLAUDE_BIN="$ROOT/tests/fixtures/claude"
+  printf '{"hasCompletedOnboarding":false}\n' > "$HOME/.claude.json"
+  printf '{"skipDangerousModePermissionPrompt":false}\n' > "$HOME/.claude/settings.json"
+  cp "$HOME/.claude.json" "$CASE_DIR/default-before"
+  dv start "$REPO" CP-1 trust --agent claude
+  wait_native CP-1
+  test -f "$DV_STATE/CP-1/trust-before-launch"
+  cmp "$HOME/.claude.json" "$CASE_DIR/default-before"
+}
+case_claude_profile_host() {
+  host_setup; claude_profile_setup
+  "$HOST_DV" host check --json > "$CASE_DIR/profile.json"
+  jq -e '.claude.onboarding=={hasCompletedOnboarding:true,skipDangerousModePermissionPrompt:true}' "$CASE_DIR/profile.json"
+  test ! -e "$HOME/.claude.json"
+  test ! -e "$HOME/.claude"
+}
 case_claude_trust_create() {
   claude_functions
   rm "$HOME/.claude.json"

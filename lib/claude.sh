@@ -3,18 +3,23 @@
 # shellcheck disable=SC2016
 claude_onboarding() {
   local onboarding=false bypass=false
+  # With an explicit profile Claude keeps both files inside that directory.
+  local config="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+  local settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
   # Slurp to reject empty files and streams of multiple JSON documents.
-  if jq -se 'length==1 and (.[0] | type=="object" and .hasCompletedOnboarding==true)' "$HOME/.claude.json" >/dev/null 2>&1; then onboarding=true; fi
-  if jq -se 'length==1 and (.[0] | type=="object" and .skipDangerousModePermissionPrompt==true)' "$HOME/.claude/settings.json" >/dev/null 2>&1; then bypass=true; fi
+  if jq -se 'length==1 and (.[0] | type=="object" and .hasCompletedOnboarding==true)' "$config" >/dev/null 2>&1; then onboarding=true; fi
+  if jq -se 'length==1 and (.[0] | type=="object" and .skipDangerousModePermissionPrompt==true)' "$settings" >/dev/null 2>&1; then bypass=true; fi
   jq -cn --argjson onboarding "$onboarding" --argjson bypass "$bypass" \
     '{hasCompletedOnboarding:$onboarding,skipDangerousModePermissionPrompt:$bypass}'
 }
 claude_trust_worktree() (
   # All dv writers share this lock; read only after acquiring it so concurrent
   # starts preserve each other's project records. Subshell traps own cleanup.
-  local path=$1 config="$HOME/.claude.json" lock="$HOME/.claude.json.dv-lock"
-  local tries=0 tmp='' input new=false
+  local path=$1 config="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" lock
+  local tries=0 tmp='' input new=false mode=''
+  lock="$config.dv-lock"
   umask 077
+  mkdir -p "$(dirname "$config")" || return 1
   until (set -C; : > "$lock") 2>/dev/null; do
     tries=$((tries + 1))
     if [ "$tries" -ge 100 ]; then printf 'dv: Claude trust config busy: %s\n' "$lock" >&2; return 1; fi
@@ -30,8 +35,14 @@ claude_trust_worktree() (
   input=$config
   if [ ! -e "$config" ]; then input=/dev/null; new=true; fi
   # Same-directory rename exposes either the old complete JSON or the new one.
-  # mktemp keeps credentials in the document private (mode 600).
-  tmp=$(mktemp "$HOME/.claude.json.dv-tmp.XXXXXX") || return 1
+  # New files are private (600). For existing files, cp -p carries the ACL as
+  # well as ownership/mode on Linux and macOS. Abort if preservation fails.
+  tmp=$(mktemp "$config.dv-tmp.XXXXXX") || return 1
+  if [ "$new" = false ]; then
+    mode=$(stat -c '%a' "$config" 2>/dev/null || stat -f '%Lp' "$config") || return 1
+    cp -p "$config" "$tmp" || return 1
+    chmod u+w "$tmp" || return 1
+  fi
   jq -se --arg path "$path" --argjson new "$new" '
     if $new and length==0 then {}
     elif length==1 and (.[0]|type)=="object" then .[0]
@@ -40,5 +51,8 @@ claude_trust_worktree() (
     elif .projects[$path]!=null and (.projects[$path]|type)!="object" then error("Claude project must be an object")
     else .projects[$path].hasTrustDialogAccepted=true end
   ' "$input" > "$tmp" || return 1
+  # Restore read-only modes and special bits that writing may have cleared;
+  # chmod retains the copied ACL entries (and restores the Linux ACL mask).
+  if [ "$new" = false ]; then chmod "$mode" "$tmp" || return 1; fi
   mv "$tmp" "$config" || return 1
 )
