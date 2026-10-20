@@ -11,7 +11,19 @@ if [ "$agent" = devin ]; then
   printf 'Do you trust this folder?\n'
   wait_path "$state/trust-enter"
 elif [ "$agent" = codex ] && [[ " $* " != *' exec '* ]]; then
-  if [ -f "$CASE_DIR/herdr/goal-mode" ]; then
+  if [ -f "$CASE_DIR/herdr/w-$DV_ISSUE/startup-mode" ]; then
+    mode=$(cat "$CASE_DIR/herdr/w-$DV_ISSUE/startup-mode")
+    printf 'dv-ready>\n'
+    for _ in {1..200}; do
+      if [ -s "$state/events.log" ] && jq -se 'any(.[]; .kind=="failed")' "$state/events.log" >/dev/null; then exit 0; fi
+      if [ -f "$state/goal-input" ]; then
+        if [ "$mode" = screen-working ]; then break; fi
+        if [ "$mode" = enter ] && [ -f "$CASE_DIR/herdr/w-$DV_ISSUE/retry-enter" ]; then break; fi
+      fi
+      sleep 0.05
+    done
+    case "$mode" in enter|screen-working) ;; *) exit 1 ;; esac
+  elif [ -f "$CASE_DIR/herdr/goal-mode" ]; then
     printf 'old shell › ❯\nCodex starting...\n'
     for _ in {1..200}; do
       [ ! -f "$state/goal-input" ] || break
