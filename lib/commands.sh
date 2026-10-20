@@ -115,8 +115,20 @@ run_agent() {
 inject_goal() {
   local instruction=$1 end=$(( $(now) + DV_START_WAIT )) pane
   while [ "$(now)" -lt "$end" ]; do
-    pane=$(read_session 2>/dev/null) || return 1
-    if printf '%s\n' "$pane" | grep -Eq "$DV_READY_PATTERN"; then send_text "/goal $instruction"; return; fi
+    if [ "$BACKEND" = herdr ]; then
+      # Pane history can contain an old shell prompt. Only a detected, ready
+      # Codex may receive /goal; readiness can still race the prompt submission.
+      # Use one attempt per poll so blocked/unready replies share this deadline
+      # instead of starting send_text's separate wait/retry budget.
+      if pane=$(herdr_cmd agent get "$HERDR_PANE" 2>/dev/null) &&
+        printf '%s\n' "$pane" | jq -e '.result.agent | .agent=="codex" and .interactive_ready==true and .launch_pending!=true' >/dev/null 2>&1 &&
+        [ "$(now)" -lt "$end" ] &&
+        pane=$(herdr_cmd agent prompt "$HERDR_PANE" "/goal $instruction" 2>/dev/null) &&
+        printf '%s\n' "$pane" | jq -e '.error==null and .result.type=="agent_prompted"' >/dev/null 2>&1; then return; fi
+    else
+      pane=$(read_session 2>/dev/null) || return 1
+      if printf '%s\n' "$pane" | grep -Eq "$DV_READY_PATTERN"; then send_text "/goal $instruction"; return; fi
+    fi
     sleep 0.2
   done
   printf 'Codex prompt not detected; use dv send to submit /goal.\n' >> "$S/log"

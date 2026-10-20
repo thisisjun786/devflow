@@ -56,12 +56,20 @@ case "$1 $2" in
     test "$4" = --source; test "$5" = recent-unwrapped
     if [ "$#" -gt 5 ]; then test "$6" = --lines; test "$7" = 1; text=$(tail -n 1 "$dir/output")
     else text=$(cat "$dir/output"); fi
+    if [ -f "$stub/goal-mode" ]; then text=$(printf 'old shell › ❯\n%s' "$text"); fi
     jq -cn --arg text "$text" '{result:{type:"pane_read",read:{text:$text}}}' ;;
   'pane send-keys')
     test "$4" = Enter
     touch "$DV_STATE/${id#w-}/trust-enter"
     printf '{"result":{"type":"pane_keys_sent"}}\n' ;;
   'agent prompt')
+    if [ -f "$stub/goal-mode" ] && [[ "$4" = '/goal '* ]]; then
+      [ -f "$dir/goal-ready" ] || touch "$dir/early-prompt"
+      count=0; [ ! -f "$dir/goal-attempts" ] || count=$(cat "$dir/goal-attempts")
+      count=$((count + 1)); printf '%s\n' "$count" > "$dir/goal-attempts"
+      if [ "$(cat "$stub/goal-mode")" != retry ] || [ "$count" = 1 ]; then error agent_not_ready; fi
+      if [ "$count" = 2 ]; then error agent_blocked; fi
+    fi
     if [ -f "$stub/blocked" ]; then
       if [ "$(cat "$stub/blocked")" = once ]; then rm "$stub/blocked"; fi
       # Deliberately exit zero: callers must inspect the JSON, not only exit status.
@@ -85,7 +93,15 @@ case "$1 $2" in
   'agent get'|'pane get')
     status=idle; [ ! -f "$dir/status" ] || status=$(cat "$dir/status")
     agent=$(jq -r .agent "$DV_STATE/${id#w-}/meta")
-    jq -cn --arg key "$1" --arg status "$status" --arg agent "$agent" \
-      '{result:{($key):{agent:(if $status=="unknown" then null else $agent end),agent_status:$status}}}' ;;
+    ready=true
+    if [ -f "$stub/goal-mode" ]; then
+      count=0; [ ! -f "$dir/goal-checks" ] || count=$(cat "$dir/goal-checks")
+      count=$((count + 1)); printf '%s\n' "$count" > "$dir/goal-checks"
+      if [ "$count" = 1 ] || [ "$(cat "$stub/goal-mode")" = never-ready ]; then status=unknown; ready=false
+      elif [ "$count" = 2 ]; then ready=false
+      else touch "$dir/goal-ready"; fi
+    fi
+    jq -cn --arg key "$1" --arg status "$status" --arg agent "$agent" --argjson ready "$ready" \
+      '{result:{($key):{agent:(if $status=="unknown" then null else $agent end),agent_status:$status,interactive_ready:$ready}}}' ;;
   *) printf 'Unexpected herdr call\n' >&2; exit 1 ;;
 esac

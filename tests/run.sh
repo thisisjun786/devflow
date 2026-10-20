@@ -449,6 +449,42 @@ case_herdr_send_retry() {
   test "$(wc -l < "$DV_STATE/H-2/sent-input" | tr -d ' ')" = 1
   dv clean H-2
 }
+case_herdr_goal_retry() {
+  repo goal-retry; herdr_setup; export DV_START_WAIT=4
+  mkdir -p "$CASE_DIR/herdr"
+  printf 'retry\n' > "$CASE_DIR/herdr/goal-mode"
+  dv start "$REPO" HG-1 native
+  if ! wait_native HG-1; then
+    cat "$CASE_DIR/herdr/w-HG-1/output"
+    printf 'Expected /goal delivery after transient not-ready/blocked failures\n' >&2
+    return 1
+  fi
+  grep '^/goal .*brief.md' "$DV_STATE/HG-1/goal-input"
+  test ! -f "$CASE_DIR/herdr/w-HG-1/early-prompt"
+  test "$(cat "$CASE_DIR/herdr/w-HG-1/goal-attempts")" = 3
+  jq -se 'all(.[]; .kind!="failed")' "$DV_STATE/HG-1/events.log"
+  dv clean HG-1
+}
+case_herdr_goal_timeout() {
+  repo goal-timeout; herdr_setup; export DV_START_WAIT=2
+  mkdir -p "$CASE_DIR/herdr"
+  for mode in never-ready never-accepted; do
+    printf '%s\n' "$mode" > "$CASE_DIR/herdr/goal-mode"
+    issue="HG-$mode"
+    dv start "$REPO" "$issue" native
+    if ! wait_native "$issue"; then
+      cat "$CASE_DIR/herdr/w-$issue/output"
+      printf 'Expected failed event when /goal cannot be submitted\n' >&2
+      return 1
+    fi
+    test ! -f "$DV_STATE/$issue/goal-input"
+    grep -Fx 'Codex prompt not detected; use dv send to submit /goal.' "$DV_STATE/$issue/log"
+    jq -se '[.[]|select(.kind=="failed" and .message=="Codex prompt not detected")]|length==1' "$DV_STATE/$issue/events.log"
+    if [ "$mode" = never-ready ]; then test ! -f "$CASE_DIR/herdr/w-$issue/goal-attempts"
+    else test "$(cat "$CASE_DIR/herdr/w-$issue/goal-attempts")" -gt 1; fi
+    dv clean "$issue"
+  done
+}
 case_herdr_agents_land() {
   repo herdr-agents; herdr_setup
   dv start "$REPO" H-3 native --agent devin; wait_native H-3
@@ -550,7 +586,7 @@ case_herdr_clean_safety() {
 
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety; do
+for name in start_done kick_failure local_land pr_land clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
