@@ -31,6 +31,13 @@ cmd_start() {
   [ "$agent" = codex ] || [ "$mode" = goal ] || fail 'exec mode is Codex-only'
   [ -z "$brief" ] || [ -f "$brief" ] || fail 'brief file not found'
   need git; need jq
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then
+    local trust_root
+    trust_root=$(codex_repo_root "$REPO") || fail 'cannot resolve Codex repository root'
+    codex_repo_allowed "$trust_root" || fail 'Codex repository trust denied'
+    codex_environment || fail 'Codex provider environment is not ready'
+    codex_trust_repo "$trust_root" || fail 'Codex persisted folder trust is not ready'
+  fi
   BACKEND=tmux
   if [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
   mkdir -p "$DV_STATE" "$DV_WORK"
@@ -71,7 +78,7 @@ cmd_start() {
   # Terminal server environments can predate this shell. Pass exported DV_* values explicitly.
   local env_args=() key launcher
   while IFS= read -r key; do
-    case "$key" in DV_*|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
+    case "$key" in DV_*|CODEX_HOME|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
   done < <(compgen -e)
   launcher=$(shell_join env "PATH=$PATH" "${env_args[@]}" "$DV_ROOT/bin/dv" _agent "$ISSUE")
   if [ "$BACKEND" = herdr ]; then
@@ -108,11 +115,16 @@ run_agent() {
     local args=()
     case "$agent" in
       codex)
+        if ! codex_environment || ! codex_trust_repo "$(codex_repo_root "$REPO")"; then
+          agent_start_failed 'codex provider environment or persisted folder trust is not ready' ''
+          printf '1\n' > "$S/agent.exit"
+          return 1
+        fi
         args=("$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\"" -s danger-full-access -a never)
         [ "$DV_AGENT_QUESTIONS" != off ] || args+=(-c tools.experimental_request_user_input.enabled=false)
         args+=(-c "projects.$(jq -Rn --arg path "$(pwd -P)" '$path').trust_level=\"trusted\"")
         # Codex resolves a linked worktree's trust against the original repo.
-        args+=(-c "projects.$(jq -Rn --arg path "$(cd "$REPO" && pwd -P)" '$path').trust_level=\"trusted\"")
+        args+=(-c "projects.$(jq -Rn --arg path "$(codex_repo_root "$REPO")" '$path').trust_level=\"trusted\"")
         if [ "$BACKEND" = tmux ] && [ "$DV_CODEX_DISABLE_HOOKS" = 1 ]; then args+=(--disable hooks); fi
         [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
         if [ "$mode" = exec ]; then
@@ -178,6 +190,9 @@ codex_screen() {
 codex_hook_trust_required() {
   printf '%s\n' "$1" | grep -Eiq 'hooks? needs? review|t[[:space:]]+trust all.*enter[[:space:]]+review'
 }
+codex_folder_trust_required() {
+  printf '%s\n' "$1" | grep -Eiq 'trust (this|the) (folder|directory)|trusting will apply to the repository root|folder access'
+}
 codex_goal_pending() {
   # Match the last composer, including wrapped lines, never a transcript echo.
   # Strip whitespace on both sides because terminal wrapping can split words.
@@ -195,6 +210,9 @@ wait_codex_goal() {
   local instruction=$1 end=$(( $(now) + DV_START_WAIT )) screen='' agent retried=0 retry_at=$(( $(now) + 1 ))
   while [ "$(now)" -lt "$end" ]; do
     if screen=$(codex_screen 2>/dev/null); then
+      if codex_folder_trust_required "$screen"; then
+        codex_start_failed 'codex folder trust required' "$screen"; return 1
+      fi
       if codex_hook_trust_required "$screen"; then
         codex_start_failed 'codex hook trust required' "$screen"; return 1
       fi
@@ -225,6 +243,9 @@ inject_goal() {
     # A prompt marker and even an agent can be present behind the hook modal.
     # If the screen cannot be read, do not send uninspected input.
     if ! screen=$(codex_screen 2>/dev/null); then sleep 0.2; continue; fi
+    if codex_folder_trust_required "$screen"; then
+      codex_start_failed 'codex folder trust required' "$screen"; return 1
+    fi
     if codex_hook_trust_required "$screen"; then
       codex_start_failed 'codex hook trust required' "$screen"; return 1
     fi
