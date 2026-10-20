@@ -7,6 +7,8 @@ description: Use when running dev work through dv (devflow).
 
 Linear 이슈를 정리한 뒤 개발 호스트의 로컬 저장소에서 이슈당 에이전트 하나·worktree 하나·브랜치 하나로 개발합니다. 개발 중 설계·비평·relay·리뷰 루프는 없습니다.
 
+herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISSUE>` workspace에서 에이전트를 직접 실행하고(Codex hooks 유지), send·status·clean/land는 meta의 backend를 따릅니다(로그는 done/clean 화면 저장, `DV_HERDR=0`·미설치·backend 없는 기존 이슈는 tmux, herdr 시작 실패 시 상태 보존).
+
 1. 구체적인 요구와 완료 기준을 brief 파일로 쓰고 `dv start <repo> <ISSUE> <slug> --brief FILE`로 시작합니다. Codex 기본은 goal입니다. 필요하면 `--agent claude|devin` 또는 Codex `--mode exec`, `--base BRANCH`를 선택합니다.
 2. 에이전트는 실패 시험을 먼저 남기고 개발·관련 시험·커밋·보고서를 마칩니다. GitHub면 `dv pr`, 마지막에 `dv done`을 호출합니다.
 3. 감시 호스트의 `dv-kick`은 이벤트를 파일에 쓰기만 합니다. `dv-watch`가 3초마다 로컬 큐를 읽고 시온 작업자를 최대 4개 실행합니다. 30분마다 상태 조회로 유실된 done 이벤트만 보완합니다(자기 호스트는 ssh 없이). 모델 폴링을 하지 않습니다. 10-19부터 감시 호스트는 lina-os(systemd user `dev.devflow.watch.service`, `DV_KICK_HOST=lina-os`)입니다.
@@ -17,13 +19,13 @@ Linear 이슈를 정리한 뒤 개발 호스트의 로컬 저장소에서 이슈
 
 | 명령 | 용도 |
 |---|---|
-| `dv status [ISSUE] [--json]` | 상태·에이전트·호스트·경과·tmux·마지막 로그 |
-| `dv send ISSUE 'text'` | 실행 중인 tmux에 지시 붙여넣기 후 Enter |
+| `dv status [ISSUE] [--json]` | 상태·에이전트·호스트·경과·backend·생존·에이전트 상태·마지막 로그 |
+| `dv send ISSUE 'text'` | herdr agent prompt(차단 시 대기 후 한 번 재시도) / tmux 붙여넣기 후 Enter |
 | `dv done ISSUE [--note TEXT]` | head·파일 수·보고서 경로를 기록하고 이벤트 |
 | `dv pr ISSUE` / `dv pr-wait ISSUE` | 브랜치 push·PR / 백그라운드 체크·리뷰 대기 |
 | `dv review ISSUE` | 로컬 Codex 리뷰, 횟수와 출력 보관 |
 | `dv land ISSUE` | 체크/시험을 통과한 변경 병합·worktree 정리 |
-| `dv clean ISSUE` | 깨끗한 worktree와 tmux 정리, 머지된 로컬 브랜치만 삭제 |
+| `dv clean ISSUE` | 깨끗한 worktree와 herdr/tmux 정리, 머지된 로컬 브랜치만 삭제 |
 | `dv kick kind ISSUE [msg]` | 이벤트 재전송; 전송 실패는 events.log에 기록 |
 
 확인은 이벤트 host·issue·head와 현재 meta를 대조한 뒤 합니다. 보고서 주소만으로 시험 통과를 추정하지 않습니다. CI가 없거나 건너뜀·대기·실패면 land하지 않습니다. 한 번 수정한 P0·P1이 남거나 시험 실패면 차단입니다. base 직접 push, force push, 원격 브랜치 삭제를 하지 않습니다.

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+printf '%s\n' "$@" | jq -R . | jq -s . > "$state/args.json"
+agent=$(jq -r .agent "$state/meta")
+wait_path() {
+  for _ in {1..100}; do [ ! -f "$1" ] || return 0; sleep 0.05; done
+  return 1
+}
+if [ "$agent" = devin ]; then
+  printf 'Do you trust this folder?\n'
+  wait_path "$state/trust-enter"
+elif [ "$agent" = codex ] && [[ " $* " != *' exec '* ]]; then
+  if [ -f "$CASE_DIR/herdr/goal-mode" ]; then
+    printf 'old shell › ❯\nCodex starting...\n'
+    for _ in {1..200}; do
+      [ ! -f "$state/goal-input" ] || break
+      if [ -f "$state/events.log" ] && jq -se 'any(.[]; .kind=="failed")' "$state/events.log" >/dev/null; then exit 0; fi
+      sleep 0.05
+    done
+    test -f "$state/goal-input"
+  else
+    printf 'dv-ready>\n'
+    wait_path "$state/goal-input"
+  fi
+fi
+printf 'native output before done\n'
+"$ROOT/tests/fixtures/agent"
+printf 'native output after done\n'
