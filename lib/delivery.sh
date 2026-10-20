@@ -87,7 +87,7 @@ github_land_method() (
   if [ -f .devflow ]; then
     # Repository-owned shell configuration is trusted, as with local land.
     # shellcheck source=/dev/null
-    source ./.devflow
+    source ./.devflow || fail 'could not load repository land configuration'
   fi
   method=${override:-${DV_LAND_METHOD:-}}
   settings=$(gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed) || fail 'could not read repository merge methods'

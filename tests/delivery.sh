@@ -32,7 +32,8 @@ land_success() {
 }
 land_failure() {
   if dv land LAND-1 > "$CASE_DIR/land-output" 2>&1; then
-    cat "$CASE_DIR/land-output"; return 1
+    printf 'Expected land failure; gh calls:\n'
+    cat "$CASE_DIR/land-output" "$GH_STUB_DIR/calls"; return 1
   fi
   cat "$CASE_DIR/land-output"
   grep -F -- "$1" "$CASE_DIR/land-output"
@@ -85,6 +86,14 @@ case_land_repo_failure() {
   land_setup true true true
   touch "$GH_STUB_DIR/repo-fail"
   land_failure 'could not read repository merge methods'
+  land_not_merged
+}
+case_land_config_failure() {
+  land_setup true true true
+  land_config merge
+  printf 'false\n' >> "$LAND_WT/.devflow"
+  git -C "$LAND_WT" commit -qam 'failing configuration'
+  land_failure 'could not load repository land configuration'
   land_not_merged
 }
 case_land_head_mismatch() {
