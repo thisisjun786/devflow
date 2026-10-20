@@ -15,7 +15,7 @@ setup() {
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
-  unset DV_AGENT_QUESTIONS
+  unset DV_AGENT_QUESTIONS DV_AWARD_TOKEN
   export DV_CODEX_SESSIONS="$CASE_DIR/codex sessions" DV_CLAUDE_SESSIONS="$CASE_DIR/claude projects"
   export DV_POLISH=0 DV_POLISH_TIMEOUT=3 DV_POLISH_CMD="$ROOT/tests/fixtures/polish"
   export GH_STUB_DIR="$CASE_DIR/gh" PATH="$ROOT/tests/fixtures:$ROOT/bin:$PATH"
@@ -263,7 +263,7 @@ case_question_pull_replay() {
   printf 'DV_HOME=%q\n' "$CASE_DIR/rq" > "$CASE_DIR/remote-home/config.sh"
   local remote_q="$CASE_DIR/rq/kick.q" puller count
   # Two genuine source events at one head, each with a distinct blocked episode.
-  DV_HOME="$CASE_DIR/rq" DV_QUESTION_EPISODE='w1:p1:123:1' dv-kick question Q-1 first box same-head
+  DV_HOME="$CASE_DIR/rq" DV_QUESTION_EPISODE='w1:p1:123:1' dv-kick question Q-1 first box same-head '' award-1
   DV_HOME="$CASE_DIR/rq" DV_QUESTION_EPISODE='w1:p1:123:3' dv-kick question Q-1 second box same-head
   cp "$remote_q" "$CASE_DIR/source-events"
   for count in 2 4; do
@@ -278,7 +278,7 @@ case_question_pull_replay() {
     cp "$CASE_DIR/source-events" "$remote_q.new"; mv "$remote_q.new" "$remote_q"
   done
   jq -se --slurpfile source "$CASE_DIR/source-events" \
-    '($source|map(.id)) as $ids | map(.id)==($ids+$ids) and (map(.id)|unique|length)==2' "$DV_HOME/kick.q"
+    '($source|map({id,token})) as $events | map({id,token})==($events+$events) and (map(.id)|unique|length)==2' "$DV_HOME/kick.q"
   dv-watch & watcher=$!
   for _ in {1..100}; do
     [ "$(find "$DV_HOME/workers" -name '*.finished' 2>/dev/null | wc -l | tr -d ' ')" = 2 ] && break
@@ -1503,6 +1503,8 @@ source "$ROOT/tests/host.sh"
 source "$ROOT/tests/delivery.sh"
 # shellcheck source=tests/claude.sh
 source "$ROOT/tests/claude.sh"
+# shellcheck source=tests/bidding-edge.sh
+source "$ROOT/tests/bidding-edge.sh"
 # shellcheck source=tests/bidding-order.sh
 source "$ROOT/tests/bidding-order.sh"
 # shellcheck source=tests/manager.sh
@@ -1513,6 +1515,14 @@ pass=0; skip=0; fail=0
 for name in manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
+  fi
 done
 for name in bid_order_ties bid_order_fallback bid_order_probes claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"

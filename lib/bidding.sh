@@ -50,13 +50,16 @@ bid_resources() {
   jq -cn --argjson cores "$cores" --argjson load "${load:-0}" --argjson memory "${memory:-0}" \
     '{cores:$cores,load5:$load,memory_available_mb:$memory}'
 }
+bid_remote_repo() {
+  [[ "$1" =~ ^https?://[^/]+/.+ ]] || [[ "$1" =~ ^ssh://.+ ]] || [[ "$1" =~ ^git@[^:]+:.+ ]]
+}
 bid_repo() {
   # Return the existing clone or the deterministic destination for an award.
   local repo=$1 name origin
   BID_CLONED=false; BID_REPO=''; BID_REPO_OK=false
   if [ -d "$repo" ] && git -C "$repo" rev-parse --show-toplevel >/dev/null 2>&1; then
     BID_REPO=$(cd "$repo" && git rev-parse --show-toplevel); BID_CLONED=true; BID_REPO_OK=true
-  elif [[ "$repo" =~ ^https?://[^/]+/.+ ]] || [[ "$repo" =~ ^ssh://.+ ]] || [[ "$repo" =~ ^git@[^:]+:.+ ]]; then
+  elif bid_remote_repo "$repo"; then
     name=${repo##*/}; name=${name%.git}
     [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || return 0
     BID_REPO="$DV_REPO_ROOT/$name"
@@ -71,7 +74,7 @@ bid_active() {
   for path in "$DV_STATE"/*/meta; do
     [ -f "$path" ] || continue
     [ ! -f "$(dirname "$path")/agent.exit" ] || continue
-    jq -c 'select(.done_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required"))' "$path"
+    jq -c 'select(.done_at==null and .cleaned_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required"))' "$path"
   done | jq -s length
 }
 bid_agent() {
@@ -138,7 +141,7 @@ cmd_submit() {
   if [ -d "$repo" ]; then
     repo=$(cd "$repo" && git rev-parse --show-toplevel)
     origin=$(git -C "$repo" config --get remote.origin.url 2>/dev/null || true)
-    [ -z "$origin" ] || repo=$origin
+    if bid_remote_repo "$origin"; then repo=$origin; fi
   fi
   request=$(jq -cn --arg issue "$issue" --arg repo "$repo" --arg slug "$slug" --arg agent "$agent" --arg mode "$mode" --arg base "$base" --rawfile brief "$brief" \
     '{issue:$issue,repo:$repo,slug:$slug,agent:$agent,mode:$mode,base:$base,brief:$brief}')
@@ -226,7 +229,7 @@ cmd__receipt() {
 }
 cmd__award() (
   bid_settings
-  local request issue dir token deadline repo agent mode slug base bid rc=0 status head history=''
+  local request issue dir token deadline repo agent mode slug base bid rc=0 status head history='' retry=false
   request=$(cat); printf '%s\n' "$request" | bid_request_valid || fail 'invalid award'
   issue=$(printf '%s\n' "$request" | jq -r .issue)
   token=$(printf '%s\n' "$request" | jq -er '.token|select(type=="string")')
@@ -246,15 +249,20 @@ cmd__award() (
       jq -e '.status=="failed"' "$DV_STATE/$issue/meta" >/dev/null || fail 'previous start needs inspection'
       [ ! -e "$(jq -r .worktree "$DV_STATE/$issue/meta")" ] || fail 'previous worktree still exists'
     fi
+    retry=true
+  fi
+  [ "$(now)" -lt "$deadline" ] || fail 'award expired before admission'
+  [ "$retry" = true ] || [ ! -e "$DV_STATE/$issue" ] || fail 'issue already exists on this host'
+  repo=$(printf '%s\n' "$request" | jq -r .repo); agent=$(printf '%s\n' "$request" | jq -r .agent)
+  bid=$(cmd_bid --json --repo "$repo" --agent "$agent")
+  printf '%s\n' "$bid" | jq -e '.status=="submitted"' >/dev/null || { printf '%s\n' "$bid"; exit; }
+  [ "$(now)" -lt "$deadline" ] || fail 'award expired before admission'
+  # Rejected/expired retries leave the last receipt and state in place.
+  if [ "$retry" = true ]; then
     history=$(mktemp -d "$dir/failed.XXXXXX")
     mv "$dir/receipt.json" "$dir/request.json" "$dir/brief.md" "$history/"
     [ ! -e "$DV_STATE/$issue" ] || mv "$DV_STATE/$issue" "$history/state"
   fi
-  [ "$(now)" -lt "$deadline" ] || fail 'award expired before admission'
-  [ ! -e "$DV_STATE/$issue" ] || fail 'issue already exists on this host'
-  repo=$(printf '%s\n' "$request" | jq -r .repo); agent=$(printf '%s\n' "$request" | jq -r .agent)
-  bid=$(cmd_bid --json --repo "$repo" --agent "$agent")
-  printf '%s\n' "$bid" | jq -e '.status=="submitted"' >/dev/null || { printf '%s\n' "$bid"; exit; }
   mkdir -p "$dir"
   printf '%s\n' "$request" > "$dir/request.json"
   printf '%s\n' "$request" | jq -r .brief > "$dir/brief.md"
@@ -297,7 +305,7 @@ cmd__award() (
   [ ! -f "$DV_STATE/$issue/meta" ] || head=$(jq -r '.head // .start_head' "$DV_STATE/$issue/meta")
   jq -n --arg status "$status" --arg token "$token" --arg head "$head" '{status:$status,token:$token,head:$head}' > "$dir/.receipt"
   mv "$dir/.receipt" "$dir/receipt.json"
-  if [ "$status" = failed ]; then "$DV_ROOT/bin/dv" kick failed "$issue" 'Award startup failed; safe to reassign' >&2; fi
+  if [ "$status" = failed ]; then DV_AWARD_TOKEN="$token" "$DV_ROOT/bin/dv" kick failed "$issue" 'Award startup failed; safe to reassign' >&2; fi
   cat "$dir/receipt.json"
 )
 bid_hosts() {
@@ -324,8 +332,12 @@ bid_schedule_one() {
     reply=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" _receipt "$(basename "$dir")" "$token" < /dev/null 2>> "$dir/dispatch.log") || reply='{}'
     status=$(printf '%s\n' "$reply" | jq -r '.status//"unknown"' 2>/dev/null || echo unknown)
     case "$status" in
-      working) bid_task_set "$dir" '.status="working"'; return ;;
+      working) bid_task_set "$dir" '.status="working"|del(.reason)'; return ;;
       failed) bid_task_set "$dir" '.host=null' || return ;;
+      absent)
+        deadline=$(jq -r .deadline "$dir/task.json")
+        if [ "$(now)" -ge "$deadline" ]; then bid_task_set "$dir" '.host=null|del(.reason)' || return
+        else bid_task_set "$dir" '.reason="Award may still arrive before its deadline"'; return; fi ;;
       *) bid_task_set "$dir" '.status="input-required"|.reason="Interrupted award; awaiting host outcome"'; return ;;
     esac
   fi
@@ -368,14 +380,14 @@ bid_schedule_one() {
       absent)
         # A delayed SSH invocation must expire before an absent receipt is safe.
         if [ "$(now)" -ge "$deadline" ]; then bid_task_set "$dir" '.host=null' || return
-        else bid_task_set "$dir" '.status="input-required"|.reason="Award may still arrive before its deadline"'; return; fi ;;
+        else bid_task_set "$dir" '.reason="Award may still arrive before its deadline"'; return; fi ;;
       *) bid_task_set "$dir" '.status="input-required"|.reason="Start acknowledgement missing or unsafe to clean; retain assignment until a host event"'; return ;;
     esac
   done <<< "$rows"
   bid_task_set "$dir" '.reason="Waiting for an eligible host; rebid on done/failed/landed"'
 }
 bid_event() (
-  local line=$1 kind issue host dir path head receipt token status
+  local line=$1 kind issue host dir path head receipt token status event_token
   kind=$(printf '%s\n' "$line" | jq -r .kind)
   case "$kind" in submitted|done|failed|landed|question) ;; *) exit 0 ;; esac
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || exit 0
@@ -384,12 +396,18 @@ bid_event() (
   trap 'rmdir "$DV_HOME/.schedule-lock"' EXIT
   issue=$(printf '%s\n' "$line" | jq -r .issue); valid_issue "$issue"
   host=$(printf '%s\n' "$line" | jq -r .host); head=$(printf '%s\n' "$line" | jq -r '.head//""')
+  event_token=$(printf '%s\n' "$line" | jq -r '.token//""')
   dir="$DV_HOME/submissions/$issue"
-  if [ -f "$dir/task.json" ] && jq -e --arg host "$host" '.host==$host and (.status=="working" or .status=="input-required")' "$dir/task.json" >/dev/null; then
+  # Legacy failures have no attempt identity, so only scoped failures can mutate it.
+  if [ -f "$dir/task.json" ] && jq -e --arg host "$host" --arg token "$event_token" --arg kind "$kind" \
+    '(.status=="working" or .status=="input-required" or (.status=="submitted" and .host!=null)) and
+    ($kind!="failed" or $token!="") and
+    (if $token!="" then .token==$token else .host==$host end)' "$dir/task.json" >/dev/null; then
     case "$kind" in
       done|landed) bid_task_set "$dir" --arg head "$head" '.status="completed"|.head=$head|del(.reason)' ;;
       failed)
         token=$(jq -r .token "$dir/task.json")
+        host=$(jq -r .host "$dir/task.json")
         receipt=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" _receipt "$issue" "$token" < /dev/null 2>> "$dir/dispatch.log") || receipt='{}'
         status=$(printf '%s\n' "$receipt" | jq -r '.status//"unknown"' 2>/dev/null || echo unknown)
         case "$status" in
