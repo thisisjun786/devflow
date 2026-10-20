@@ -131,7 +131,7 @@ retry_pending() {
     slot=${record%.json}
     # Only reap may clear an attempt. A worker can finish between reap and
     # this scan; restarting it here would replay a successful operation.
-    [ ! -f "$slot.pid" ] && [ ! -f "$slot.exit" ] || continue
+    if [ -f "$slot.pid" ] || [ -f "$slot.exit" ]; then continue; fi
     retry=0; [ ! -f "$slot.retry" ] || retry=$(cat "$slot.retry")
     [ "$(now)" -ge "$retry" ] || continue
     worker_start "$slot"
