@@ -338,6 +338,43 @@ case_appserver_websocket() {
   if printf '\201\177\177\377\377\377\377\377\377\377' | appserver_ws_receive 0; then return 1; fi
   test "$(appserver_ws_accept dGhlIHNhbXBsZSBub25jZQ==)" = s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 }
+case_appserver_sender_idle() {
+  # Bash 3.2 returns 1 on read timeout, just as it does at EOF. A quiet
+  # connection must still answer pings and send the next complete record.
+  # shellcheck source=lib/appserver-transport.sh
+  source "$ROOT/lib/appserver-transport.sh"
+  AS_IO="$CASE_DIR/frames"; mkdir "$AS_IO"
+  printf p > "$AS_IO/pong.test.ready"
+  { sleep 2; printf 'hello\n'; } | appserver_ws_send 0 > "$CASE_DIR/frames.out"
+  printf '\212\001p\201\005hello' > "$CASE_DIR/expected"
+  cmp "$CASE_DIR/expected" "$CASE_DIR/frames.out"
+  test ! -f "$AS_IO/pong.test.ready"
+}
+case_appserver_sender_partial() {
+  # A record split across the idle deadline must retain its leading bytes.
+  # shellcheck source=lib/appserver-transport.sh
+  source "$ROOT/lib/appserver-transport.sh"
+  AS_IO="$CASE_DIR/frames"; mkdir "$AS_IO"
+  { printf h; sleep 2; printf 'ello\n\nlast\n'; } | appserver_ws_send 0 > "$CASE_DIR/frames.out"
+  printf '\201\005hello\201\000\201\004last' > "$CASE_DIR/expected"
+  cmp "$CASE_DIR/expected" "$CASE_DIR/frames.out"
+}
+appserver_sender_legacy() (
+  # Exercise Bash 3.2's timeout contract on Linux CI's newer Bash too.
+  read() {
+    local read_name=${!#} read_before read_rc=0
+    read_before=${!read_name-}
+    builtin read "$@" || read_rc=$?
+    if [ "$read_rc" -gt 128 ]; then
+      printf -v "$read_name" '%s' "$read_before"
+      return 1
+    fi
+    return "$read_rc"
+  }
+  "case_appserver_sender_$1"
+)
+case_appserver_sender_legacy_idle() { appserver_sender_legacy idle; }
+case_appserver_sender_legacy_partial() { appserver_sender_legacy partial; }
 case_appserver_active_error_send() {
   appserver_setup
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"active"},"turns":[{"id":"turn-1","status":"inProgress","items":[],"error":{"message":"transient capacity error"}}]}}' > "$CASE_DIR/server/thread.json"
