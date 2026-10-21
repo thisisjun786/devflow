@@ -12,6 +12,10 @@ source "$DV_ROOT/config.example.sh"
 source "$DV_ROOT/lib/claude.sh"
 # shellcheck source=lib/codex.sh
 source "$DV_ROOT/lib/codex.sh"
+# shellcheck source=lib/appserver.sh
+source "$DV_ROOT/lib/appserver.sh"
+# shellcheck source=lib/codex-exec.sh
+source "$DV_ROOT/lib/codex-exec.sh"
 export DV_CONFIG DV_ROOT DV_STATE DV_WORK DV_HOME DV_HOST
 export PATH="$DV_ROOT/bin:$PATH"
 fail() { printf 'dv: %s\n' "$*" >&2; exit 1; }
@@ -90,14 +94,21 @@ shell_join() { printf '%q ' "$@"; }
 # One compact JSON line is shared by SSH, the queue, and the reconciliation path.
 event_json() {
   # Transports pass the original ID verbatim, including a question's episode.
-  local id=${6:-} token=${7:-}
+  local id=${6:-} token=${7:-} episode=${8:-}
   if [ -z "$id" ]; then
+    # Reconciliation calls with its source status row in scope, including on a
+    # remote host. Read that row, never the watcher's unrelated local state.
+    if [ "$1" = 'done' ] && [ -z "$episode" ] && [ -n "${row:-}" ]; then
+      episode=$(printf '%s\n' "$row" | jq -r --arg issue "$2" --arg host "$4" --arg head "$5" \
+        'select(.issue==$issue and .host==$host and .head==$head) | .done_episode // empty') || episode=''
+    fi
     id="$4:$2:$1:$5"
     [ -z "$token" ] || id="$id:$token"
+    [ -z "$episode" ] || id="$id:revive:$episode"
     if [ "$1" = question ]; then id="$id:${DV_QUESTION_EPISODE:-$(now):$$:$RANDOM}"; fi
   fi
   jq -cn --arg kind "$1" --arg issue "$2" --arg message "$3" --arg host "$4" --arg head "$5" \
-    --arg id "$id" --arg token "$token" --argjson time "$(now)" \
+    --arg id "$id" --arg token "$token" --argjson time "${9:-$(now)}" \
     '{id:$id,kind:$kind,issue:$issue,message:$message,host:$host,head:$head,time:$time} +
     (if $token=="" then {} else {token:$token} end)'
 }
@@ -118,3 +129,7 @@ session_enter() {
   if [ "$BACKEND" = herdr ]; then herdr_cmd pane send-keys "$HERDR_PANE" Enter >/dev/null
   else tmux_dv send-keys -t "$SESSION:0.0" Enter; fi
 }
+# shellcheck source=lib/metrics.sh
+source "$DV_ROOT/lib/metrics.sh"
+# shellcheck source=lib/disk.sh
+source "$DV_ROOT/lib/disk.sh"

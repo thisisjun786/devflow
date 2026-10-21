@@ -7,6 +7,7 @@ setup() {
   CASE_DIR=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-test.XXXXXX")
   export CASE_DIR
   export HOME="$CASE_DIR/agent home"
+  export GOCACHE="$HOME/.cache/go-build"
   mkdir -p "$HOME/.claude"
   printf '{"hasCompletedOnboarding":true}\n' > "$HOME/.claude.json"
   printf '{"skipDangerousModePermissionPrompt":true}\n' > "$HOME/.claude/settings.json"
@@ -15,6 +16,10 @@ setup() {
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
+  export DV_AUTO_UPDATE=0
+  export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5 DV_APPSERVER_TIMEOUT=1
+  unset DV_MODE
+  unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF
   unset CODEX_HOME
   export DV_TRUSTED_REPOS='' DV_CODEX_ENV_FILE="$HOME/.opencodex/codex-auth-env.sh"
   unset DV_AGENT_QUESTIONS DV_AWARD_TOKEN CLAUDE_CONFIG_DIR
@@ -28,14 +33,36 @@ setup() {
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
   trap teardown EXIT
 }
+teardown_stop_pidfile() {
+  local pidfile=$1 pid attempt state
+  [ -f "$pidfile" ] || return 0
+  pid=$(cat "$pidfile" 2>/dev/null) || return 0
+  if ! [[ "$pid" =~ ^[1-9][0-9]*$ ]] || [ "$pid" -le 1 ] || [ "$pid" = "$$" ]; then
+    printf 'Refusing invalid fixture PID: %s\n' "$pidfile" >&2
+    return 1
+  fi
+  kill "$pid" 2>/dev/null || true
+  for attempt in {1..100}; do
+    state=$(ps -p "$pid" -o stat= 2>/dev/null | tr -d ' ') || state=''
+    if ! kill -0 "$pid" 2>/dev/null || [[ "$state" = Z* ]]; then
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    sleep 0.1
+  done
+  printf 'Fixture process %s did not stop: %s\n' "$pid" "$pidfile" >&2
+  return 1
+}
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
-  local pidfile
-  for pidfile in "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid; do
-    [ ! -f "$pidfile" ] || kill "$(cat "$pidfile")" 2>/dev/null || true
+  local pidfile rc=0
+  for pidfile in "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
+    teardown_stop_pidfile "$pidfile" || rc=1
   done
   if command -v tmux >/dev/null; then tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true; fi
-  if [ -f "$DV_HOME/watch.pid" ]; then kill "$(cat "$DV_HOME/watch.pid")" 2>/dev/null || true; fi
+  # Shutdown handlers can still publish receipts/exited markers after TERM.
+  # Preserve their directory if termination cannot be confirmed.
+  if [ "$rc" != 0 ]; then printf 'Retained live fixture: %s\n' "$CASE_DIR" >&2; return 1; fi
   if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$CASE_DIR"; else rm -rf "$CASE_DIR"; fi
 }
 repo() {
@@ -70,12 +97,12 @@ wait_done() {
 needs_tmux() { command -v tmux >/dev/null || exit 77; }
 case_start_done() {
   needs_tmux; repo remote remote; start T-1; wait_done T-1
-  jq -e '.status=="done" and .agent=="codex" and .host=="test-host"' "$DV_STATE/T-1/meta"
+  jq -e '.status=="ready" and .agent=="codex" and .host=="test-host"' "$DV_STATE/T-1/meta"
   jq -e '.files==1 and (.head|length)==40 and (.report|endswith("report.md"))' "$DV_STATE/T-1/done.json"
   jq -e '.kind=="done" and .issue=="T-1"' "$DV_HOME/kick.q"
   test -s "$DV_STATE/T-1/brief.md"
   dv status --json | jq -e 'length==1 and .[0].issue=="T-1"'
-  dv status T-1 | grep 'done'
+  dv status T-1 | grep 'ready'
   head -c 200000 /dev/zero | tr '\0' 'x' >> "$DV_STATE/T-1/log"; printf '\n' >> "$DV_STATE/T-1/log"
   dv status T-1 >/dev/null && dv status --json | jq -e 'length==1'
   if start T-1; then return 1; fi
@@ -342,8 +369,15 @@ wait_file() {
   return 1
 }
 wait_pr_ready() {
+  local pid
   for _ in {1..100}; do
-    if [ -s "$DV_STATE/$1/pr-ready.json" ] && [ ! -d "$DV_STATE/$1/.pr-wait" ]; then return; fi
+    if [ -s "$DV_STATE/$1/pr-ready.json" ] && [ ! -d "$DV_STATE/$1/.pr-wait" ]; then
+      # The waiter releases its lock before checking worker recovery. Wait for
+      # that process too, so teardown cannot race its final metadata writes.
+      pid=$(cat "$DV_STATE/$1/pr-wait.pid" 2>/dev/null || true)
+      if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null ||
+        [ "$(ps -p "$pid" -o stat= 2>/dev/null | cut -c 1)" = Z ]; then return; fi
+    fi
     sleep 0.1
   done
   printf 'Timed out waiting for PR waiter to finish: %s\n' "$1" >&2
@@ -379,7 +413,7 @@ case_worker_prompt_host() {
 }
 assert_question_args() {
   local issue=$1 agent=$2 mode=${DV_AGENT_QUESTIONS:-sion}
-  if [ "$(jq -r .backend "$DV_STATE/$issue/meta")" = tmux ]; then mode=off; fi
+  if [ "$(jq -r .backend "$DV_STATE/$issue/meta")" != herdr ]; then mode=off; fi
   if [ "$agent" = codex ]; then
     jq -e --arg mode "$mode" '
       index("tools.experimental_request_user_input.enabled=false") as $i |
@@ -430,20 +464,16 @@ case_pr_ready() {
   head=$(git -C "$(jq -r .worktree "$DV_STATE/P-1/meta")" rev-parse HEAD)
   jq -n --arg head "$head" '[{author:{login:"devin-ai-integration[bot]"},commit:{oid:$head}},{author:{login:"chatgpt-codex-connector[bot]"},commit:{oid:$head}}]' > "$GH_STUB_DIR/reviews"
   dv pr P-1
-  wait_pr_ready P-1
+  dv pr-wait P-1 --foreground > /dev/null
   jq -e '.green and .bot_review and (.review_timed_out|not)' "$DV_STATE/P-1/pr-ready.json"
-  for _ in {1..100}; do
-    jq -se 'any(.[]; .kind=="pr-ready")' "$DV_HOME/kick.q" >/dev/null && break
-    sleep 0.1
-  done
-  jq -se 'any(.[]; .kind=="pr-ready")' "$DV_HOME/kick.q"
+  jq -se 'all(.[]; .kind!="pr-ready")' "$DV_HOME/kick.q"
   dv 'done' P-1
   jq -e '.status=="ready"' "$DV_STATE/P-1/meta"
   test "$(grep -c 'pr create' "$GH_STUB_DIR/calls")" = 1
   jq '.[0:1]' "$GH_STUB_DIR/reviews" > "$GH_STUB_DIR/reviews.one"
   mv "$GH_STUB_DIR/reviews.one" "$GH_STUB_DIR/reviews"
   dv pr-wait P-1
-  jq -e '(.bot_review|not) and .review_timed_out' "$DV_STATE/P-1/pr-ready.json"
+  jq -e '(.bot_review|not) and .review_handled and (.review_timed_out|not)' "$DV_STATE/P-1/pr-ready.json"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"}]' > "$GH_STUB_DIR/checks"
   if dv land P-1; then return 1; fi
 }
@@ -468,7 +498,9 @@ case_watch_capacity() {
     sleep 0.1
   done
   test "$(find "$DV_HOME/workers" -name '*.started' | wc -l | tr -d ' ')" = 4
-  test "$(cat "$DV_HOME/cursor")" = 4
+  # Reception persists all events even while the execution slots are full.
+  test "$(cat "$DV_HOME/cursor")" = 5
+  test "$(find "$DV_HOME/pending" -name '*.json' | wc -l | tr -d ' ')" = 5
   touch "$DV_HOME/release"
   for _ in {1..100}; do
     [ "$(find "$DV_HOME/workers" -name '*.finished' | wc -l | tr -d ' ')" = 5 ] && break
@@ -510,6 +542,11 @@ herdr_setup() {
   export DV_CLAUDE_BIN="$ROOT/tests/fixtures/herdr-agent" DV_DEVIN_BIN="$ROOT/tests/fixtures/herdr-agent"
 }
 wait_native() {
+  if [ "$(jq -r .backend "$DV_STATE/$1/meta")" = exec ]; then
+    wait_done "$1"
+    test "$(cat "$DV_STATE/$1/agent.exit")" = 0
+    return
+  fi
   wait_file "$CASE_DIR/herdr/w-$1/exit"
   test "$(cat "$CASE_DIR/herdr/w-$1/exit")" = 0
   wait_file "$DV_STATE/$1/agent.exit"
@@ -697,8 +734,13 @@ case_question_grace() {
 }
 case_question_exit() {
   question_setup
+  # The fake agent still commits and records done after release. Hold the
+  # grace response so this tests cancellation on exit, not Git's speed.
+  touch "$CASE_DIR/herdr/hold-question-grace"
   question_state blocked
+  wait_file "$CASE_DIR/herdr/question-grace-entered"
   question_finish
+  rm "$CASE_DIR/herdr/hold-question-grace"
   sleep 1.2
   test "$(question_count)" = 0
 }
@@ -897,7 +939,7 @@ case_herdr_agents_land() {
   dv start "$REPO" H-4 native --agent claude; wait_native H-4
   jq -e 'index("opus")!=null and index("--dangerously-skip-permissions")!=null' "$DV_STATE/H-4/args.json"
   dv start "$REPO" H-5 native --mode exec; wait_native H-5
-  jq -e 'index("exec")!=null and index("hooks")==null' "$DV_STATE/H-5/args.json"
+  jq -e 'index("exec")!=null and index("hooks")!=null' "$DV_STATE/H-5/args.json"
   DV_TEST_CMD='test -f H-5.txt' dv land H-5
   test ! -f "$CASE_DIR/herdr/w-H-5/workspace"
   test -f "$CASE_DIR/herdr/w-H-3/workspace"; test -f "$CASE_DIR/herdr/w-H-4/workspace"
@@ -992,6 +1034,7 @@ polish_setup() {
   repo polish remote
   git -C "$REPO" worktree add -qb codex/polish "$DV_WORK/polish"
   mkdir -p "$DV_STATE/POL-1"
+  printf '%s\n' "$$" > "$DV_STATE/POL-1/agent.pid"
   jq -n --arg repo "$REPO" --arg wt "$DV_WORK/polish" '{repo:$repo,worktree:$wt,branch:"codex/polish",base:"main",slug:"polish",status:"running"}' > "$DV_STATE/POL-1/meta"
   cat > "$DV_STATE/POL-1/pr-body.md" <<'BODY'
 # Summary
@@ -1606,6 +1649,8 @@ source "$ROOT/tests/claude.sh"
 source "$ROOT/tests/followups.sh"
 # shellcheck source=tests/watcher.sh
 source "$ROOT/tests/watcher.sh"
+# shellcheck source=tests/pr-wait-caller.sh
+source "$ROOT/tests/pr-wait-caller.sh"
 # shellcheck source=tests/bidding-edge.sh
 source "$ROOT/tests/bidding-edge.sh"
 # shellcheck source=tests/bidding-order.sh
@@ -1614,8 +1659,26 @@ source "$ROOT/tests/bidding-order.sh"
 source "$ROOT/tests/manager.sh"
 # shellcheck source=tests/revive.sh
 source "$ROOT/tests/revive.sh"
+# shellcheck source=tests/appserver.sh
+source "$ROOT/tests/appserver.sh"
+# shellcheck source=tests/codex-exec.sh
+source "$ROOT/tests/codex-exec.sh"
+# shellcheck source=tests/codex-exec-review.sh
+source "$ROOT/tests/codex-exec-review.sh"
 # shellcheck source=tests/portability.sh
 source "$ROOT/tests/portability.sh"
+# shellcheck source=tests/qa.sh
+source "$ROOT/tests/qa.sh"
+# shellcheck source=tests/metrics.sh
+source "$ROOT/tests/metrics.sh"
+# shellcheck source=tests/pr-worker.sh
+source "$ROOT/tests/pr-worker.sh"
+# shellcheck source=tests/self-update.sh
+source "$ROOT/tests/self-update.sh"
+# shellcheck source=tests/disk.sh
+source "$ROOT/tests/disk.sh"
+# shellcheck source=tests/stack.sh
+source "$ROOT/tests/stack.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
@@ -1623,7 +1686,47 @@ for name in pr_fallback_body pr_fallback_summary pr_fallback_private_paths pr_fa
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
+for name in update_cli update_dirty update_landed update_safety update_guard update_offline update_watch_dirty update_host update_managed update_parallel update_timeout update_unrelated update_receipt; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cache_guard disk_cache_alias_guard disk_cache_canonical disk_cache_newline disk_env_cache_newline disk_home_newline disk_custom_cache disk_go_env_cache disk_separate_filesystems disk_unknown disk_award disk_bsd_stat disk_worktrees disk_host disk_watch disk_start_interval disk_watch_due teardown_wait_client teardown_preserve_live_client; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in stack_wait stack_chain stack_diamond stack_parallel stack_local_body stack_closed_base stack_api_failure stack_dirty stack_remote stack_reconcile stack_checks stack_push_retry stack_defer stack_missing_base stack_squash_base stack_rebase_base; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in appserver_stale_done_recover appserver_pr_idle_recover appserver_recovery_uncertain appserver_recovery_events appserver_recovery_early_progress appserver_capacity_notification appserver_idle_done appserver_goal_done appserver_idle_blocked appserver_episode appserver_budget appserver_budget_restart appserver_capacity appserver_rate_limit appserver_recovery_guards appserver_start appserver_accepted appserver_refused appserver_unknown appserver_idle_send appserver_states appserver_failed appserver_stall appserver_question appserver_auto appserver_no_goal appserver_clean_guard appserver_reconnect appserver_active_stall appserver_unknown_restart appserver_question_multiple appserver_question_retry appserver_malformed appserver_watch appserver_fallback appserver_exec_override appserver_goal_override appserver_submit_auto appserver_exec appserver_pipeline appserver_pr_pending appserver_preserve_config appserver_detached appserver_detached_fallback appserver_websocket appserver_active_error_send appserver_interrupt_pending appserver_interrupt_timeout appserver_done_refused appserver_done_unknown appserver_land_active; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+  fi
+done
+for name in qa_pr_lookup_retry qa_base_lookup_retry qa_pr_lookup_blocked qa_base_lookup_blocked qa_milestone_graphql qa_no_milestone qa_no_milestone_match qa_milestone_blocked qa_milestone_ambiguous qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids qa_transport_retry qa_recovered_capacity qa_explicit_match qa_config_data qa_unbound_event qa_bound_event; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
+  else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
+done
+for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart metrics_exec metrics_exec_events metrics_manager_batch metrics_manager_fallback metrics_timeout_snapshot; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_no_rereview pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in exec_cleanup_success exec_cleanup_failure exec_cleanup_signal exec_exhausted_rebids exec_land_running exec_land_github_running exec_land_failed; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in exec_success exec_config_flags exec_nonzero exec_capacity exec_rate exec_silence exec_unfinished exec_retry exec_send exec_working exec_fresh exec_partial exec_followup_unfinished exec_no_terminal; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
+  else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
+done
+for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_done_capacity revive_orphan_owner revive_orphan_close_failure revive_stale_marker revive_goal_owned_done revive_report_event revive_orphan_workspace revive_manual_done revive_capacity revive_release_event revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
@@ -1631,11 +1734,11 @@ for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_serve
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
-for name in manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do
+for name in manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote; do
+for name in pr_wait_caller_killed pr_wait_caller_fallback pr_wait_caller_delayed pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
@@ -1659,7 +1762,7 @@ for name in claude_stale_server claude_stale_server_empty claude_profile_onboard
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
-for name in question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
+for name in stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

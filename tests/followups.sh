@@ -93,6 +93,9 @@ case_polish_public_during_run() {
 case_polish_public_published() {
   needs_tmux; repo published remote; start PP-1; wait_done PP-1
   printf 'Public body must stay exact.\n' > "$DV_STATE/PP-1/pr.md"
+  # The fake worker already published this head. Wait for this publication's
+  # waiter instead of accepting the previous worker's ready snapshot.
+  mv "$DV_STATE/PP-1/pr-ready.json" "$CASE_DIR/previous-pr-ready.json"
   dv pr PP-1
   wait_pr_ready PP-1
   rm "$DV_STATE/PP-1/pr.md"
@@ -276,10 +279,11 @@ case_pr_body_update() {
   dv pr PU-1
   wait_pr_ready PU-1
   cmp "$DV_STATE/PU-1/pr.md" "$GH_STUB_DIR/live-body"
-  test "$(grep -c 'api -X PATCH .* -F body=@' "$GH_STUB_DIR/calls")" = 1
+  # The fake worker already completed its PR; both public bodies are updates.
+  test "$(grep -c 'api -X PATCH .* -F body=@' "$GH_STUB_DIR/calls")" = 2
   dv pr PU-1
   wait_pr_ready PU-1
-  test "$(grep -c 'api -X PATCH .* -F body=@' "$GH_STUB_DIR/calls")" = 1
+  test "$(grep -c 'api -X PATCH .* -F body=@' "$GH_STUB_DIR/calls")" = 2
   cp "$DV_STATE/PU-1/pr-body.md" "$CASE_DIR/last-body"
   printf 'Retry this body.\n' > "$DV_STATE/PU-1/pr.md"
   touch "$GH_STUB_DIR/edit-fail"

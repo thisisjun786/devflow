@@ -6,23 +6,37 @@ while [ -L "$DV_ENTRY" ]; do
   DV_ENTRY=$(readlink "$DV_ENTRY")
   [[ "$DV_ENTRY" = /* ]] || DV_ENTRY="$entry_dir/$DV_ENTRY"
 done
+entry_commit=$(git -C "$(dirname "$DV_ENTRY")/.." rev-parse HEAD 2>/dev/null || true)
 # shellcheck source=lib/common.sh
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+# Internal RPCs have their own deadlines. Defer network updates, including in
+# child CLI calls during an award, until an ordinary invocation or watcher pass.
+case "${1:-help}" in _*|bid) export DV_AUTO_UPDATE=0 ;; esac
+# shellcheck source=lib/bidding.sh
+source "$DV_ROOT/lib/bidding.sh"
+# shellcheck source=lib/self-update.sh
+source "$DV_ROOT/lib/self-update.sh"
+self_update 300
+if [ "$(self_update_head)" != "$entry_commit" ]; then exec "$DV_ROOT/bin/dv" "$@"; fi
 # shellcheck source=lib/herdr.sh
 source "$DV_ROOT/lib/herdr.sh"
 # shellcheck source=lib/commands.sh
 source "$DV_ROOT/lib/commands.sh"
 # shellcheck source=lib/delivery.sh
 source "$DV_ROOT/lib/delivery.sh"
+# shellcheck source=lib/stack.sh
+source "$DV_ROOT/lib/stack.sh"
 # shellcheck source=lib/polish.sh
 source "$DV_ROOT/lib/polish.sh"
-# shellcheck source=lib/bidding.sh
-source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/manager.sh
 source "$DV_ROOT/lib/manager.sh"
+# shellcheck source=lib/qa.sh
+source "$DV_ROOT/lib/qa.sh"
 command=${1:-help}; [ "$#" -eq 0 ] || shift
 case "$command" in
   manager) cmd_manager "$@" ;;
+  qa) cmd_qa "$@" ;;
+  _qa-run) cmd__qa_run "$@" ;;
   _manager-run) cmd__manager_run "$@" ;;
   host)
     # shellcheck source=lib/host.sh
@@ -31,7 +45,16 @@ case "$command" in
   start|done|pr|polish|review|land|status|send|clean|kick|submit|bid|queue|cancel|_submit|_award|_receipt) "cmd_$command" "$@" ;;
   pr-wait) cmd_pr_wait "$@" ;;
   _pr-wait-start) cmd_pr_wait_start "$@" ;;
+  _stack-land) cmd_stack_land "$@" ;;
+  metrics) cmd_metrics "$@" ;;
+  _metrics-sample) cmd__metrics_sample "$@" ;;
+  _metrics-collect) cmd__metrics_collect "$@" ;;
+  _disk-maintain) cmd__disk_maintain "$@" ;;
+  _disk-prune) cmd__disk_prune "$@" ;;
+  _disk-collect) cmd__disk_collect "$@" ;;
   _agent) run_agent "$@" ;;
-  help|--help|-h) printf '%s\n' 'dv manager start <repo> [--agent hermes] | status [repo] [--json] | stop <repo>' 'dv host check [--json] [--probe-codex] | sync' 'dv submit <repo> <ISSUE> <slug> --brief FILE [--agent codex|claude|devin] [--base BRANCH] [--mode goal|exec]' 'dv bid --json [--repo REPO] [--agent AGENT]' 'dv queue [ISSUE] [--json]' 'dv cancel <ISSUE>' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin] [--brief FILE] [--base BRANCH] [--mode goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|polish|review|land|clean <ISSUE>' 'dv status [ISSUE] [--json]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
+  _appserver-run) cmd__appserver_run "$@" ;;
+  _appserver-watch) cmd__appserver_watch "$@" ;;
+  help|--help|-h) printf '%s\n' 'dv manager start <repo> [--agent hermes] | status [repo] [--json] | stop <repo>' 'dv host check [--json] [--probe-codex] | sync' 'dv submit <repo> <ISSUE> <slug> --brief FILE [--agent codex|claude|devin] [--base BRANCH] [--mode auto|goal|exec]' 'dv bid --json [--repo REPO] [--agent AGENT]' 'dv queue [ISSUE] [--json]' 'dv cancel <ISSUE>' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin] [--brief FILE] [--base BRANCH] [--mode auto|goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|polish|review|land|clean <ISSUE>' 'dv metrics [--since 6h] [--json]' 'dv status [ISSUE] [--json]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
   *) fail "unknown command: $command" ;;
 esac

@@ -37,7 +37,7 @@ bid_cores() {
   printf '%s\n' "$cores"
 }
 bid_resources() {
-  local cores load memory page
+  local cores load memory page cache cache_free=null
   cores=$(bid_cores)
   if [ -r /proc/loadavg ]; then
     load=$(awk '{print $2}' /proc/loadavg)
@@ -47,8 +47,12 @@ bid_resources() {
     page=$(sysctl -n hw.pagesize)
     memory=$(vm_stat | awk -v page="$page" '/Pages (free|inactive|speculative):/ {gsub("\\.", "", $NF); pages+=$NF} END {printf "%d", pages*page/1048576}')
   fi
+  cache=$(disk_cache_path) || cache=''
+  [ -z "$cache" ] || cache_free=$(disk_available_gb "$cache" || echo null)
   jq -cn --argjson cores "$cores" --argjson load "${load:-0}" --argjson memory "${memory:-0}" \
-    '{cores:$cores,load5:$load,memory_available_mb:$memory}'
+    --argjson disk "$(disk_available_gb || echo null)" --arg cache "$cache" --argjson cache_free "$cache_free" \
+    '{cores:$cores,load5:$load,memory_available_mb:$memory,disk_available_gb:$disk,
+      go_cache_path:(if $cache=="" then null else $cache end),cache_disk_available_gb:$cache_free}'
 }
 bid_remote_repo() {
   [[ "$1" =~ ^https?://[^/]+/.+ ]] || [[ "$1" =~ ^ssh://.+ ]] || [[ "$1" =~ ^git@[^:]+:.+ ]]
@@ -70,11 +74,19 @@ bid_repo() {
   fi
 }
 bid_active() {
-  local path
+  local path revived
   for path in "$DV_STATE"/*/meta; do
     [ -f "$path" ] || continue
     [ ! -f "$(dirname "$path")/agent.exit" ] || continue
-    jq -c 'select(.done_at==null and .cleaned_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required"))' "$path"
+    if jq -e '.backend=="exec"' "$path" >/dev/null; then
+      codex_exec_alive "$(dirname "$path")" || continue
+    fi
+    revived=$(cat "$(dirname "$path")/revive/id" 2>/dev/null) || revived=''
+    # Release on this run's completion before its done event wakes scheduling;
+    # historical or manual completions must still leave the revival counted.
+    jq -c --arg revived "$revived" 'select(.cleaned_at==null and
+      (if $revived!="" then .done_episode!=$revived and .status!="landed" and .status!="cancelled"
+       else .done_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required") end))' "$path"
   done | jq -s length
 }
 bid_agent() {
@@ -93,6 +105,7 @@ bid_agent() {
   bid_limit "$DV_BID_TIMEOUT" "$bin" "$@" >/dev/null 2>&1
 }
 bid_settings() {
+  disk_settings
   [[ "$DV_BID_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_BID_TIMEOUT must be a positive integer'
   [[ "$DV_AWARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_AWARD_TIMEOUT must be a positive integer'
   [[ "$DV_MIN_MEMORY_MB" =~ ^[0-9]+$ ]] || fail 'DV_MIN_MEMORY_MB must be a nonnegative integer'
@@ -122,13 +135,18 @@ cmd_bid() {
     if ! codex_repo_allowed "$root" 2>/dev/null; then trust=false; fi
   fi
   if { [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; } || command -v tmux >/dev/null; then backend=true; fi
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then
+    case "$(codex_default_mode "$agent")" in auto|exec) backend=true ;; esac
+  fi
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
-    --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" \
+    --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" --argjson min_disk "$DV_MIN_DISK_GB" \
     '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready,capacity:$capacity,active:$active,free_slots:([0,($capacity-$active)]|max)} |
-    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" else "" end) |
+    ([.disk_available_gb,.cache_disk_available_gb]|map(select(.!=null))|min) as $disk |
+    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
     .status=(if .reason=="" then "submitted" else "rejected" end) |
-    .score=(100*.free_slots/.capacity - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end))' |
+    .score=(100*.free_slots/.capacity - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
+      (if $min_disk>0 and $disk!=null then [0,20*(2*$min_disk-$disk)/$min_disk]|max else 0 end))' |
     if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason]|@tsv'; fi
 }
 cmd_submit() {
@@ -142,7 +160,8 @@ cmd_submit() {
     shift 2
   done
   [ -f "$brief" ] || fail 'brief file not found'
-  case "$agent:$mode" in codex:goal|codex:exec|claude:goal|devin:goal) ;; *) fail 'invalid agent/mode' ;; esac
+  [ -n "$mode" ] || mode=$(codex_default_mode "$agent")
+  case "$agent:$mode" in codex:auto|codex:goal|codex:exec|claude:goal|devin:goal) ;; *) fail 'invalid agent/mode' ;; esac
   [ -z "$base" ] || git check-ref-format "refs/heads/$base" >/dev/null || fail 'invalid base'
   if [ -d "$repo" ]; then
     repo=$(cd "$repo" && git rev-parse --show-toplevel)
@@ -157,7 +176,7 @@ bid_request_valid() {
   jq -e 'type=="object" and (.issue|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9_-]*$")) and
     (.slug|type=="string" and test("^[a-zA-Z0-9][a-zA-Z0-9-]*$")) and (.repo|type=="string" and length>0 and (startswith("-")|not)) and
     (.brief|type=="string") and (.base|type=="string") and
-    ((.agent=="codex" and (.mode=="goal" or .mode=="exec")) or ((.agent=="claude" or .agent=="devin") and .mode=="goal"))' >/dev/null
+    ((.agent=="codex" and (.mode=="auto" or .mode=="goal" or .mode=="exec")) or ((.agent=="claude" or .agent=="devin") and .mode=="goal"))' >/dev/null
 }
 cmd__submit() {
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || fail 'submit must be received by the manager'

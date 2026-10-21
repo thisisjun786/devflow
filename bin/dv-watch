@@ -6,15 +6,29 @@ while [ -L "$DV_ENTRY" ]; do
   DV_ENTRY=$(readlink "$DV_ENTRY")
   [[ "$DV_ENTRY" = /* ]] || DV_ENTRY="$entry_dir/$DV_ENTRY"
 done
+watch_commit=$(git -C "$(dirname "$DV_ENTRY")/.." rev-parse HEAD 2>/dev/null || true)
 # shellcheck source=lib/common.sh
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 # shellcheck source=lib/bidding.sh
 source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/manager.sh
 source "$DV_ROOT/lib/manager.sh"
+# shellcheck source=lib/stack.sh
+source "$DV_ROOT/lib/stack.sh"
+# shellcheck source=lib/qa.sh
+source "$DV_ROOT/lib/qa.sh"
+# shellcheck source=lib/self-update.sh
+source "$DV_ROOT/lib/self-update.sh"
+watch_auto_update=$DV_AUTO_UPDATE
+# Child CLI calls must not pull while their parent is dispatching an event.
+export DV_AUTO_UPDATE=0
 need jq
+disk_settings
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
+[[ "$DV_METRICS_INTERVAL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_METRICS_INTERVAL must be positive seconds'
+[[ "$DV_STALL_AFTER" =~ ^[0-9]+$ ]] || fail 'DV_STALL_AFTER must be nonnegative seconds'
+[[ "$DV_MANAGER_MAX_WAIT" =~ ^[0-9]+$ ]] || fail 'DV_MANAGER_MAX_WAIT must be nonnegative seconds'
 mkdir -p "$DV_HOME/workers" "$DV_HOME/pending"
 # A single queue reader owns the cursor and its child processes.
 # A SIGKILLed watcher cannot remove its own lock (no trap runs on SIGKILL), so a lock whose recorded pid is gone is
@@ -23,6 +37,8 @@ take_lock() {
   if mkdir "$DV_HOME/.watch-lock" 2>/dev/null; then return 0; fi
   local holder=''
   [ -f "$DV_HOME/watch.pid" ] && holder=$(tr -dc '0-9' <"$DV_HOME/watch.pid")
+  # exec retains the PID and lock; other processes must still refuse it.
+  if [ "${DV_WATCH_REEXEC_PID:-}" = "$$" ] && [ "$holder" = "$$" ]; then return 0; fi
   if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
     fail "watcher lock is held by live pid $holder; stop it before starting another"
   fi
@@ -32,11 +48,19 @@ take_lock() {
 }
 take_lock
 printf '%s\n' "$$" > "$DV_HOME/watch.pid"
-pids=''; active=0
+pids=${DV_WATCH_REEXEC_PIDS:-}; active=0
+unset DV_WATCH_REEXEC_PID DV_WATCH_REEXEC_PIDS
+self_update_watch_version "$watch_commit"
 finish() {
   local pid
+  metrics_stop
+  disk_stop
   for pid in $pull_pids; do if is_pull "$pid"; then kill "$pid" 2>/dev/null || true; fi; done
-  for pid in $pids; do wait "$pid" || true; done
+  for pid in $pids; do
+    # After exec, bash no longer has the old child job table.
+    while qa_alive "$pid"; do sleep 0.1; done
+    wait "$pid" 2>/dev/null || true
+  done
   reap
   rm -f "$DV_HOME/watch.pid"
   rmdir "$DV_HOME/.watch-lock"
@@ -46,7 +70,16 @@ trap 'exit 0' INT TERM
 cursor=0
 [ ! -f "$DV_HOME/cursor" ] || cursor=$(cat "$DV_HOME/cursor")
 touch "$DV_HOME/kick.q" "$DV_HOME/seen"
-last_scan=0
+last_scan=${DV_WATCH_LAST_SCAN:-0}
+unset DV_WATCH_LAST_SCAN
+update_requested=0
+last_appserver_scan=0
+last_metrics=0
+last_disk=0
+# Host-local clocks own the 30-minute cadence. Check due hosts more often so
+# a restart or slow pass cannot postpone maintenance for another full period.
+disk_tick=$DV_DISK_INTERVAL
+[ "$disk_tick" -le 60 ] || disk_tick=60
 # Remote dev hosts: one dv-kick-pull stream per host, restarted with a back-off when it ends.
 pull_pids=''
 # A pid counts as our stream only if it is still alive AND still runs dv-kick-pull (pids are reused).
@@ -85,11 +118,14 @@ worker_start() {
   (
     trap - EXIT INT TERM
     rc=0
-    if [ -n "$DV_WORKER_CMD" ]; then
+    if [ "$(printf '%s\n' "$event" | jq -r .kind)" = stack-land ]; then
+      stack_worker "$event" || rc=$?
+    elif [ -n "$DV_WORKER_CMD" ]; then
       bash -c "$DV_WORKER_CMD \"\$@\"" dv-worker "$prompt" || rc=$?
     else
       "$DV_HERMES_BIN" -p sion chat -Q --yolo -t terminal,connections -s devflow --query-file "$prompt" || rc=$?
     fi
+    [ "$rc" != 0 ] || metrics_handled "$event"
     printf '%s\n' "$rc" > "$slot.exit.tmp"; mv "$slot.exit.tmp" "$slot.exit"
   ) > "${prompt%.prompt.md}.log" 2>&1 &
   pid=$!; printf '%s\n' "$pid" > "$slot.pid"
@@ -99,13 +135,22 @@ reap() {
   local live='' pid record slot event_id rc
   active=0
   for pid in $pids; do
-    if kill -0 "$pid" 2>/dev/null; then live="$live $pid"; active=$((active + 1)); else wait "$pid" || true; fi
+    if qa_alive "$pid"; then live="$live $pid"; active=$((active + 1)); else wait "$pid" 2>/dev/null || true; fi
   done
   pids=$live
+  # A manager child can outlive a killed watcher. Count that reservation too;
+  # its lock still owns the batch and must not permit excess fallback workers.
+  for record in "$DV_HOME"/managers/*/run.lock/pid; do
+    [ -f "$record" ] || continue
+    pid=$(cat "$record" 2>/dev/null) || continue
+    if [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
+      case " $live " in *" $pid "*) ;; *) active=$((active + 1)) ;; esac
+    fi
+  done
   for record in "$DV_HOME/pending/"*.json; do
     [ -f "$record" ] || continue
     slot=${record%.json}; event_id=$(jq -r .id "$record")
-    if grep -Fxq -- "$event_id" "$DV_HOME/seen"; then
+    if [ ! -f "$slot.manager" ] && grep -Fxq -- "$event_id" "$DV_HOME/seen"; then
       rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry"; continue
     fi
     pid=''; [ ! -f "$slot.pid" ] || pid=$(cat "$slot.pid")
@@ -118,9 +163,12 @@ reap() {
     if [ -f "$slot.exit" ]; then rc=$(cat "$slot.exit")
     elif [ -n "$pid" ]; then rc=125
     else continue; fi
+    if stack_deferred "$record" "$rc"; then continue; fi
     if [ "$rc" = 0 ]; then
-      printf '%s\n' "$event_id" >> "$DV_HOME/seen"
-      rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry"
+      metrics_handled "$(cat "$record")"
+      if [ -f "$slot.manager" ]; then manager_fallback_complete "$slot"
+      else printf '%s\n' "$event_id" >> "$DV_HOME/seen"; fi
+      rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry" "$slot.manager"
     else
       printf 'worker failed (exit %s), retrying: %s\n' "$rc" "$event_id" >> "$DV_HOME/watch.log"
       printf '%s\n' "$(( $(now) + DV_WORKER_RETRY ))" > "$slot.retry"
@@ -161,6 +209,7 @@ reconcile() {
     fi
     if true; then
       if ! printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null 2>&1; then continue; fi
+      stack_queue_host "$host" "$rows"
       # Liveness is checked on the issue's host; a PID from another host is
       # meaningless locally. The helper preserves a healthy waiter's lock/log.
       while IFS= read -r issue; do
@@ -190,22 +239,48 @@ reconcile() {
   done
 }
 while [ ! -e "$DV_HOME/stop" ]; do
+  manager_fallback_recover
   reap
-  retry_pending
-  manager_dispatch
+  qa_recover
   pulls
-  if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
+  if [ $(( $(now) - last_disk )) -ge "$disk_tick" ]; then
+    disk_start
+    last_disk=$(now)
+  fi
+  if [ $(( $(now) - last_appserver_scan )) -ge "$DV_APPSERVER_POLL" ]; then
+    for appserver_host in $DV_HOSTS; do
+      if [ "$appserver_host" = "$DV_HOST" ]; then
+        dv _appserver-watch >> "$DV_HOME/reconcile.log" 2>&1 || true
+      else
+        bid_limit "$DV_BID_TIMEOUT" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$appserver_host" 'dv _appserver-watch' >> "$DV_HOME/reconcile.log" 2>&1 || true
+      fi
+    done
+    last_appserver_scan=$(now)
+  fi
+  if [ $(( $(now) - last_metrics )) -ge "$DV_METRICS_INTERVAL" ]; then
+    metrics_start
+    last_metrics=$(now)
+  fi
+  if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then
+    reconcile; last_scan=$(now); update_requested=1
+  fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
-  while [ "$active" -lt "$DV_MAX_WORKERS" ] && [ ! -e "$DV_HOME/stop" ]; do
+  available=$(wc -l < "$DV_HOME/kick.q")
+  while [ "$cursor" -lt "$available" ] && [ ! -e "$DV_HOME/stop" ]; do
     [ "$cursor" -lt "$(wc -l < "$DV_HOME/kick.q")" ] || break
     line=$(sed -n "$((cursor + 1))p" "$DV_HOME/kick.q")
     [ -n "$line" ] || break
     if ! id=$(printf '%s\n' "$line" | jq -er '.id | select(type=="string")'); then
       printf 'invalid queue line %s\n' "$((cursor + 1))" >> "$DV_HOME/watch.log"
     elif ! grep -Fxq -- "$id" "$DV_HOME/seen" && ! pending_event "$id"; then
+      if [ "$(jq -r .kind <<< "$line")" = landed ]; then
+        qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1 || break
+      fi
       # Deterministic scheduling is driven by this existing queue, never a bid poll.
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then break; fi
+      if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then break; fi
       if [ "$(printf '%s\n' "$line" | jq -r .kind)" = submitted ]; then
+        metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
         continue
@@ -222,6 +297,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
       if [ "$routed" = 0 ]; then
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
+        if self_update_landed "$line"; then update_requested=1; fi
         continue
       elif [ "$routed" != 1 ]; then
         break # Persistence failed: retain the cursor so the event can retry.
@@ -230,9 +306,23 @@ while [ ! -e "$DV_HOME/stop" ]; do
       # a watcher restart, while in-flight duplicate IDs stay suppressed.
       slot="$DV_HOME/pending/$cursor"
       printf '%s\n' "$line" > "$slot.json.tmp"; mv "$slot.json.tmp" "$slot.json"
-      worker_start "$slot"
     fi
     cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
+    if self_update_landed "$line"; then update_requested=1; fi
   done
+  retry_pending
+  manager_dispatch
+  qa_dispatch
+  # All events have durable cursor/pending state. Never run EXIT cleanup here:
+  # workers, manager turns, QA and pull streams keep their existing handles.
+  if [ ! -e "$DV_HOME/stop" ]; then
+    if [ "$update_requested" = 1 ]; then DV_AUTO_UPDATE=$watch_auto_update self_update 0; update_requested=0; fi
+    if [ "$(self_update_head)" != "$watch_commit" ]; then
+      metrics_stop
+      export DV_WATCH_REEXEC_PID=$$ DV_WATCH_REEXEC_PIDS=$pids DV_WATCH_LAST_SCAN=$last_scan
+      export DV_AUTO_UPDATE=$watch_auto_update
+      exec "$DV_ROOT/bin/dv-watch" "$@"
+    fi
+  fi
   sleep "$DV_WATCH_INTERVAL"
 done

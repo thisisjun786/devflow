@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-} ${2:-}" = 'login status' ]; then exit 0; fi
+if [ "${1:-} ${2:-}" = 'app-server proxy' ]; then exit 1; fi
+s="$DV_STATE/$DV_ISSUE"
+scenario=${DV_EXEC_SCENARIO:-success}
+n=1
+[ ! -f "$s/stub-count" ] || n=$(( $(cat "$s/stub-count") + 1 ))
+printf '%s\n' "$n" > "$s/stub-count"
+jq -cn --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" >> "$s/stub-runs.jsonl"
+if [ "$scenario" = fresh ] && [ "$n" = 1 ]; then exit 9; fi
+printf '{"type":"thread.started","thread_id":"fixture-thread"}\n'
+case "$scenario" in
+  pr-loop)
+    "$ROOT/tests/fixtures/pr-worker"
+    printf '{"type":"turn.completed"}\n'
+    exit 0 ;;
+  done-hold|done-fail)
+    printf '%s\n' "$$" > "$s/held.pid"
+    printf '%s\n' "$PPID" > "$s/wrapper.pid"
+    printf 'completed work\n' > completed.txt
+    git add completed.txt
+    git diff --cached --quiet || git commit -qm "$DV_ISSUE: completed fixture work"
+    if git config --get remote.origin.url | grep -q github.com; then
+      dv pr "$DV_ISSUE" > /dev/null
+      dv pr-wait "$DV_ISSUE" --foreground > /dev/null
+      dv pr-wait "$DV_ISSUE" --foreground --review-handled > /dev/null
+    fi
+    dv 'done' "$DV_ISSUE" --note 'done before exit' > /dev/null
+    touch "$s/after-done"
+    while [ ! -f "$s/release" ]; do
+      printf '{"type":"item.started","item":{"type":"command_execution","command":"finishing"}}\n'
+      sleep 0.2
+    done
+    if [ "$scenario" = done-fail ]; then exit 9; fi
+    printf '{"type":"turn.completed"}\n'
+    exit 0 ;;
+  config-flags)
+    for arg in "$@"; do
+      case "$arg" in
+        projects.*)
+          printf '{"type":"item.completed","item":{"type":"error","message":"Codex is ignoring unrecognized session-flags: projects trust settings"}}\n'
+          sleep 30; exit 0 ;;
+      esac
+    done ;;
+  nonzero) exit 7 ;;
+  retry) if [ "$n" = 1 ]; then exit 7; fi ;;
+  capacity) printf '{"type":"error","message":"model at capacity"}\n'; sleep 30; exit 0 ;;
+  rate) printf '{"type":"turn.failed","error":{"message":"rate limit exceeded"}}\n'; exit 0 ;;
+  silence) sleep 30; exit 0 ;;
+  unfinished) printf '{"type":"turn.completed"}\n'; exit 0 ;;
+  partial)
+    printf '{"type":"item.completed","item":'
+    sleep 0.3
+    printf '{"type":"agent_message","text":"model at capacity is quoted task text"}}\n' ;;
+  hold) while [ ! -f "$s/release" ]; do printf '{"type":"item.started","item":{"type":"command_execution","command":"working"}}\n'; sleep 0.2; done ;;
+esac
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"Finished fixture work"}}\n'
+dv 'done' "$DV_ISSUE" > /dev/null
+printf '{"type":"turn.completed"}\n'

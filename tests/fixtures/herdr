@@ -22,6 +22,7 @@ if [ "$1 $2" != 'workspace create' ]; then
     else error "${1}_not_found" "$1 $3 not found"; fi
   fi
 fi
+if [ "$1" = pane ] && [ -f "$dir/missing-pane" ]; then error pane_not_found "pane $3 not found"; fi
 pane_json() {
   jq -c '.result.root_pane' "$dir/workspace"
 }
@@ -101,6 +102,7 @@ case "$1 $2" in
   'pane run')
     test "$3" = "$id:p1"; test "$#" = 4; test -f "$dir/ready"
     # Run only the configured fake agent, directly; no PTY/tmux or real agents.
+    rm -f "$dir/exit"
     cwd=$(jq -r .result.root_pane.cwd "$dir/workspace")
     if [ -z "${DV_AGENT_CMD_codex:-}" ] && [ ! -f "$stub/late-detection" ]; then touch "$dir/detected"; fi
     (rc=0; (
@@ -191,6 +193,12 @@ case "$1 $2" in
       printf '%s\n' "$$" > "$stub/wait-$$.pid"
       trap 'rm -f "$stub/wait-$$.pid"' EXIT
       trap 'exit 0' TERM INT
+      # Let the exit test hold a live grace subscription until its agent has
+      # finished. Completion work must not race a one-second wall-clock timer.
+      if [[ "$untils" = *' idle '* ]] && [ -f "$stub/hold-question-grace" ]; then
+        touch "$stub/question-grace-entered"
+        while [ -f "$stub/hold-question-grace" ]; do sleep 0.05; done
+      fi
       started=$SECONDS
       while :; do
         status=idle; [ ! -f "$dir/status" ] || status=$(cat "$dir/status")
