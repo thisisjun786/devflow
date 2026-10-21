@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+printf '{"type":"thread.started","thread_id":"resume-capacity"}\n'
+if [ -f "$state/hold" ]; then
+  printf '%s\n' "$$" > "$state/held.pid"
+  while [ ! -f "$state/release" ]; do
+    printf '{"type":"item.started","item":{"type":"command_execution","command":"fixture"}}\n'
+    sleep 0.1
+  done
+fi
+if [ "$(jq -r '.kind // "code"' "$state/meta")" = task ]; then
+  mkdir -p out
+  printf 'Summary citing input.txt\n' > out/summary.txt
+else
+  printf 'fixture work\n' > result.txt
+  git add result.txt
+  git diff --cached --quiet || git commit -qm "$DV_ISSUE: fixture work"
+fi
+printf 'Synthetic report, source input.txt.\n' > "$state/report.md"
+dv 'done' "$DV_ISSUE"
