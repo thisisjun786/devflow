@@ -133,14 +133,16 @@ case_bid_clean_capacity() {
 }
 case_submit_local_origin() {
   repo local-origin
+  local root
+  root=$(cd "$REPO" && pwd -P)
   export DV_MANAGER_HOST="$DV_HOST"
   git init -q --bare "$CASE_DIR/local.git"
   git -C "$REPO" remote add origin "$CASE_DIR/local.git"
   dv submit "$REPO" LOCAL-1 edge --brief "$CASE_DIR/brief"
-  jq -e --arg repo "$REPO" '.repo==$repo' "$DV_HOME/submissions/LOCAL-1/task.json"
+  jq -e --arg repo "$root" '.repo==$repo' "$DV_HOME/submissions/LOCAL-1/task.json"
   git -C "$REPO" remote set-url origin file://"$CASE_DIR/local.git"
   dv submit "$REPO" LOCAL-2 edge --brief "$CASE_DIR/brief"
-  jq -e --arg repo "$REPO" '.repo==$repo' "$DV_HOME/submissions/LOCAL-2/task.json"
+  jq -e --arg repo "$root" '.repo==$repo' "$DV_HOME/submissions/LOCAL-2/task.json"
   git -C "$REPO" remote set-url origin https://github.com/test/repo.git
   dv submit "$REPO" URL-1 edge --brief "$CASE_DIR/brief"
   jq -e '.repo=="https://github.com/test/repo.git"' "$DV_HOME/submissions/URL-1/task.json"
