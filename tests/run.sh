@@ -1825,6 +1825,8 @@ AGENT
 }
 case_task_empty_files_done() {
   task_content_setup empty
+  # Each --case runs setup independently; other sourced cases cannot change it.
+  # shellcheck disable=SC2031
   local s="$DV_STATE/TK-1"
   if dv 'done' TK-1 > "$CASE_DIR/done.log" 2>&1; then
     cat "$CASE_DIR/done.log"
@@ -1839,6 +1841,7 @@ case_task_empty_files_done() {
 }
 case_task_empty_files_land() {
   task_content_setup mixed
+  # shellcheck disable=SC2031
   local s="$DV_STATE/TK-1" wt manifest head snapshot
   wt=$(jq -r .worktree "$s/meta")
   : > "$wt/out/nested/payload.bin"
@@ -1866,6 +1869,7 @@ case_task_empty_files_land() {
 }
 case_task_mixed_files() {
   task_content_setup mixed
+  # shellcheck disable=SC2031
   local s="$DV_STATE/TK-1" wt head snapshot landed
   wt=$(jq -r .worktree "$s/meta")
   head=$(jq -r .head "$s/done.json")
