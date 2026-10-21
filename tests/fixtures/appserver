@@ -27,7 +27,8 @@ exec 6<> "$socket_dir/in" 7<> "$socket_dir/out"
 bash "$0" --peer < "$socket_dir/in" > "$socket_dir/out" 6>&- 7>&- & peer=$!
 nc -lU "$socket_dir/socket" < "$socket_dir/out" > "$socket_dir/in" 6>&- 7>&- & listener=$!
 client=''
-# shellcheck disable=SC2329
+# EXIT invokes this callback; older ShellCheck reports SC2317, newer SC2329.
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   kill "$listener" ${client:+"$client"} 2>/dev/null || true
   wait "$listener" ${client:+"$client"} 2>/dev/null || true
