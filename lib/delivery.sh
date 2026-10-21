@@ -3,11 +3,33 @@
 # shellcheck disable=SC2016
 pr_report_summary() {
   # Use the first prose paragraph, bounded in size. Never copy the brief or
-  # publish report locations, including symbolic/default state paths.
+  # publish local paths or configured hosts. Pass configuration explicitly:
+  # shell config values need not be exported, and awk -v interprets backslashes.
   if [ -f "$S/report.md" ]; then
-    awk '
-      BEGIN { state=ENVIRON["DV_STATE"] }
-      index($0,state) || /\$\{?(DV_STATE|S)(\}|\/)/ || /\.local\/state\/devflow/ { next }
+    DV_PR_HOME="$HOME" DV_PR_WT="$WT" DV_PR_REPO="$REPO" DV_PR_STATE="$DV_STATE" \
+      DV_PR_HOSTS="$DV_HOSTS $DV_PULL_HOSTS $DV_HOST" awk '
+      BEGIN {
+        paths[1]=ENVIRON["DV_PR_HOME"]; paths[2]=ENVIRON["DV_PR_WT"]
+        paths[3]=ENVIRON["DV_PR_REPO"]; paths[4]=ENVIRON["DV_PR_STATE"]
+        host_count=split(ENVIRON["DV_PR_HOSTS"],hosts,/[[:space:]]+/)
+      }
+      function private_line(line, i, count, tokens, token) {
+        for (i in paths) if (paths[i]!="" && index(line,paths[i])) return 1
+        for (i=1;i<=host_count;i++) if (hosts[i]!="" && index(line,hosts[i])) return 1
+        if (line ~ /\$\{?(HOME|WT|REPO|DV_STATE|S)([^[:alnum:]_]|$)/) return 1
+        if (line ~ /\.local\/state\/devflow/) return 1
+        # Markdown, shell quotes and assignments can delimit path tokens too.
+        gsub(/[][{}()<>=,;\047"`]/," ",line)
+        count=split(line,tokens,/[[:space:]]+/)
+        for (i=1;i<=count;i++) {
+          token=tokens[i]
+          # Keep public URL paths; file:/// still leaves an absolute path.
+          sub(/^[[:alpha:]][[:alnum:]+.-]*:\/\//,"",token)
+          if (token ~ /^[\/~]/ || token ~ /:[\/~]/) return 1
+        }
+        return 0
+      }
+      private_line($0) { next }
       /^[[:space:]]*#/ { if (lines) exit; next }
       /^[[:space:]]*$/ { if (lines) exit; next }
       {

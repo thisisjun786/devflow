@@ -39,7 +39,10 @@ claude_trust_worktree() (
   # well as ownership/mode on Linux and macOS. Abort if preservation fails.
   tmp=$(mktemp "$config.dv-tmp.XXXXXX") || return 1
   if [ "$new" = false ]; then
-    mode=$(stat -c '%a' "$config" 2>/dev/null || stat -f '%Lp' "$config") || return 1
+    # BSD %Lp drops setuid/setgid/sticky bits. Read the full octal mode and
+    # mask off the file type; GNU %a already contains only permission bits.
+    mode=$(stat -c '%a' "$config" 2>/dev/null || stat -f '%Op' "$config") || return 1
+    mode=$(printf '%o' "$((8#$mode & 07777))")
     cp -p "$config" "$tmp" || return 1
     chmod u+w "$tmp" || return 1
   fi

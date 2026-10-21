@@ -73,6 +73,7 @@ DV_HOSTS='build.internal
 worker-02'
 DV_PULL_HOSTS='pull.internal pull-02'
 DV_HOST=local.internal
+export -n DV_HOSTS DV_PULL_HOSTS
 CONFIG
   cat > "$PR_STATE/report.md" <<'REPORT'
 # Changes
