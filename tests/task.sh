@@ -197,6 +197,86 @@ case_task_land_workspace() {
 case_task_shellcheck() {
   shellcheck -x "$ROOT/lib/task.sh"
 }
+case_task_snapshot() {
+  task_terminal_setup herdr
+  local s="$DV_STATE/TK-1" wt head snapshot next
+  wt=$(jq -r .worktree "$s/meta")
+  head=$(jq -r .head "$s/done.json")
+  snapshot="$s/task-snapshots/$head"
+  cmp "$wt/out/summary.txt" "$snapshot/out/summary.txt"
+  cmp "$s/report.md" "$snapshot/report.md"
+  test ! "$wt/out/summary.txt" -ef "$snapshot/out/summary.txt"
+  printf 'late change\n' >> "$wt/out/summary.txt"
+  test "$(cat "$snapshot/out/summary.txt")" = 'Summary citing input.txt'
+  if dv land TK-1 --checked "$head"; then return 1; fi
+  touch "$s/release"; task_terminal_wait herdr
+  if dv land TK-1 --checked "$head"; then return 1; fi
+  dv 'done' TK-1
+  next=$(jq -r .head "$s/done.json")
+  test "$next" != "$head"
+  test "$(cat "$snapshot/out/summary.txt")" = 'Summary citing input.txt'
+  snapshot="$s/task-snapshots/$next"
+  mv "$snapshot" "$s/saved-snapshot"
+  if dv land TK-1 --checked "$next"; then return 1; fi
+  mv "$s/saved-snapshot" "$snapshot"
+  cp "$snapshot/out/summary.txt" "$CASE_DIR/snapshot-original"
+  printf 'corrupt snapshot\n' > "$snapshot/out/summary.txt"
+  if dv land TK-1 --checked "$next"; then return 1; fi
+  cp "$CASE_DIR/snapshot-original" "$snapshot/out/summary.txt"
+  dv land TK-1 --checked "$next"
+  cmp "$snapshot/out/summary.txt" "$CASE_DIR/destination/TK-1/summary.txt"
+}
+case_task_snapshot_done_race() {
+  task_setup; export DV_HERDR=1
+  task_start --agent claude; task_terminal_wait herdr
+  local s="$DV_STATE/TK-1" head
+  head=$(jq -r .head "$s/done.json")
+  export DV_TASK_TEST_WT
+  DV_TASK_TEST_WT=$(jq -r .worktree "$s/meta")
+  cp "$s/done.json" "$CASE_DIR/previous-done"
+  printf 'new revision\n' >> "$DV_TASK_TEST_WT/out/summary.txt"
+  cat > "$CASE_DIR/copy-race" <<'ENV'
+cp() {
+  command cp "$@" || return
+  if [ "${1:-}" = -R ] && [ "${2:-}" = "$DV_TASK_TEST_WT/out/." ]; then
+    printf 'changed during done\n' >> "$DV_TASK_TEST_WT/out/summary.txt"
+  fi
+}
+ENV
+  if BASH_ENV="$CASE_DIR/copy-race" dv 'done' TK-1; then
+    printf 'BUG: done accepted output changed during its snapshot\n'; return 1
+  fi
+  cmp "$s/done.json" "$CASE_DIR/previous-done"
+  test "$(cat "$s/task-snapshots/$head/out/summary.txt")" = 'Summary citing input.txt'
+  test "$(find "$s/task-snapshots" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 1
+  dv 'done' TK-1
+  dv land TK-1 --checked "$(jq -r .head "$s/done.json")"
+}
+case_task_snapshot_land_race() {
+  task_setup; export DV_HERDR=1
+  task_start --agent claude; task_terminal_wait herdr
+  local s="$DV_STATE/TK-1" head
+  head=$(jq -r .head "$s/done.json")
+  export DV_TASK_TEST_WT
+  DV_TASK_TEST_WT=$(jq -r .worktree "$s/meta")
+  cat > "$CASE_DIR/copy-race" <<'ENV'
+cp() {
+  printf 'changed during land\n' > "$DV_TASK_TEST_WT/out/summary.txt"
+  command cp "$@"
+}
+ENV
+  if BASH_ENV="$CASE_DIR/copy-race" dv land TK-1 --checked "$head"; then
+    printf 'BUG: land accepted output changed during delivery\n'; return 1
+  fi
+  # Even an interrupted delivery must contain the reviewed snapshot, never
+  # bytes from the mutable working output. It must not be marked landed.
+  test "$(cat "$CASE_DIR/destination/TK-1/summary.txt")" = 'Summary citing input.txt'
+  jq -e '.status=="done" and .landed_path==null' "$s/meta"
+  jq -se 'all(.[]; .kind!="landed")' "$s/events.log"
+  dv 'done' TK-1
+  dv land TK-1 --checked "$(jq -r .head "$s/done.json")"
+  test "$(cat "$CASE_DIR/destination/TK-1-v2/summary.txt")" = 'changed during land'
+}
 task_terminal_setup() {
   if [ "$1" = tmux ]; then needs_tmux; else export DV_HERDR=1; fi
   task_setup
@@ -272,11 +352,12 @@ case_task_recursive_destination() {
   mkdir "$wt/out/subdir"
   ln -s "$wt" "$CASE_DIR/work-alias"
   ln -s "$wt/out" "$CASE_DIR/out-alias"
+  ln -s "$DV_STATE/TK-1/task-snapshots/$head/out" "$CASE_DIR/snapshot-alias"
   cat > "$CASE_DIR/copy-spy" <<'ENV'
 cp() { touch "$CASE_DIR/copy-called"; return 99; }
 ENV
   for alias in "$wt" "$CASE_DIR/work-alias"; do
-    for destination in "$wt/out" "$wt/out/subdir" "$CASE_DIR/out-alias" "$CASE_DIR/out-alias/subdir"; do
+    for destination in "$wt/out" "$wt/out/subdir" "$CASE_DIR/out-alias" "$CASE_DIR/out-alias/subdir" "$DV_STATE/TK-1/task-snapshots/$head/out" "$CASE_DIR/snapshot-alias"; do
       jq --arg wt "$alias" --arg destination "$destination" '.worktree=$wt | .destination=$destination' "$DV_STATE/TK-1/meta" > "$CASE_DIR/task-meta"
       mv "$CASE_DIR/task-meta" "$DV_STATE/TK-1/meta"
       if BASH_ENV="$CASE_DIR/copy-spy" dv land TK-1 --checked "$head"; then return 1; fi

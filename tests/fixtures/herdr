@@ -193,6 +193,12 @@ case "$1 $2" in
       printf '%s\n' "$$" > "$stub/wait-$$.pid"
       trap 'rm -f "$stub/wait-$$.pid"' EXIT
       trap 'exit 0' TERM INT
+      # Let the exit test hold a live grace subscription until its agent has
+      # finished. Completion work must not race a one-second wall-clock timer.
+      if [[ "$untils" = *' idle '* ]] && [ -f "$stub/hold-question-grace" ]; then
+        touch "$stub/question-grace-entered"
+        while [ -f "$stub/hold-question-grace" ]; do sleep 0.05; done
+      fi
       started=$SECONDS
       while :; do
         status=idle; [ ! -f "$dir/status" ] || status=$(cat "$dir/status")

@@ -17,9 +17,9 @@ dv send TK-1 '출처를 보완하고 같은 작업을 마무리하세요'
 
 새 임시 작업 폴더와 빈 `out/`를 만들고 원래 workspace는 참고용 입력으로 안내합니다. 이는 파일시스템 샌드박스가 아닙니다. Codex는 코드 작업과 같은 모드 선택을 사용합니다: 기본 auto는 연결 가능한 App Server를 사용하고 없으면 JSON exec로 실행합니다. App Server는 Git 없는 작업 폴더를 thread의 cwd로 전달하며 사용자 설정을 다시 쓰지 않습니다. exec는 `--skip-git-repo-check`와 기존 stall/재시도를 사용하고, `DV_CODEX_MODE=exec`로 명시할 수 있습니다. goal/tui, Claude와 사용자 지정 명령은 기존 herdr/tmux 경로를 사용합니다. Codex의 원래 workspace는 `DV_TRUSTED_REPOS`에 등록되어 있어야 하며, exec/TUI에서는 해당 작업 폴더에만 신뢰를 이어 줍니다. 같은 로컬 수용량, 상태·경과 시간·파일 수와 완료 이벤트를 사용합니다. 로컬 슬롯이 없으면 제출을 거절하며, task 상태는 `dv status`에서 봅니다(`dv queue`는 호스트 입찰용).
 
-에이전트는 `out/`에 일반 파일을 만들고 `$DV_STATE/<ISSUE>/report.md`에 산출물·출처·미해결 사항을 쓴 뒤 `dv done <ISSUE>`를 실행합니다. 빈 산출물, 누락/빈 보고서, 심볼릭 링크·특수 파일은 완료를 거절합니다. done의 head는 산출물 경로·내용과 보고서의 SHA-256이며 수정되면 다시 완료·확인해야 합니다.
+에이전트는 `out/`에 일반 파일을 만들고 `$DV_STATE/<ISSUE>/report.md`에 산출물·출처·미해결 사항을 쓴 뒤 `dv done <ISSUE>`를 실행합니다. 빈 산출물, 누락/빈 보고서, 심볼릭 링크·특수 파일은 완료를 거절합니다. done은 `out/`과 보고서를 revision별 스냅샷으로 보존하고 복사 전후 내용이 같은지 확인합니다. done의 head는 산출물 경로·내용과 보고서의 SHA-256이며 수정되면 다시 완료·확인해야 합니다. land는 확인된 스냅샷만 전달하며, 스냅샷이 없거나 훼손됐으면 거절합니다.
 
-herdr/tmux 작업도 land 전에 저장된 래퍼 PID의 종료와 `agent.exit=0`이 확인되어야 합니다. 살아 있거나 실패한 실행, 종료 증거가 없는 실행은 거절합니다. 정상 종료 후 산출물을 다시 읽어 확인한 head와 비교합니다. 작업 폴더와 목적지는 물리 경로로 비교하므로 심볼릭 경로를 거쳐도 `out/` 자체나 그 하위로 재귀 복사하지 않습니다.
+herdr/tmux 작업도 land 전에 저장된 래퍼 PID의 종료와 `agent.exit=0`이 확인되어야 합니다. 살아 있거나 실패한 실행, 종료 증거가 없는 실행은 거절합니다. 정상 종료 후와 전달 후에 산출물을 다시 읽어 확인한 head와 비교하고, 전달 중 변경되면 landed로 기록하지 않습니다. 작업·상태 폴더와 목적지는 물리 경로로 비교하므로 심볼릭 경로를 거쳐도 `out/`이나 스냅샷 하위로 재귀 복사하지 않습니다.
 
 App Server task의 done은 산출물 검사 후 goal 완료 응답을 확인합니다. land는 thread를 새로 조회해 진행 중인 turn이나 미응답 질문이 없는 성공한 idle 상태를 요구한 다음 manifest를 다시 비교합니다. 실패·불명·사라진 thread는 전달하지 않습니다. clean은 idle 상태에서 클라이언트만 종료하고 task 파일을 보존합니다.
 
@@ -53,7 +53,9 @@ App Server task의 done은 산출물 검사 후 goal 완료 응답을 확인합�
 
 [`hosts/tools.tsv`](hosts/tools.tsv)의 열은 이름, 버전, 설치 방식, 적용 호스트(`all` 또는 `DV_HOST` 값)입니다. `system`은 배포판 버전을 허용하고 `bundled`는 고정된 Node 배포본의 npm을 뜻합니다. `agy`는 lina-os에서만 조회합니다. Go는 `~/.local/go/go`(GOROOT), GOPATH는 `~/.local/go`, Node와 npm global은 `~/node`, 나머지 설치 대상은 `~/.local/bin`입니다. Codex와 Devin은 조회만 합니다. apt 도구도 설치하지 않고 없으면 운영자가 실행할 `sudo apt-get install ...`을 출력합니다.
 
-`check`는 각 도구의 `ok` / `missing` / `wrong-version`, 실제 버전과 실행 경로, gh·codex·claude·devin 로그인 상태를 보여 줍니다. `--json`은 `tools[].login/ssh`, `auth`, `codex` 객체로 같은 결과를 냅니다. 기본 조회는 상태·설정 파일을 만들거나 바꾸지 않으며 drift가 있어도 종료 코드 0입니다. 조회 자체 실패나 요청한 probe 실패는 1입니다. 오래된 체크아웃을 가리킬 수 있는 gitleaks 심볼릭 링크는 버전이 같아도 `wrong-version`과 `reason=symlink`로 표시합니다.
+`check`는 각 도구의 `ok` / `missing` / `wrong-version`, 실제 버전과 실행 경로, gh·codex·claude·devin 로그인 상태를 보여 줍니다. `--json`은 `tools[].login/ssh`, `auth`, `codex` 객체로 같은 결과를 냅니다. `watcher`에는 살아 있는 로컬 감시자가 시작할 때 읽은 `commit`, 그 체크아웃의 `origin_main`, `current` / `outdated` / `unknown` / `not-running` 상태가 나옵니다. Git 비교는 마지막 fetch 기준입니다. 조회는 사용자 설정을 바꾸지 않으며 drift가 있어도 종료 코드 0입니다. 모든 `dv` 호출에 적용되는 아래 자동 갱신은 실행될 수 있습니다. 조회 자체 실패나 요청한 probe 실패는 1입니다. 오래된 체크아웃을 가리킬 수 있는 gitleaks 심볼릭 링크는 버전이 같아도 `wrong-version`과 `reason=symlink`로 표시합니다.
+
+`dv`는 실행 파일이 있는 devflow 체크아웃의 `origin/main`을 최대 5분에 한 번 fetch하고, 깨끗한 `main`만 fast-forward한 뒤 원래 인자로 다시 실행합니다. RPC 응답 제한을 지키기 위해 `_`로 시작하는 내부 명령과 `bid`, 그 자식 CLI는 갱신을 다음 일반 호출로 미룹니다. 감시자는 자기 저장소의 `landed` 이벤트와 30분 안전망에서 갱신을 확인합니다. 큐 커서와 이벤트를 저장한 뒤 같은 PID로 재실행하므로 실행 중인 작업자·관리자·QA와 큐 상태는 유지됩니다. 감시자의 내부 CLI 호출은 갱신하지 않으며, 다른 CLI가 체크아웃을 갱신해도 감시자는 다음 안전 지점에서 새 코드를 읽습니다. dirty checkout과 분기된 이력은 경고만 남기고, 작업 브랜치와 detached HEAD는 건드리지 않습니다. fetch는 10초로 제한하며 오프라인이어도 원래 명령을 실행합니다. `DV_AUTO_UPDATE=0`으로 자동 갱신을 끌 수 있습니다. 이 기능이 없는 기존 감시자는 최초 한 번 운영자가 갱신·재시작해야 합니다.
 
 PATH 검사는 상속된 개발 세션 PATH를 제외하고 계정 셸(`SHELL`, 필요하면 `DV_HOST_SHELL`로 지정)의 로그인 `-lc`와 SSH 비대화형 `-c` 시작을 **로컬에서** 재현합니다. 후자는 `SSH_CLIENT`를 설정하여 bash의 SSH 시작 파일 처리도 포함합니다. 실제 SSH 접속이나 sshd/PAM의 환경 정책까지 검증하는 것은 아닙니다. 셸의 실행 파일 경로를 검사하며 alias/function은 대상이 아닙니다. `sync`는 `~/.profile`과 `~/.zshenv`의 `# BEGIN devflow PATH` / `# END devflow PATH` 블록만 관리하며 중복된 자체 블록을 하나로 합칩니다. 그 밖의 사용자 줄·예전 수동 PATH 블록은 유지합니다. zsh는 비대화형에서도 `.zshenv`를 읽습니다. bash의 `.bashrc` 또는 `.bash_profile`이 `.profile`을 읽지 않으면 해당 모드의 drift는 남으며, `check`가 보여 줍니다. 이 파일들을 자동 편집하지는 않습니다.
 
@@ -267,12 +269,27 @@ resume하며, 이전 전송 결과가 불명확한 메시지는 재전송하지 
 현재는 `thread/read(includeTurns=true)`를 사용하므로 긴 thread의 조회 비용이 증가합니다.
 `DV_APPSERVER_TIMEOUT`(10초)은 응답 제한, `DV_APPSERVER_POLL`(5초)은 상태 갱신 주기입니다.
 
-기존 `dv-watch`가 `DV_HOSTS`의 App Server 작업을 확인합니다. 활성 goal에서
-`DV_STALL_AFTER`(300초) 동안 새 item이나 item delta가 없으면 stalled, 오류면 failed를
-알립니다. 질문 대기 중에는 자동 복구하지 않습니다. 이슈당 한 번 같은 thread에서
-`continue` turn을 시작합니다. 멈춘 활성 turn은 먼저 interrupt가 수락되고 idle이 확인돼야
-합니다. 다시 멈추거나 복구 결과가 불명확하면 blocked로 운영자에게 전달합니다.
-`appserver/recovery`는 이 한 번의 시도를 보존합니다.
+기존 `dv-watch`가 `DV_HOSTS`의 App Server 작업을 확인합니다.
+`DV_STALL_AFTER`(300초) 동안 새 item이나 item delta가 없으면 stalled를 알립니다.
+`idle`, `goal-complete`, 활성 goal의 idle도 `dv done` 기록이 없으면 브리프와
+push·PR·CI·리뷰 처리를 마치고 `dv done ISSUE`를 실행하라는 continuation을 한 번 보냅니다.
+이후 다시 idle인데 done이 없으면 마지막 에이전트 메시지를 포함해 blocked를 알립니다.
+질문 대기 중이거나 현재 커밋의 done이 기록된 작업은 자동 복구하지 않습니다.
+
+멈춘 활성 turn은 interrupt가 수락되고 idle이 확인돼야 같은 thread에 `continue`를
+보냅니다. 복구 turn에서 새 item이나 delta가 오면 해당 복구 episode를 끝내고 다음
+정체를 복구할 수 있습니다. turn 시작 알림이나 이전 turn의 이벤트만으로 초기화하지
+않습니다. `DV_RECOVER_MAX`(기본 3)는 재시작을 포함한 작업 전체의 복구 시도 상한입니다.
+진행 없는 재정체, 예산 소진, 거부되거나 불명확한 복구는 blocked로 전달하며 자동 재전송하지
+않습니다. 기존 `appserver/recovery` 표시도 보존해 미확정 작업을 반복하지 않습니다.
+
+capacity·usage limit·rate limit·HTTP 429 오류는 즉시 failed를 알리지 않고
+`DV_CAPACITY_BACKOFF`(기본 120초) 뒤 다음 watcher 확인에서 한 번 continuation을 보냅니다.
+같은 복구 예산을 사용하며 대기 중에도 상태 조회와 질문 응답을 처리합니다. 일반 오류는
+기존처럼 failed를 알리고 복구합니다. `dv status`와 JSON의 `recoveries`,
+`last_recovery_reason`에 누적 횟수와 마지막 이유(`stalled`, `idle-without-done`, `capacity`,
+`failed`)를 표시합니다. JSON의 `appserver.capacity_retry_at`은 대기 중인 재시도 시각입니다.
+복구 예산과 이유는 `appserver/recoveries.json`에 저장합니다. 새 설정은 양의 정수입니다.
 
 서버의 `requestUserInput`은 requestId와 질문 원문을 기존 question 이벤트로 전달합니다.
 단일 질문에는 평문으로 답할 수 있고, 여러 질문이나 요청에는 다음 형식을 사용합니다.

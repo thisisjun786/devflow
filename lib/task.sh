@@ -113,10 +113,38 @@ task_manifest() (
   digest=$(task_hash < "$report") || exit 1
   jq -cs --arg report "$digest" '{files:sort_by(.path),report_sha256:$report}' "$tmp"
 )
+task_snapshot() (
+  local manifest copied current stage='' revision snapshot
+  trap 'if [ -n "$stage" ]; then rm -rf "$stage"; fi' EXIT
+  manifest=$(task_manifest "$WT/out" "$S/report.md") || return 1
+  stage=$(mktemp -d "$S/.task-snapshot.XXXXXX") || return 1
+  mkdir "$stage/out" || return 1
+  cp -R "$WT/out/." "$stage/out/" || return 1
+  cp "$S/report.md" "$stage/report.md" || return 1
+  copied=$(task_manifest "$stage/out" "$stage/report.md") || return 1
+  current=$(task_manifest "$WT/out" "$S/report.md") || return 1
+  if [ "$manifest" != "$copied" ] || [ "$manifest" != "$current" ]; then
+    fail 'task changed during done; finish writing before completing again'
+  fi
+  revision="task-$(printf '%s\n' "$manifest" | task_hash)" || return 1
+  [ ! -L "$S/task-snapshots" ] || fail 'task snapshots directory is a symlink'
+  mkdir -p "$S/task-snapshots" || return 1
+  snapshot="$S/task-snapshots/$revision"
+  if [ -e "$snapshot" ] || [ -L "$snapshot" ]; then
+    # Repeated done for the same content must not replace an existing snapshot.
+    if [ ! -d "$snapshot" ] || [ -L "$snapshot" ]; then fail 'task snapshot is not a directory'; fi
+    copied=$(task_manifest "$snapshot/out" "$snapshot/report.md") || return 1
+    [ "$copied" = "$manifest" ] || fail 'task snapshot has changed'
+  else
+    mv "$stage" "$snapshot" || return 1
+    stage=''
+  fi
+  printf '%s\n' "$manifest"
+)
 task_completion() {
   local manifest
   case "$(jq -r .status "$S/meta")" in landed|cancelled) fail 'cannot complete a finished task' ;; esac
-  manifest=$(task_manifest "$WT/out" "$S/report.md") || return 1
+  manifest=$(task_snapshot) || return 1
   head="task-$(printf '%s\n' "$manifest" | task_hash)"
   files=$(printf '%s\n' "$manifest" | jq '.files|length')
 }
@@ -130,22 +158,8 @@ task_exec_done() {
   else cmd_kick failed "$ISSUE" 'task exited without valid deliverables and report'; fi
   return 1
 }
-task_land() {
-  if [ "$#" -ne 3 ] || [ "$2" != --checked ]; then
-    fail 'usage: dv land TASK --checked HEAD (after checking the brief, out/ and report.md)'
-  fi
-  load_issue "$1"; issue_lock; require_worktree
-  local checked=$3 head destination target suffix=1 manifest copied pid server
-  # Old metadata and aliases can name the same directory through a symlink.
-  # Compare physical paths on both sides of the recursive-copy guard.
-  WT=$(cd "$WT" && pwd -P)
-  [ -f "$S/done.json" ] || fail 'task is not done'
-  head=$(jq -r .head "$S/done.json")
-  [ "$checked" = "$head" ] || fail 'checked task revision does not match done'
-  if [ "$(jq -r .status "$S/meta")" = landed ]; then
-    jq -r .landed_path "$S/meta"; return
-  fi
-  [ "$(jq -r .status "$S/meta")" = 'done' ] || fail 'task is not ready to land'
+task_require_finished() {
+  local pid server
   if [ "$BACKEND" = appserver ]; then
     # The client remains alive after a turn. Require a fresh successful idle
     # thread, not a stopped local wrapper or a disappeared/unknown thread.
@@ -166,13 +180,40 @@ task_land() {
     ! codex_exec_alive "$S" || fail 'task terminal agent is still running'
     [ "$(cat "$S/agent.exit" 2>/dev/null)" = 0 ] || fail 'task terminal agent did not exit successfully'
   fi
+}
+task_land() {
+  if [ "$#" -ne 3 ] || [ "$2" != --checked ]; then
+    fail 'usage: dv land TASK --checked HEAD (after checking the brief, out/ and report.md)'
+  fi
+  load_issue "$1"; issue_lock; require_worktree
+  local checked=$3 head destination target suffix=1 manifest copied snapshot current state
+  # Old metadata and aliases can name the same directory through a symlink.
+  # Compare physical paths on both sides of the recursive-copy guard.
+  WT=$(cd "$WT" && pwd -P)
+  state=$(cd "$S" && pwd -P)
+  [ -f "$S/done.json" ] || fail 'task is not done'
+  head=$(jq -r .head "$S/done.json")
+  [ "$checked" = "$head" ] || fail 'checked task revision does not match done'
+  if [ "$(jq -r .status "$S/meta")" = landed ]; then
+    jq -r .landed_path "$S/meta"; return
+  fi
+  [ "$(jq -r .status "$S/meta")" = 'done' ] || fail 'task is not ready to land'
+  task_require_finished
   # Re-read the artifacts only after the writer has successfully stopped.
   manifest=$(task_manifest "$WT/out" "$S/report.md") || return 1
   [ "task-$(printf '%s\n' "$manifest" | task_hash)" = "$checked" ] || fail 'task changed since done; inspect it and run dv done again'
+  snapshot="$S/task-snapshots/$head"
+  if [ -L "$S/task-snapshots" ] || [ -L "$snapshot" ] || [ ! -d "$snapshot" ]; then
+    fail 'task snapshot is missing or is a symlink; run dv done again'
+  fi
+  copied=$(task_manifest "$snapshot/out" "$snapshot/report.md") || return 1
+  [ "$copied" = "$manifest" ] || fail 'task snapshot has changed'
   destination=$(jq -r .destination "$S/meta")
   mkdir -p "$destination"
   destination=$(cd "$destination" && pwd -P)
-  case "$destination/" in "$WT/"*) fail 'destination must be outside the task work directory' ;; esac
+  case "$destination/" in
+    "$WT/"*|"$state/"*) fail 'destination must be outside the task work and state directories' ;;
+  esac
   target="$destination/$ISSUE"
   # Atomic mkdir claims a fresh bundle. Never merge into existing directories
   # or follow an existing symlink; cp -n varies between platforms.
@@ -180,9 +221,13 @@ task_land() {
     [ -e "$target" ] || [ -L "$target" ] || fail 'cannot create task destination'
     suffix=$((suffix + 1)); target="$destination/$ISSUE-v$suffix"
   done
-  cp -R "$WT/out/." "$target/" || fail "copy failed; partial files retained at $target"
-  copied=$(task_manifest "$target" "$S/report.md") || return 1
-  [ "$copied" = "$manifest" ] || fail "task changed during copy; partial files retained at $target"
+  cp -R "$snapshot/out/." "$target/" || fail "copy failed; partial files retained at $target"
+  copied=$(task_manifest "$target" "$snapshot/report.md") || return 1
+  task_require_finished
+  current=$(task_manifest "$WT/out" "$S/report.md") || return 1
+  if [ "$copied" != "$manifest" ] || [ "$current" != "$manifest" ]; then
+    fail "task changed during copy; partial files retained at $target"
+  fi
   meta_set --arg path "$target" --arg head "$checked" --argjson time "$(now)" \
     '.status="landed" | .landed_path=$path | .landed_head=$head | .landed_at=$time'
   cmd_kick landed "$ISSUE" "Task deliverables copied to $target"
