@@ -12,6 +12,8 @@ source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 source "$DV_ROOT/lib/herdr.sh"
 # shellcheck source=lib/commands.sh
 source "$DV_ROOT/lib/commands.sh"
+# shellcheck source=lib/stall.sh
+source "$DV_ROOT/lib/stall.sh"
 # shellcheck source=lib/delivery.sh
 source "$DV_ROOT/lib/delivery.sh"
 # shellcheck source=lib/polish.sh
@@ -24,6 +26,7 @@ command=${1:-help}; [ "$#" -eq 0 ] || shift
 case "$command" in
   manager) cmd_manager "$@" ;;
   _manager-run) cmd__manager_run "$@" ;;
+  _stall-recover) cmd__stall_recover "$@" ;;
   host)
     # shellcheck source=lib/host.sh
     source "$DV_ROOT/lib/host.sh"

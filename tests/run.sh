@@ -1615,7 +1615,15 @@ source "$ROOT/tests/revive.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
+for name in stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+  fi
+done
+for name in revive_legacy_idle revive_legacy_unknown revive_capacity_status revive_legacy_busy revive_legacy_uncertain revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?

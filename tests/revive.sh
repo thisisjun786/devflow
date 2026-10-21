@@ -218,3 +218,54 @@ case_revive_codex_goal() {
   test ! -d "$RV_STATE/revive/blocked"
   revive_preserved
 }
+case_revive_legacy_idle() {
+  revive_setup; revive_dead
+  rm "$RV_STATE/agent.pid" "$RV_STATE/agent.exit"
+  dv send RV-1 'continue legacy work'
+  revive_wait
+  revive_preserved
+}
+case_revive_capacity_status() {
+  revive_setup
+  jq '.status="running" | del(.done_at)' "$RV_STATE/meta" > "$CASE_DIR/meta.tmp"
+  mv "$CASE_DIR/meta.tmp" "$RV_STATE/meta"
+  printf 'idle\n' > "$CASE_DIR/herdr/w-RV-1/status"
+  printf 'Selected model is at capacity\n› \n' > "$CASE_DIR/herdr/w-RV-1/output"
+  dv status RV-1 --json | jq -e '.[0].goal_stalled==true'
+}
+case_revive_legacy_busy() {
+  revive_setup; revive_dead
+  rm "$RV_STATE/agent.pid" "$RV_STATE/agent.exit"
+  local process
+  for process in codex node bash sleep; do
+    jq -n --arg name "$process" '{result:{process_info:{pane_id:"w-RV-1:p1",shell_pid:123,
+      foreground_process_group_id:456,foreground_processes:[{pid:456,name:$name}]}}}' > "$CASE_DIR/herdr/w-RV-1/process-info"
+    if dv send RV-1 'do not duplicate a process'; then return 1; fi
+    test ! -d "$RV_STATE/revive"
+  done
+}
+case_revive_legacy_uncertain() {
+  revive_setup; revive_dead
+  rm "$RV_STATE/agent.pid" "$RV_STATE/agent.exit"
+  printf 'pane process-info\n' > "$CASE_DIR/herdr/fail"
+  if dv send RV-1 'transport is not absence'; then return 1; fi
+  test ! -d "$RV_STATE/revive"
+  rm "$CASE_DIR/herdr/fail"
+  printf '{"result":{"process_info":{"pane_id":"w-RV-1:p1"}}}\n' > "$CASE_DIR/herdr/w-RV-1/process-info"
+  if dv send RV-1 'missing telemetry is not absence'; then return 1; fi
+  test ! -d "$RV_STATE/revive"
+}
+case_revive_legacy_unknown() {
+  revive_setup; revive_dead
+  rm "$RV_STATE/agent.pid" "$RV_STATE/agent.exit"
+  jq '.status="running" | del(.done_at)' "$RV_STATE/meta" > "$CASE_DIR/meta.tmp"
+  mv "$CASE_DIR/meta.tmp" "$RV_STATE/meta"
+  # Cached agent identity can survive the process: unknown plus a confirmed
+  # shell-only pane still proves absence, even when agent.get succeeds.
+  touch "$CASE_DIR/herdr/w-RV-1/detected" "$CASE_DIR/herdr/prompt-error"
+  printf 'unknown\n' > "$CASE_DIR/herdr/w-RV-1/status"
+  dv status RV-1 --json | jq -e '.[0].agent_dead==true'
+  dv send RV-1 'continue legacy work with cached identity'
+  revive_wait
+  revive_preserved
+}
