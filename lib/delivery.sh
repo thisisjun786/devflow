@@ -317,6 +317,8 @@ cmd_land() {
   if is_github; then
     local pr head method
     pr=$(jq -er .url "$S/pr.json"); head=$(git -C "$WT" rev-parse HEAD)
+    stack_land_gate "$pr" "$head" || { stack_conflict_send; return 1; }
+    head=$(git -C "$WT" rev-parse HEAD)
     (cd "$WT" && gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,state) > "$S/land-checks.json"
     jq -e --arg head "$head" --arg base "$BASE" '.headRefOid==$head and .baseRefName==$base and .state=="OPEN"' "$S/land-checks.json" >/dev/null || fail 'PR head/base/state mismatch'
     checks_green "$S/land-checks.json" || fail 'all PR checks must be successful (empty, skipped, pending and failed checks refuse land)'

@@ -12,6 +12,8 @@ source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/manager.sh
 source "$DV_ROOT/lib/manager.sh"
+# shellcheck source=lib/stack.sh
+source "$DV_ROOT/lib/stack.sh"
 need jq
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
@@ -86,7 +88,9 @@ worker_start() {
   (
     trap - EXIT INT TERM
     rc=0
-    if [ -n "$DV_WORKER_CMD" ]; then
+    if [ "$(printf '%s\n' "$event" | jq -r .kind)" = stack-land ]; then
+      stack_worker "$event" || rc=$?
+    elif [ -n "$DV_WORKER_CMD" ]; then
       bash -c "$DV_WORKER_CMD \"\$@\"" dv-worker "$prompt" || rc=$?
     else
       "$DV_HERMES_BIN" -p sion chat -Q --yolo -t terminal,connections -s devflow --query-file "$prompt" || rc=$?
@@ -172,6 +176,7 @@ reconcile() {
     fi
     if true; then
       if ! printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null 2>&1; then continue; fi
+      stack_queue_host "$host" "$rows"
       # Liveness is checked on the issue's host; a PID from another host is
       # meaningless locally. The helper preserves a healthy waiter's lock/log.
       while IFS= read -r issue; do
@@ -216,6 +221,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
     elif ! grep -Fxq -- "$id" "$DV_HOME/seen" && ! pending_event "$id"; then
       # Deterministic scheduling is driven by this existing queue, never a bid poll.
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then break; fi
+      if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then break; fi
       if [ "$(printf '%s\n' "$line" | jq -r .kind)" = submitted ]; then
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
