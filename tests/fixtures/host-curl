@@ -34,7 +34,7 @@ case "$url" in
   */go1.27.3.linux-*.tar.gz) dir=go/bin; tool=go; version=1.27.3 ;;
   */node-v24.20.0-linux-*.tar.gz) dir=node-v24.20.0-linux-x64/bin; tool=node; version=24.20.0 ;;
   */uv-*-unknown-linux-gnu.tar.gz) dir=uv-x86_64-unknown-linux-gnu; tool=uv; version=0.11.32 ;;
-  */gh_2.46.0_linux_*.tar.gz) dir=gh_2.46.0_linux_amd64/bin; tool=gh; version=2.46.0 ;;
+  */gh_2.102.1_linux_*.tar.gz) dir=gh_2.102.1_linux_amd64/bin; tool=gh; version=2.102.1 ;;
   */gitleaks_8.30.1_linux_*.tar.gz) dir=.; tool=gitleaks; version=8.30.1 ;;
   */herdr-linux-*) payload "$out" 0.9.1; checksum; exit ;;
   *) printf 'Unexpected download: %s\n' "$url" >&2; exit 1 ;;

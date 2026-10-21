@@ -30,7 +30,7 @@ case_host_check() {
   printf 'export PATH="$HOME/ssh:$HOME/system:/usr/bin:/bin"\n' > "$HOME/.zshenv"
   host_fake "$HOME/system/node" 24.20.0
   host_fake "$HOME/ssh/node" 22.0.0
-  host_fake "$HOME/system/gh" 2.46.0
+  host_fake "$HOME/system/gh" 2.102.1
   host_fake "$HOME/system/claude" 2.1.304
   printf 'optional\t1.0.0\tcheck\tother-host\n' >> "$CASE_DIR/host-root/hosts/tools.tsv"
   "$HOST_DV" host check --json > "$CASE_DIR/check.json"
