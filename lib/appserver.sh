@@ -53,7 +53,7 @@ appserver_available() {
   ( appserver_probe ) 2>/dev/null
 }
 appserver_probe() {
-  local AS_EVENTS=0 AS_SEQ=0 AS_IO AS_PID AS_SEND AS_RECEIVE AS_REPLY AS_CLASS AS_WRITER='' rc=0
+  local AS_EVENTS=0 AS_SEQ=0 AS_IO AS_PID AS_SEND AS_RECEIVE AS_REPLY AS_CLASS AS_WRITER='' AS_LINE='' AS_PARTIAL='' rc=0
   appserver_open || return 1
   trap appserver_close EXIT
   appserver_handshake || rc=$?
@@ -125,6 +125,21 @@ appserver_questions() {
     if tail -n 1 "$S/events.log" | jq -e '.kind=="question" and .delivered' >/dev/null; then touch "$S/appserver/questions/$key.sent"; fi
   done
 }
+appserver_read_line() {
+  # Read one complete JSON-RPC line from fd 8 within $1 seconds. Bash `read`
+  # returns partial input on timeout; keep it and continue, so a multi-MB
+  # thread/read reply is assembled instead of dropped one second at a time.
+  # Bash 3.2 reports both timeout and EOF as status 1, so a non-zero status
+  # only means "no newline yet"; callers detect a dead server via kill -0.
+  local deadline=$(( $(now) + $1 )) chunk
+  AS_LINE=${AS_PARTIAL:-}; AS_PARTIAL=''
+  while :; do
+    chunk=''
+    if IFS= read -r -t 1 chunk <&8; then AS_LINE+=$chunk; return 0; fi
+    AS_LINE+=$chunk
+    if [ "$(now)" -ge "$deadline" ]; then AS_PARTIAL=$AS_LINE; AS_LINE=''; return 1; fi
+  done
+}
 appserver_rpc() {
   local method=$1 params=$2 id=${3:-} line deadline
   AS_SEQ=$((AS_SEQ + 1))
@@ -133,7 +148,8 @@ appserver_rpc() {
   appserver_write "$(printf '%s\n' "$params" | jq -c --arg id "$id" --arg method "$method" '{id:$id,method:$method,params:.}')"
   deadline=$(( $(now) + DV_APPSERVER_TIMEOUT ))
   while [ "$(now)" -le "$deadline" ]; do
-    if IFS= read -r -t 1 line <&8; then
+    if appserver_read_line $(( deadline - $(now) + 1 )); then
+      line=$AS_LINE
       printf '%s\n' "$line" | jq -e 'type=="object"' >/dev/null 2>&1 || continue
       if printf '%s\n' "$line" | jq -e --arg id "$id" '.id==$id and .method==null and (has("result") or has("error"))' >/dev/null; then
         AS_REPLY=$line
@@ -252,7 +268,8 @@ appserver_answer() {
   appserver_write "$(cat "$S/appserver/outbox/$id.wire")"
   deadline=$(( $(now) + DV_APPSERVER_TIMEOUT ))
   while [ "$(now)" -le "$deadline" ]; do
-    if IFS= read -r -t 1 line <&8; then
+    if appserver_read_line $(( deadline - $(now) + 1 )); then
+      line=$AS_LINE
       printf '%s\n' "$line" | jq -e 'type=="object"' >/dev/null 2>&1 || continue
       appserver_event "$line"
       if printf '%s\n' "$line" | jq -e --argjson id "$request" --arg thread "$AS_THREAD" '.method=="serverRequest/resolved" and .params.requestId==$id and .params.threadId==$thread' >/dev/null; then
@@ -331,6 +348,7 @@ cmd__appserver_run() {
   load_issue "$1"; require_worktree
   umask 077
   local AS_EVENTS=1 AS_SEQ=0 AS_THREAD='' AS_REPLY='{}' AS_CLASS=unknown AS_SNAPSHOT='{}' AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER=''
+  local AS_LINE='' AS_PARTIAL=''
   local instruction params id file operation text line last_poll=0
   # bin/dv captures HEAD before sourcing the libraries.
   local client_commit=${entry_commit:-} current_commit
@@ -390,7 +408,8 @@ cmd__appserver_run() {
       appserver_receipt "$id"
       touch "$S/appserver/outbox/$id.finished"
     done
-    if IFS= read -r -t 1 line <&8; then
+    if appserver_read_line 1; then
+      line=$AS_LINE
       if printf '%s\n' "$line" | jq -e 'type=="object"' >/dev/null 2>&1; then appserver_event "$line"; fi
     fi
     if [ $(( $(now) - last_poll )) -ge "$DV_APPSERVER_POLL" ]; then
@@ -411,7 +430,7 @@ cmd__appserver_run() {
 }
 appserver_status() (
   load_issue "$1"
-  local receipt AS_EVENTS=0 AS_SEQ=0 AS_THREAD AS_REPLY AS_CLASS AS_SNAPSHOT AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER=''
+  local receipt AS_EVENTS=0 AS_SEQ=0 AS_THREAD AS_REPLY AS_CLASS AS_SNAPSHOT AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER='' AS_LINE='' AS_PARTIAL=''
   if appserver_alive; then
     if receipt=$(appserver_request status); then printf '%s\n' "$receipt" | jq -c .reply; return; fi
   else

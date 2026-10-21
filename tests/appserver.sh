@@ -44,7 +44,7 @@ CLIENT
 appserver_setup() {
   repo appserver "${1:-}"
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
-  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=2
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-2}
   export DV_APPSERVER_POLL=1 DV_STALL_AFTER=300
   mkdir -p "$CASE_DIR/server"
   printf 'idle\n' > "$CASE_DIR/server/status"
@@ -279,6 +279,44 @@ case_appserver_states() {
   printf 'idle\n' > "$CASE_DIR/server/status"
   printf 'complete\n' > "$CASE_DIR/server/goal"
   dv status AS-1 --json | jq -e '.[0].agent_status=="goal-complete"'
+  dv 'done' AS-1
+  dv clean AS-1
+  test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
+}
+case_appserver_read_partial() {
+  # A JSON-RPC line split by a pause longer than one read timeout must be
+  # assembled, not dropped (devflow#139). Independent of host speed.
+  DV_ENTRY="$ROOT/bin/dv" bash -s <<'READ_PARTIAL'
+set -euo pipefail
+source "$ROOT/lib/common.sh"
+source "$ROOT/lib/appserver.sh"
+AS_PARTIAL='' AS_LINE=''
+exec 8< <(printf '{"id":"a","result":{"x":"'; sleep 2.5; printf 'tail"}}\n'; printf '{"id":"b"}\n')
+appserver_read_line 10
+[ "$AS_LINE" = '{"id":"a","result":{"x":"tail"}}' ]
+appserver_read_line 5
+[ "$AS_LINE" = '{"id":"b"}' ]
+# A deadline that expires mid-line keeps the fragment for the next call.
+exec 8< <(printf '{"id":"c",'; sleep 2.5; printf '"ok":1}\n')
+if appserver_read_line 1; then exit 1; fi
+[ -n "$AS_PARTIAL" ]
+appserver_read_line 10
+[ "$AS_LINE" = '{"id":"c","ok":1}' ]
+READ_PARTIAL
+}
+case_appserver_large_reply() {
+  # A multi-MB thread/read reply arrives over many one-second reads. It must be
+  # assembled, not dropped, so status, clean and land see the real state.
+  # The job client starts in setup; give it a production-scale RPC budget so
+  # slow CI hosts still assemble the reply across many one-second reads.
+  DV_APPSERVER_TIMEOUT_CASE=30 appserver_setup
+  head -c 1500000 /dev/zero | tr '\0' 'x' > "$CASE_DIR/big.txt"
+  jq -cn --rawfile big "$CASE_DIR/big.txt" '{thread:{id:"thread-1",status:{type:"idle"},
+    turns:[{id:"turn-1",status:"completed",error:null,
+      items:[{type:"agentMessage",id:"m1",text:$big},{type:"agentMessage",id:"m2",text:"finished"}]}]}}' \
+    > "$CASE_DIR/server/thread.json"
+  printf 'complete\n' > "$CASE_DIR/server/goal"
+  dv status AS-1 --json | jq -e '.[0] | .agent_status=="goal-complete" and .alive==true'
   dv 'done' AS-1
   dv clean AS-1
   test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"

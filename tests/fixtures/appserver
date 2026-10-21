@@ -124,7 +124,8 @@ while IFS= read -r line; do
   if [ "$method" = turn/start ] && [ -f "$CASE_DIR/server/early-progress" ]; then
     jq -cn --arg turn "$(cat "$CASE_DIR/server/turn-id")" '{method:"item/agentMessage/delta",params:{threadId:"thread-1",turnId:$turn,delta:"early progress"}}'
   fi
-  jq -cn --argjson id "$id" --argjson result "$result" '{id:$id,result:$result}'
+  # Large thread histories exceed argv limits; stream the result on stdin.
+  printf '%s\n' "$result" | jq -c --argjson id "$id" '{id:$id,result:.}'
   if [ "$method" = turn/start ] &&
     { { [ "${DV_APP_TEST_WORK:-0}" = 1 ] && [ "$id" = '"initial-turn"' ]; } ||
       { [ -f "$CASE_DIR/server/recovery-work" ] && [ "$id" != '"initial-turn"' ]; }; }; then
