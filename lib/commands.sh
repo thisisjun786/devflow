@@ -118,6 +118,14 @@ launch_agent() {
     fi
     # tmux can return zero even when its server could not create the socket.
     tmux_dv has-session -t "=$SESSION" 2>/dev/null || {
+      # A fast wrapper may already have completed and closed its session.
+      # Revivals retain old done.json, so require this revival's completion.
+      if [ "$(cat "$S/agent.exit" 2>/dev/null)" = 0 ] && [ -s "$S/done.json" ]; then
+        if [ "${1:-}" != --revived ] ||
+          { [ -s "$S/revive/id" ] && cmp -s "$S/revive/id" "$S/revive/done"; }; then
+          return 0
+        fi
+      fi
       printf 'dv: tmux session %s is missing after startup\n' "$SESSION" >&2
       return 1
     }

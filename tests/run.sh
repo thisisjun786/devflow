@@ -162,6 +162,70 @@ case_task_tmux_session_missing() { tmux_start_failure task missing; }
 case_code_tmux_session_missing() { tmux_start_failure code missing; }
 case_task_tmux_new_session_failed() { tmux_start_failure task nonzero; }
 case_code_tmux_new_session_failed() { tmux_start_failure code nonzero; }
+tmux_fast_completion() {
+  local kind=$1 action=$2 rc=0 args=()
+  needs_tmux
+  if [ "$kind" = task ]; then
+    task_setup
+    args=(submit --kind task "$CASE_DIR/Desk project" TF-1 fast --brief "$CASE_DIR/task-brief")
+  else
+    repo fast
+    args=(start "$REPO" TF-1 fast --brief "$CASE_DIR/brief" --mode exec)
+  fi
+  cat > "$CASE_DIR/fast-tmux-env" <<'ENV'
+tmux() {
+  command tmux "$@" || return
+  if [ "${1:-}" = -L ] && [ "${3:-}" = new-session ]; then
+    local attempt
+    # Delay only the launch reply until the synthetic wrapper has exited.
+    for attempt in {1..100}; do
+      if ! command tmux -L "$DV_TMUX_SOCKET" has-session -t =dv-TF-1 2>/dev/null; then return 0; fi
+      sleep 0.1
+    done
+    return 1
+  fi
+}
+ENV
+  if [ "$action" = start ]; then
+    BASH_ENV="$CASE_DIR/fast-tmux-env" dv "${args[@]}" > "$CASE_DIR/start.out" 2>&1 || rc=$?
+  else
+    dv "${args[@]}"; wait_done TF-1
+    if [ "$action" = stale ]; then
+      # A goal wrapper can exit zero without completing this revival. Its old
+      # done.json plus the new agent.exit must not pass the launch check.
+      cp "$DV_STATE/TF-1/done.json" "$CASE_DIR/old-done.json"
+      jq '.mode="goal"' "$DV_STATE/TF-1/meta" > "$CASE_DIR/goal-meta"
+      mv "$CASE_DIR/goal-meta" "$DV_STATE/TF-1/meta"
+      export DV_AGENT_CMD_codex=true
+    elif [ "$kind" = code ]; then
+      export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/revived-agent"
+    fi
+    BASH_ENV="$CASE_DIR/fast-tmux-env" dv send TF-1 'Check the result again' > "$CASE_DIR/start.out" 2>&1 || rc=$?
+  fi
+  cat "$CASE_DIR/start.out"
+  printf 'fast_%s_%s_exit=%s\n' "$kind" "$action" "$rc"
+  jq '{status,done_at,done_episode}' "$DV_STATE/TF-1/meta"
+  if [ "$action" = stale ]; then
+    test "$rc" != 0
+    cmp "$CASE_DIR/old-done.json" "$DV_STATE/TF-1/done.json"
+    test ! -e "$DV_STATE/TF-1/revive/done"
+    test -d "$DV_STATE/TF-1/revive/blocked"
+    return
+  fi
+  test "$rc" = 0
+  test "$(cat "$DV_STATE/TF-1/agent.exit")" = 0
+  jq -e '.status=="done"' "$DV_STATE/TF-1/meta"
+  test -s "$DV_STATE/TF-1/done.json"
+  if [ "$action" = revive ]; then
+    cmp "$DV_STATE/TF-1/revive/id" "$DV_STATE/TF-1/revive/done"
+    test ! -d "$DV_STATE/TF-1/revive/blocked"
+  fi
+}
+case_task_tmux_fast_completion() { tmux_fast_completion task start; }
+case_code_tmux_fast_completion() { tmux_fast_completion code start; }
+case_code_tmux_fast_revival() { tmux_fast_completion code revive; }
+case_task_tmux_stale_completion() { tmux_fast_completion task stale; }
+case_code_tmux_stale_completion() { tmux_fast_completion code stale; }
 case_start_done() {
   needs_tmux; repo remote remote; start T-1; wait_done T-1
   jq -e '.status=="ready" and .agent=="codex" and .host=="test-host"' "$DV_STATE/T-1/meta"
@@ -1877,7 +1941,7 @@ for name in appserver_sender_idle appserver_sender_partial appserver_sender_lega
     else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
   fi
 done
-for name in task_tmux_socket_failed code_tmux_socket_failed task_tmux_session_missing code_tmux_session_missing task_tmux_new_session_failed code_tmux_new_session_failed task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_launch_race task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace; do
+for name in task_tmux_fast_completion code_tmux_fast_completion code_tmux_fast_revival task_tmux_stale_completion code_tmux_stale_completion task_tmux_socket_failed code_tmux_socket_failed task_tmux_session_missing code_tmux_session_missing task_tmux_new_session_failed code_tmux_new_session_failed task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_launch_race task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
