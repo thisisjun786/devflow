@@ -22,6 +22,8 @@ if [ "$(self_update_head)" != "$entry_commit" ]; then exec "$DV_ROOT/bin/dv" "$@
 source "$DV_ROOT/lib/herdr.sh"
 # shellcheck source=lib/commands.sh
 source "$DV_ROOT/lib/commands.sh"
+# shellcheck source=lib/stall.sh
+source "$DV_ROOT/lib/stall.sh"
 # shellcheck source=lib/delivery.sh
 source "$DV_ROOT/lib/delivery.sh"
 # shellcheck source=lib/stack.sh
@@ -56,6 +58,7 @@ case "$command" in
   qa) cmd_qa "$@" ;;
   _qa-run) cmd__qa_run "$@" ;;
   _manager-run) cmd__manager_run "$@" ;;
+  _stall-recover) cmd__stall_recover "$@" ;;
   host)
     # shellcheck source=lib/host.sh
     source "$DV_ROOT/lib/host.sh"

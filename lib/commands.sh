@@ -439,7 +439,7 @@ cmd_kick() {
 }
 cmd_status() {
   local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
-  local goal_stalled goal_active goal_state screen agent_state_seq agent_session
+  local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   {
@@ -447,6 +447,7 @@ cmd_status() {
       [ -f "$path" ] || continue
       [ -z "$selected" ] || [ "$(basename "$(dirname "$path")")" = "$selected" ] || continue
       alive=false; tmux_alive=false; agent_status=unknown; question_pending=false
+      agent_dead=false
       goal_stalled=false; goal_active=false; agent_state_seq=null; agent_session=null
       backend=$(jq -r '.backend // "tmux"' "$path")
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
@@ -487,7 +488,11 @@ cmd_status() {
       elif command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then
         alive=true; tmux_alive=true
       fi
-      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && jq -e '.status=="running" and .agent=="codex"' "$path" >/dev/null; then
+      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$agent_status" = unknown ] && jq -e '.status=="running"' "$path" >/dev/null &&
+        (load_issue "$(jq -r .issue "$path")"; agent_gone); then
+        agent_dead=true
+      fi
+      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" and .agent=="codex"' "$path" >/dev/null; then
         screen=''
         if [ "$backend" = herdr ]; then
           screen=$(herdr_cmd pane read "$pane" --source visible 2>/dev/null) || screen=''
@@ -497,8 +502,9 @@ cmd_status() {
         # The most recent visible goal banner wins if the old one is still on
         # screen. Explicit activity also resets a tmux stall (no herdr hooks).
         goal_state=$(printf '%s\n' "$screen" | awk '
+          /[Mm]odel is at capacity/ { state="stalled" }
           /^[[:space:]│┃]*([•*][[:space:]]+)?Goal stalled([[:space:]:]|$)/ { state="stalled" }
-          /^[[:space:]│┃]*([•*][[:space:]]+)?Pursuing goal([[:space:]:]|$)/ { state="active" }
+          /^[[:space:]│┃]*([•*][[:space:]]+)?(Pursuing goal|Working)([[:space:]:.]|$)/ { state="active" }
           END { print state }')
         case "$goal_state" in stalled) goal_stalled=true ;; active) goal_active=true ;; esac
       fi
@@ -507,8 +513,8 @@ cmd_status() {
       # without changing metadata or the bidding code's historical done_at.
       done_head=$(jq -r '.head | select(type=="string")' "$(dirname "$path")/done.json" 2>/dev/null) || done_head=''
       row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" \
-        --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" \
-        '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session}' "$path")
+        --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" --argjson agent_dead "$agent_dead" \
+        '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session}' "$path")
       if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
       if [ "$backend" = exec ] && [ "$alive" = false ] && [ "$agent_status" = failed ]; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
@@ -519,7 +525,7 @@ cmd_status() {
   } | if [ "$json" = 1 ]; then jq -s .; else cat; fi
 }
 agent_gone() {
-  local reply pane pid
+  local reply pane pid unknown=0
   REVIVE_PANE_EXISTS=0
   if [ "$BACKEND" = tmux ]; then
     if pane=$(tmux_dv list-panes -t "$SESSION:0" -F '#{pane_index} #{pane_dead}' 2>/dev/null); then
@@ -532,13 +538,21 @@ agent_gone() {
   fi
   # Absence must be confirmed by a structured server reply, not a timeout or
   # transport error. An undetected custom command can still be running.
-  if reply=$(herdr_cmd agent get "$HERDR_PANE" 2>&1); then return 1; fi
-  printf '%s\n' "$reply" | jq -e '.error.code=="agent_not_found"' >/dev/null 2>&1 || return 1
+  if reply=$(herdr_cmd agent get "$HERDR_PANE" 2>&1); then
+    # A cached identity in unknown state is not evidence of a live process.
+    printf '%s\n' "$reply" | jq -e '.result.agent.agent_status=="unknown"' >/dev/null 2>&1 || return 1
+    unknown=1
+  else
+    printf '%s\n' "$reply" | jq -e '.error.code=="agent_not_found"' >/dev/null 2>&1 || return 1
+  fi
   if pane=$(herdr_cmd pane get "$HERDR_PANE" 2>&1); then
     printf '%s\n' "$pane" | jq -e '.result.pane.pane_id!=null' >/dev/null 2>&1 || return 1
     REVIVE_PANE_EXISTS=1
   else
     printf '%s\n' "$pane" | jq -e '.error.code=="pane_not_found"' >/dev/null 2>&1 || return 1
+  fi
+  if [ "$unknown" = 1 ]; then
+    [ "$REVIVE_PANE_EXISTS" = 1 ] && herdr_shell_only "$HERDR_PANE" || return 1
   fi
   # A removed pane can leave its wrapper alive. Require process evidence for
   # both pane paths; terminal disappearance alone cannot authorize a duplicate.
@@ -546,7 +560,12 @@ agent_gone() {
     pid=$(cat "$S/agent.pid")
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
     ! kill -0 "$pid" 2>/dev/null
-  else [ -f "$S/agent.exit" ]; fi
+  elif [ -f "$S/agent.exit" ]; then return 0
+  elif [ "$REVIVE_PANE_EXISTS" = 1 ]; then
+    # Legacy jobs have no wrapper records. Detection alone is insufficient:
+    # require an authoritative shell-only foreground process snapshot.
+    herdr_shell_only "$HERDR_PANE"
+  else return 1; fi
 }
 revive_blocked() {
   # Both the startup helper and the wrapper can observe the same failure.

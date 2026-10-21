@@ -4,7 +4,9 @@ metrics_fixture() {
   # The shared GitHub fixture must satisfy DF-100's completion gate.
   jq '{head,green:true,review_handled:true}' "$DV_STATE/P-1/meta" > "$DV_STATE/P-1/pr-ready.json"
   printf '{"review_handled":true}\n' > "$DV_STATE/P-1/pr-loop.json"
-  jq '.status="running" | .started=100' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
+  # No terminal is launched here. Keep the same unknown herdr pane as the
+  # local idle case, rather than presenting a confirmed dead tmux session.
+  jq '.status="running" | .started=100 | .backend="herdr" | .herdr_pane="working-pane"' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$DV_STATE/P-1/meta"
   DV_ENTRY="$ROOT/bin/dv"
   # shellcheck source=lib/common.sh
@@ -91,8 +93,6 @@ case_metrics_idle() {
   metrics_fixture; watch_fixture
   export DV_HOSTS="$DV_HOST" DV_METRICS_INTERVAL=1 DV_STALL_AFTER=1
   # The agent remains alive and working; metrics must not consult its state.
-  jq '.backend="herdr" | .herdr_pane="working-pane"' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
-  mv "$CASE_DIR/meta" "$DV_STATE/P-1/meta"
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   for _ in {1..150}; do
     if jq -se 'any(.[]; .kind=="idle")' "$DV_HOME/kick.q" >/dev/null 2>&1; then break; fi
@@ -320,4 +320,37 @@ case_metrics_timeout_snapshot() {
   if ps -o args= -p "$collector" 2>/dev/null | grep -q _metrics-collect; then return 1; fi
   cmp "$CASE_DIR/before-snapshot" "$dir/snapshot.json"
   metrics_stop_watch
+}
+case_metrics_stall_overlap() {
+  stall_functions
+  DV_HOSTS=alias
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.goal_stalled=true')
+  # Feed the collector host snapshots without invoking an agent or SSH.
+  bid_limit() {
+    printf '%s\n' "$STALL_ROW" | jq -c --argjson at "$STALL_TIME" \
+      '[{host,issue,started,head:.start_head,token:.award_token,status,
+        observed_at:$at,idle_since:1000,idle_seconds:($at-1000),records:[]}]'
+  }
+  stall_recover() { printf 'recover\n' >> "$CASE_DIR/overlap-recovery"; }
+  local first count
+  for first in stalled idle; do
+    rm -f "$DV_HOME/stalls.json" "$CASE_DIR/overlap-recovery"
+    : > "$DV_HOME/kick.q"
+    STALL_TIME=1000
+    metrics_collect
+    if [ "$first" = idle ]; then
+      STALL_TIME=1601; metrics_collect
+    fi
+    stall_scan
+    count=0
+    while [ "$count" -lt 12 ]; do
+      STALL_TIME=$((STALL_TIME + 60))
+      stall_scan; metrics_collect
+      count=$((count + 1))
+    done
+    jq -se --arg first "$first" 'length==1 and .[0].kind==$first' "$DV_HOME/kick.q"
+    test -s "$CASE_DIR/overlap-recovery"
+    # Alert delivery is not progress; keep the metrics idle episode intact.
+    metrics_queue_events | jq -e 'length==0'
+  done
 }
