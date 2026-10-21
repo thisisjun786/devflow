@@ -23,7 +23,9 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_AGENT_QUESTIONS:=sion}" # herdr: question tools on; off (always under tmux): disable Codex/Claude question tools
 : "${DV_CODEX_SESSIONS:=${CODEX_HOME:-$HOME/.codex}/sessions}" # question transcripts, read only
 : "${DV_CLAUDE_SESSIONS:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" # question transcripts, read only
-: "${DV_MODE:=goal}"
+: "${DV_CODEX_MODE:=exec}" # exec (background JSONL) or goal (interactive terminal)
+: "${DV_MODE:=}" # optional legacy override; --mode takes precedence
+: "${DV_STALL_AFTER:=600}" # exec JSON silence or terminal idle / dead agent / stalled goal seconds
 : "${DV_AGENT_CMD_codex:=}" # complete shell command, no extra CLI flags
 : "${DV_AGENT_CMD_claude:=}"
 : "${DV_AGENT_CMD_devin:=}"
@@ -48,12 +50,12 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
 : "${DV_MAX_WORKERS:=4}" # 1..4
 : "${DV_RECONCILE_INTERVAL:=1800}" # status safety net seconds; capped at min(DV_STALL_AFTER, 60)
-: "${DV_STALL_AFTER:=600}" # running+idle / dead agent / Goal stalled / capacity seconds before one event
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)
 : "${DV_PULL_RETRY:=15}" # seconds between restarts of an ended pull stream
 : "${DV_HOSTS=lina-os hx-linux amd-linux go2-linux}" # SSH aliases for status/bidding; add gos-linux explicitly as the last fallback
 : "${DV_MANAGER_HOST:=lina-os}" # submit/queue manager, independent of the local kick host
 : "${DV_MANAGER_AGENT:=hermes}" # persistent per-repository Hermes session
+: "${DV_MANAGER_MAX_WAIT:=120}" # busy seconds before other issues use plain workers
 : "${DV_MAX_JOBS:=}" # host capacity; empty = max(1, floor(logical cores / 8))
 : "${DV_MIN_MEMORY_MB:=512}" # reject bids below this available memory
 : "${DV_REPO_ROOT:=$HOME/code}" # existing clones, or clone destination after an award
