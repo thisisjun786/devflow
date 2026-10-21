@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *'_metrics-sample'*)
+    printf '%s\n' "$$" >> "$CASE_DIR/metrics-ssh.started"
+    while [ ! -f "$CASE_DIR/metrics-release" ]; do sleep 0.1; done
+    printf '[]\n' ;;
+  *) exec "$ROOT/tests/fixtures/ssh" "$@" ;;
+esac

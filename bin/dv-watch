@@ -37,6 +37,7 @@ printf '%s\n' "$$" > "$DV_HOME/watch.pid"
 pids=''; active=0
 finish() {
   local pid
+  metrics_stop
   for pid in $pull_pids; do if is_pull "$pid"; then kill "$pid" 2>/dev/null || true; fi; done
   for pid in $pids; do wait "$pid" || true; done
   reap
@@ -200,7 +201,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   manager_dispatch
   pulls
   if [ $(( $(now) - last_metrics )) -ge "$DV_METRICS_INTERVAL" ]; then
-    metrics_collect >> "$DV_HOME/metrics.log" 2>&1 || true
+    metrics_start
     last_metrics=$(now)
   fi
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi

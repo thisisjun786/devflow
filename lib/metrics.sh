@@ -138,6 +138,35 @@ metrics_queue_events() {
   jq -Rsc '[split("\n")[] | fromjson? | select(type=="object" and .kind!="idle" and (.time|type)=="number")|{host,issue,id,time}] |
     group_by([.host,.issue]) | map(max_by(.time))' "$DV_HOME/kick.q"
 }
+metrics_collector_alive() {
+  metrics_pid=$(cat "$DV_HOME/metrics.pid" 2>/dev/null) || return 1
+  [[ "$metrics_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$metrics_pid" 2>/dev/null &&
+    ps -o args= -p "$metrics_pid" 2>/dev/null | grep -q '[ /]dv _metrics-collect'
+}
+metrics_start() {
+  # A collector may survive a killed watcher. Reuse that live handle instead
+  # of creating another sampler on restart or on the next sampling interval.
+  if metrics_collector_alive; then return 0; fi
+  [ -z "${metrics_pid:-}" ] || wait "$metrics_pid" 2>/dev/null || true
+  "$DV_ROOT/bin/dv" _metrics-collect >> "$DV_HOME/metrics.log" 2>&1 &
+  metrics_pid=$!; printf '%s\n' "$metrics_pid" > "$DV_HOME/metrics.pid"
+}
+metrics_stop() {
+  # Only the recorded collector and its descendants belong to this lifecycle.
+  # Cancel SSH, timeout helpers and local scans without waiting for host timeouts.
+  if metrics_collector_alive; then
+    bid_stop_tree "$metrics_pid"
+    wait "$metrics_pid" 2>/dev/null || true
+  fi
+  rm -f "$DV_HOME/metrics.pid"
+}
+cmd__metrics_collect() {
+  [ "$#" = 0 ] || fail 'usage: dv _metrics-collect'
+  owned_lock "$DV_HOME/.metrics-collect" "$$" || return 1
+  trap 'owned_unlock "$DV_HOME/.metrics-collect" "$$"' EXIT
+  metrics_collect
+}
 metrics_collect() {
   local host rows row dir tmp issue idle id head token events
   events=$(metrics_queue_events) || return 1

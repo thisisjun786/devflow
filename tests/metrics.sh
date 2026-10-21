@@ -221,3 +221,57 @@ case_metrics_concurrent() {
   for pid in $jobs; do wait "$pid"; done
   cmd_metrics --json | jq -e '.[0].handled_count==8'
 }
+metrics_slow_fixture() {
+  watch_fixture
+  export DV_HOSTS='slow-one slow-two' DV_BID_TIMEOUT=20 DV_METRICS_INTERVAL=1
+  mkdir "$CASE_DIR/metrics-bin"
+  ln -s "$ROOT/tests/fixtures/metrics-ssh" "$CASE_DIR/metrics-bin/ssh"
+  export PATH="$CASE_DIR/metrics-bin:$PATH"
+  printf '[]\n' > "$CASE_DIR/remote-status"
+  trap 'touch "$CASE_DIR/metrics-release"; watcher_teardown' EXIT
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_file "$CASE_DIR/metrics-ssh.started"
+}
+metrics_fast_event() {
+  local id=$1
+  dv-kick question FAST-1 progress test-host h "$id"
+  for _ in {1..20}; do
+    if grep -Fxq "$id" "$DV_HOME/seen" 2>/dev/null; then return 0; fi
+    sleep 0.1
+  done
+  printf 'Queue blocked behind metrics collector\n' >&2
+  return 1
+}
+metrics_stop_watch() {
+  touch "$DV_HOME/stop"
+  for _ in {1..30}; do
+    if ! kill -0 "$watcher" 2>/dev/null; then wait "$watcher"; watcher=''; return 0; fi
+    sleep 0.1
+  done
+  printf 'Watcher shutdown blocked behind metrics collector\n' >&2
+  return 1
+}
+case_metrics_nonblocking() {
+  metrics_slow_fixture
+  metrics_fast_event fast-first
+  local collector
+  collector=$(cat "$DV_HOME/metrics.pid")
+  sleep 1.1
+  metrics_fast_event fast-second
+  test "$(cat "$DV_HOME/metrics.pid")" = "$collector"
+  test "$(wc -l < "$CASE_DIR/metrics-ssh.started" | tr -d ' ')" = 1
+  metrics_stop_watch
+  test ! -f "$DV_HOME/metrics.pid"
+  if ps -o args= -p "$collector" 2>/dev/null | grep -q _metrics-collect; then return 1; fi
+}
+case_metrics_collector_restart() {
+  metrics_slow_fixture
+  local collector
+  collector=$(cat "$DV_HOME/metrics.pid")
+  kill -KILL "$watcher"; wait "$watcher" 2>/dev/null || true; watcher=''
+  dv-watch >> "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  metrics_fast_event after-restart
+  test "$(cat "$DV_HOME/metrics.pid")" = "$collector"
+  test "$(wc -l < "$CASE_DIR/metrics-ssh.started" | tr -d ' ')" = 1
+  metrics_stop_watch
+}
