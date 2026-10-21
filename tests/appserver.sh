@@ -571,3 +571,30 @@ case_appserver_pr_idle_recover() {
   dv _appserver-watch
   jq -se '[.[]|select(.method=="turn/start")]|length==2' "$CASE_DIR/server/requests"
 }
+
+case_appserver_stale_done_recover() {
+  appserver_setup remote
+  local wt old_head
+  wt=$(jq -r .worktree "$DV_STATE/AS-1/meta")
+  git -C "$wt" commit --allow-empty -qm 'AS-1: completed revision'
+  dv pr AS-1
+  dv pr-wait AS-1 --foreground > "$CASE_DIR/pr-result"
+  dv pr-wait AS-1 --foreground --review-handled > "$CASE_DIR/pr-result"
+  dv 'done' AS-1
+  old_head=$(jq -r .head "$DV_STATE/AS-1/done.json")
+  git -C "$wt" commit --allow-empty -qm 'AS-1: correction still awaiting completion'
+  dv pr AS-1
+  jq -e --arg old "$old_head" '.status=="pr" and .head!=$old' "$DV_STATE/AS-1/meta"
+  printf 'idle\n' > "$CASE_DIR/server/status"
+  appserver_age
+  dv _appserver-watch
+  jq -se 'any(.[]; .method=="turn/start" and (.params.input[0].text|contains("You stopped without dv done")))' "$CASE_DIR/server/requests"
+  # Keep the historical completion until the replacement head is really done.
+  jq -e --arg old "$old_head" '.head==$old' "$DV_STATE/AS-1/done.json"
+  dv pr-wait AS-1 --foreground --review-handled > "$CASE_DIR/pr-result"
+  dv 'done' AS-1
+  jq -e --arg head "$(git -C "$wt" rev-parse HEAD)" '.head==$head' "$DV_STATE/AS-1/done.json"
+  appserver_age
+  dv _appserver-watch
+  jq -se '[.[]|select(.method=="turn/start")]|length==2' "$CASE_DIR/server/requests"
+}

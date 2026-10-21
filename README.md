@@ -239,7 +239,7 @@ resume하며, 이전 전송 결과가 불명확한 메시지는 재전송하지 
 `idle`, `goal-complete`, 활성 goal의 idle도 `dv done` 기록이 없으면 브리프와
 push·PR·CI·리뷰 처리를 마치고 `dv done ISSUE`를 실행하라는 continuation을 한 번 보냅니다.
 이후 다시 idle인데 done이 없으면 마지막 에이전트 메시지를 포함해 blocked를 알립니다.
-질문 대기 중이거나 done이 기록된 작업은 자동 복구하지 않습니다.
+질문 대기 중이거나 현재 커밋의 done이 기록된 작업은 자동 복구하지 않습니다.
 
 멈춘 활성 turn은 interrupt가 수락되고 idle이 확인돼야 같은 thread에 `continue`를
 보냅니다. 복구 turn에서 새 item이나 delta가 오면 해당 복구 episode를 끝내고 다음

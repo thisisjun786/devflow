@@ -435,17 +435,26 @@ appserver_blocked() {
   cmd_kick blocked "$ISSUE" "$message${last:+; last agent message: $last}"
   touch "$S/appserver/blocked"
 }
+appserver_done_current() {
+  local head
+  [ -f "$S/done.json" ] || return 1
+  # Completion belongs to one revision. Keep older markers as history when a
+  # PR correction resumes the same job. If HEAD is unreadable, do not replay.
+  head=$(git -C "$WT" rev-parse HEAD) || return 0
+  jq -e --arg head "$head" '.head==$head' "$S/done.json" >/dev/null 2>&1
+}
 appserver_recover() {
   local id=$1 state last params reason text=continue count turn
   AS_CLASS=accepted AS_REPLY='{}'
   # A queued watch may outlive dv done or a prior recovery decision.
-  [ ! -f "$S/done.json" ] && [ ! -f "$S/appserver/blocked" ] || return 0
+  [ ! -f "$S/appserver/blocked" ] || return 0
+  if appserver_done_current; then return 0; fi
   jq -e '.status=="running" or .status=="pr"' "$S/meta" >/dev/null || return 0
   appserver_snapshot
   state=$(printf '%s\n' "$AS_SNAPSHOT" | jq -r .agent_status)
   AS_CLASS=accepted AS_REPLY='{}'
   printf '%s\n' "$AS_SNAPSHOT" | jq -e '.question_pending|not' >/dev/null || return 0
-  [ ! -f "$S/done.json" ] || return 0
+  if appserver_done_current; then return 0; fi
   case "$state" in
     failed)
       reason=failed
