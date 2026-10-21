@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# BASH_ENV: hold the wrapper at PID publication (old code) or its first read.
+# The FIFO fixes the interleaving without relying on scheduler timing.
+exec_launch_pause() {
+  [ ! -f "$S/launch-paused" ] || return 0
+  builtin printf '%s\n' "$$" > "$S/wrapper.pid"
+  touch "$S/launch-paused"
+  local release
+  read -r release < "$S/launch-release"
+  test "$release" = release
+}
+printf() {
+  if [ "${FUNCNAME[1]:-}" = run_agent ] && [ "${BACKEND:-}" = exec ]; then
+    exec_launch_pause
+  fi
+  # Preserve the intercepted printf format and arguments exactly.
+  # shellcheck disable=SC2059
+  builtin printf "$@"
+}
+jq() {
+  if [ "${FUNCNAME[1]:-}" = run_agent ] && [ "${BACKEND:-}" = exec ]; then
+    exec_launch_pause
+  fi
+  command jq "$@"
+}

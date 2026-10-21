@@ -101,8 +101,7 @@ launch_agent() {
   done < <(compgen -e)
   launcher=$(shell_join env "PATH=$PATH" "${env_args[@]}" "$DV_ROOT/bin/dv" _agent "$ISSUE" "$@")
   if [ "$BACKEND" = exec ]; then
-    nohup bash -c "$launcher" >> "$S/log" 2>&1 < /dev/null &
-    printf '%s\n' "$!" > "$S/agent.pid"
+    codex_exec_launch "$launcher"
   elif [ "$BACKEND" = herdr ]; then
     if [ "${1:-}" = --revived ] && [ "${REVIVE_PANE_EXISTS:-0}" = 1 ]; then
       herdr_cmd pane run "$HERDR_PANE" "$launcher"
@@ -120,7 +119,7 @@ run_agent() {
   export DV_ISSUE="$ISSUE"
   local agent mode override instruction rc=0 sentinel='' helper='' revived=0
   [ "${2:-}" != --revived ] || revived=1
-  printf '%s\n' "$$" > "$S/agent.pid"
+  [ "$BACKEND" = exec ] || printf '%s\n' "$$" > "$S/agent.pid"
   agent=$(jq -r .agent "$S/meta"); mode=$(jq -r .mode "$S/meta")
   override="DV_AGENT_CMD_$agent"; override=${!override}
   instruction="Read $S/brief.md and complete everything it asks. Finish with dv done $ISSUE."

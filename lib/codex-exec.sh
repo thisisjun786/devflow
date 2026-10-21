@@ -12,6 +12,27 @@ codex_default_mode() {
     esac
   else printf 'goal\n'; fi
 }
+codex_exec_launch() (
+  local launcher=$1 pidfile
+  # Serialize acceptance, including the gap before the wrapper takes .exec-lock.
+  owned_lock "$S/.exec-launch" "$$" || fail 'exec launch already in progress'
+  trap 'owned_unlock "$S/.exec-launch" "$$"' EXIT
+  if codex_exec_alive "$S"; then fail 'Codex exec is still running; send the follow-up after it exits'; fi
+  # Keep startup alive under the caller until the child PID is published. Never
+  # truncate a PID visible to status, and invalidate the previous completion
+  # before returning to a caller that might immediately wait or send again.
+  pidfile=$(mktemp "$S/.agent-pid.XXXXXX")
+  printf '%s\n' "$$" > "$pidfile"
+  mv "$pidfile" "$S/agent.pid"
+  rm -f "$S/agent.exit"
+  meta_set '.exec_status="working" | (if .status=="pr" or .status=="ready" then . else .status="running" end) | del(.done_at,.failure_reason)'
+  now > "$S/agent.activity"
+  # exec keeps the published PID for the full wrapper lifetime. run_agent must
+  # not rewrite it, even temporarily, while readers are checking liveness.
+  nohup bash -c "exec $launcher" >> "$S/log" 2>&1 < /dev/null &
+  printf '%s\n' "$!" > "$pidfile"
+  mv "$pidfile" "$S/agent.pid"
+)
 codex_exec_alive() {
   local pid
   [ -f "$1/agent.pid" ] || return 1
