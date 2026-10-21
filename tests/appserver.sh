@@ -331,6 +331,17 @@ case_appserver_failed() {
   jq -se 'any(.[];.kind=="blocked")' "$DV_STATE/AS-1/events.log"
   jq -se '[.[]|select(.method=="turn/start" and .params.input[0].text=="continue")]|length==1' "$CASE_DIR/server/requests"
 }
+case_appserver_retried_error() {
+  # Codex reports a retryable stream drop, then retries and completes the turn.
+  appserver_setup
+  printf 'complete\n' > "$CASE_DIR/server/goal"
+  printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"completed","items":[],"error":null}]}}' > "$CASE_DIR/server/thread.json"
+  printf '%s\n' '{"method":"error","params":{"error":{"message":"Reconnecting... 1/5"},"willRetry":true,"threadId":"thread-1","turnId":"turn-1"}}' > "$DV_STATE/AS-1/appserver/error.json"
+  dv status AS-1 --json | jq -e '.[0] | .agent_status=="goal-complete"'
+  # A final, non-retried error on the same completed turn still counts.
+  printf '%s\n' '{"method":"error","params":{"error":{"message":"fatal"},"willRetry":false,"threadId":"thread-1","turnId":"turn-1"}}' > "$DV_STATE/AS-1/appserver/error.json"
+  dv status AS-1 --json | jq -e '.[0] | .agent_status=="failed"'
+}
 case_appserver_stall() {
   appserver_setup
   printf 'idle\n' > "$CASE_DIR/server/status"

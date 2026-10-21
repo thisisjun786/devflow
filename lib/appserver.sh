@@ -197,7 +197,14 @@ appserver_snapshot() {
     turns:[.turns[-1] // empty | {id,status,error,items:[.items[]? | {id,type,status,error}]}]}')
   appserver_rpc thread/goal/get "$(jq -cn --arg thread "$AS_THREAD" '{threadId:$thread}')"
   if [ "$AS_CLASS" = accepted ]; then goal=$(printf '%s\n' "$AS_REPLY" | jq -c '.result.goal // null'); fi
-  if [ -f "$S/appserver/error.json" ]; then error=$(jq -c '.params.error // .params' "$S/appserver/error.json"); fi
+  if [ -f "$S/appserver/error.json" ]; then
+    # A retryable error (willRetry) followed by a completed turn was recovered
+    # by Codex itself; it must not keep the job "failed" and block land/clean.
+    error=$(printf '%s\n' "$thread" | jq -c --slurpfile e "$S/appserver/error.json" '
+      ($e[0].params // {}) as $p | (.turns[-1] // {}) as $turn |
+      if $p.willRetry==true and $turn.status=="completed" and ($p.turnId==null or $p.turnId==$turn.id)
+      then null else ($p.error // $p) end')
+  fi
   AS_SNAPSHOT=$(printf '%s\n%s\n%s\n%s\n' "$thread" "$goal" "$error" "$last" | jq -sc '
     .[0] as $thread | .[1] as $goal | .[2] as $error | .[3] as $last |
     ($thread.turns[-1] // {}) as $turn |
