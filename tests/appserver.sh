@@ -271,3 +271,55 @@ case_appserver_active_error_send() {
   jq -se '[.[]|select(.method=="turn/steer")]|length==1 and .[0].params.expectedTurnId=="turn-1"' "$CASE_DIR/server/requests"
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
 }
+case_appserver_interrupt_pending() {
+  appserver_setup
+  printf '2\n' > "$CASE_DIR/server/interrupt-polls"
+  printf '0\n' > "$DV_STATE/AS-1/appserver/activity"
+  dv _appserver-watch
+  jq -se '[.[]|select(.method=="turn/start" and .params.input[0].text=="continue")]|length==1' "$CASE_DIR/server/requests"
+  test ! -f "$DV_STATE/AS-1/appserver/blocked"
+}
+case_appserver_interrupt_timeout() {
+  appserver_setup
+  printf '100\n' > "$CASE_DIR/server/interrupt-polls"
+  printf '0\n' > "$DV_STATE/AS-1/appserver/activity"
+  dv _appserver-watch
+  test -f "$DV_STATE/AS-1/appserver/blocked"
+  dv _appserver-watch
+  jq -se '[.[]|select(.method=="turn/interrupt")]|length==1' "$CASE_DIR/server/requests"
+  jq -se '[.[]|select(.method=="turn/start" and .params.input[0].text=="continue")]|length==0' "$CASE_DIR/server/requests"
+}
+appserver_done_failure() {
+  local outcome=$1
+  appserver_setup
+  printf '%s\n' "$outcome" > "$CASE_DIR/server/finish-outcome"
+  if dv 'done' AS-1; then return 1; fi
+  test ! -f "$DV_STATE/AS-1/done.json"
+  test ! -f "$DV_STATE/AS-1/events.log"
+  jq -e '.status=="running"' "$DV_STATE/AS-1/meta"
+  rm "$CASE_DIR/server/finish-outcome"
+  dv 'done' AS-1
+  test -f "$DV_STATE/AS-1/done.json"
+  if [ "$outcome" = unknown ]; then
+    jq -se '[.[]|select(.method=="thread/goal/set" and .params.status=="complete")]|length==1' "$CASE_DIR/server/requests"
+  fi
+}
+case_appserver_done_refused() { appserver_done_failure refused; }
+case_appserver_done_unknown() { appserver_done_failure unknown; }
+case_appserver_land_active() {
+  appserver_setup
+  local wt before
+  wt=$(jq -r .worktree "$DV_STATE/AS-1/meta")
+  printf 'change\n' > "$wt/change"
+  git -C "$wt" add change
+  git -C "$wt" commit -qm 'AS-1: fake change'
+  dv 'done' AS-1
+  before=$(git -C "$REPO" rev-parse main)
+  if DV_TEST_CMD=true dv land AS-1; then return 1; fi
+  test "$(git -C "$REPO" rev-parse main)" = "$before"
+  jq -e '.status=="done"' "$DV_STATE/AS-1/meta"
+  printf 'idle\n' > "$CASE_DIR/server/status"
+  DV_TEST_CMD=true dv land AS-1
+  test -f "$REPO/change"
+  test ! -d "$wt"
+}

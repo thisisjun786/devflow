@@ -314,7 +314,7 @@ cmd_done() {
   fi
   require_worktree
   if [ "$BACKEND" = appserver ]; then
-    appserver_request finish >/dev/null || printf 'dv: goal completion is unconfirmed; inspect App Server receipts\n' >&2
+    appserver_request finish >/dev/null || fail 'App Server goal completion is unconfirmed; completion was not recorded (inspect receipts before retrying)'
   fi
   if [ "$BACKEND" = herdr ]; then
     herdr_snapshot || printf 'dv: warning: could not capture herdr log for %s\n' "$ISSUE" >&2
@@ -485,9 +485,7 @@ cmd_clean() {
 clean_worktree() {
   if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; fi
   if [ "$BACKEND" = appserver ]; then
-    local server
-    server=$(appserver_status "$ISSUE")
-    printf '%s\n' "$server" | jq -e '.agent_status=="goal-complete" or .agent_status=="idle" or .agent_status=="gone"' >/dev/null || fail 'App Server thread is active or uncertain; worktree retained'
+    appserver_require_idle
     if appserver_alive; then kill "$(cat "$S/appserver/client.pid")"; fi
   elif [ "$BACKEND" = herdr ]; then
     herdr_clean || fail 'herdr workspace not closed; worktree and saved id retained'

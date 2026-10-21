@@ -59,12 +59,23 @@ while IFS= read -r line; do
       if [ -f "$CASE_DIR/server/no-goal" ]; then
         jq -cn --argjson id "$id" '{id:$id,error:{code:-32601,message:"Method not found"}}'; continue
       fi
+      if [ "$method" = thread/goal/set ] && [ "$(printf '%s\n' "$line" | jq -r '.params.status')" = complete ] && [ -f "$CASE_DIR/server/finish-outcome" ]; then
+        outcome=$(cat "$CASE_DIR/server/finish-outcome")
+        if [ "$outcome" = refused ]; then
+          jq -cn --argjson id "$id" '{id:$id,error:{code:-32600,message:"goal completion refused"}}'; continue
+        elif [ "$outcome" = unknown ]; then printf 'complete\n' > "$CASE_DIR/server/goal"; continue; fi
+      fi
       if [ "$method" = thread/goal/set ]; then
         printf '%s\n' "$line" | jq -r '.params.status // "active"' > "$CASE_DIR/server/goal"
       fi
       goal=active; [ ! -f "$CASE_DIR/server/goal" ] || goal=$(cat "$CASE_DIR/server/goal")
       result=$(jq -cn --arg goal "$goal" '{goal:{status:$goal}}') ;;
     thread/read)
+      if [ -f "$CASE_DIR/server/interrupt-remaining" ]; then
+        remaining=$(cat "$CASE_DIR/server/interrupt-remaining")
+        if [ "$remaining" -gt 0 ]; then printf '%s\n' "$((remaining - 1))" > "$CASE_DIR/server/interrupt-remaining"
+        else printf 'idle\n' > "$CASE_DIR/server/status"; rm "$CASE_DIR/server/interrupt-remaining"; fi
+      fi
       status=$(cat "$CASE_DIR/server/status")
       if [ "$status" = gone ]; then
         jq -cn --argjson id "$id" '{id:$id,error:{code:-32600,message:"thread not found: thread-1"}}'; continue
@@ -84,7 +95,9 @@ while IFS= read -r line; do
       [ "$outcome" != unknown ] || continue
       if [ "$method" = turn/start ]; then result='{"turn":{"id":"turn-1","status":"inProgress","items":[]}}'
       else result='{"turnId":"turn-1"}'; fi ;;
-    turn/interrupt) printf 'idle\n' > "$CASE_DIR/server/status" ;;
+    turn/interrupt)
+      if [ -f "$CASE_DIR/server/interrupt-polls" ]; then cp "$CASE_DIR/server/interrupt-polls" "$CASE_DIR/server/interrupt-remaining"
+      else printf 'idle\n' > "$CASE_DIR/server/status"; fi ;;
     '')
       if [ ! -f "$CASE_DIR/server/answer-unknown" ]; then
         jq -cn --argjson id "$id" '{method:"serverRequest/resolved",params:{threadId:"thread-1",requestId:$id}}'

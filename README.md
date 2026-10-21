@@ -224,8 +224,10 @@ dv send APP-42 '{"requestId":42,"answers":{"format":{"answers":["JSON"]},"scope"
 키 입력 대신 JSON-RPC response를 보내며 `serverRequest/resolved`를 확인해야 accepted입니다.
 이 알림은 서버에서 요청이 해제됐다는 확인이며 답변이 모델에 실제 사용됐다는 보장은 아닙니다.
 질문 이벤트의 전달 실패는 같은 이벤트 ID로 재시도합니다. `dv done`은 지원되는 goal을
-complete로 표시하고 기존 완료 기록을 남깁니다. `dv clean`은 dirty worktree나 실행 중·불명확한
-thread를 보존합니다. 실제 provider를 사용하는 종단 검증은 합성 시험과 별도입니다.
+complete로 표시하고 기존 완료 기록을 남깁니다. 완료 응답이 불명확하거나 거절되면 done 기록과
+이벤트를 만들지 않습니다. 다시 done을 요청하면 먼저 서버의 goal을 읽어 이미 완료됐는지 확인합니다.
+`dv clean`은 dirty worktree나 실행 중·불명확한 thread를 보존하며, `dv land`도 병합 전에 같은
+서버 상태 조건을 확인합니다. 실제 provider를 사용하는 종단 검증은 합성 시험과 별도입니다.
 
 프로토콜은 [공식 Codex App Server 문서](https://developers.openai.com/codex/app-server/)와
 Codex가 생성하는 JSON schema를 기준으로 구현했습니다. 다른 relay의 코드는 포함하지 않습니다.

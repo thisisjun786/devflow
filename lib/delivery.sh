@@ -217,6 +217,7 @@ github_land_method() (
 cmd_land() {
   [ "$#" -eq 1 ] || fail 'usage: dv land ISSUE'
   load_issue "$1"; issue_lock; require_worktree; require_clean "$WT"
+  [ "$BACKEND" != appserver ] || appserver_require_idle
   if is_github; then
     local pr head method
     pr=$(jq -er .url "$S/pr.json"); head=$(git -C "$WT" rev-parse HEAD)

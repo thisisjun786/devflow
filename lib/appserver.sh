@@ -420,12 +420,38 @@ appserver_recover() {
       touch "$S/appserver/blocked"
       return 0
     fi
+    if ! appserver_wait_idle; then
+      AS_CLASS=refused AS_REPLY='{"error":{"message":"interrupted turn did not become idle before the deadline"}}'
+      cmd_kick blocked "$ISSUE" 'App Server interrupt completion is unconfirmed; continuation was not sent'
+      touch "$S/appserver/blocked"
+      return 0
+    fi
   fi
   appserver_deliver "$id" continue 1
   if [ "$AS_CLASS" != accepted ]; then
     cmd_kick blocked "$ISSUE" 'App Server continuation was not accepted; recovery will not be retried'
     touch "$S/appserver/blocked"
   fi
+}
+appserver_wait_idle() {
+  local deadline params
+  deadline=$(( $(now) + DV_APPSERVER_TIMEOUT ))
+  # This runs in the job client's scope, not appserver_status's read-only scope.
+  # shellcheck disable=SC2031
+  params=$(jq -cn --arg thread "$AS_THREAD" '{threadId:$thread,includeTurns:true}')
+  while :; do
+    appserver_rpc thread/read "$params"
+    if [ "$AS_CLASS" = accepted ] && printf '%s\n' "$AS_REPLY" | jq -e '
+      .result.thread.status.type=="idle" and all(.result.thread.turns[]?; .status!="inProgress")' >/dev/null; then return 0; fi
+    [ "$(now)" -lt "$deadline" ] || return 1
+    sleep 0.1
+  done
+}
+appserver_require_idle() {
+  local server
+  server=$(appserver_status "$ISSUE")
+  printf '%s\n' "$server" | jq -e '.agent_status=="goal-complete" or .agent_status=="idle" or .agent_status=="gone"' >/dev/null ||
+    fail 'App Server thread is active or uncertain; worktree retained'
 }
 cmd__appserver_watch() (
   local path
