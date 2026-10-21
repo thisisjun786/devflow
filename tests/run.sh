@@ -1619,7 +1619,7 @@ source "$ROOT/tests/task.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_capacity task_missing_output task_watcher; do
+for name in task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_capacity task_missing_output task_watcher task_land_workspace; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?

@@ -155,3 +155,17 @@ case_task_watcher() {
   test ! -e "$DV_STATE/TK-1/pr.json"
   test ! -f "$GH_STUB_DIR/calls"
 }
+case_task_land_workspace() {
+  needs_tmux; task_setup
+  # The brief may intentionally deliver new results into its input workspace.
+  # A destination alias must still preserve every existing input and bundle.
+  ln -s "$CASE_DIR/Desk project" "$CASE_DIR/destination-alias"
+  printf 'Destination: %s/destination-alias\n\nProduce a summary.\n' "$CASE_DIR" > "$CASE_DIR/task-brief"
+  mkdir "$CASE_DIR/Desk project/TK-1"
+  printf 'older result\n' > "$CASE_DIR/Desk project/TK-1/summary.txt"
+  task_start; wait_done TK-1
+  dv land TK-1 --checked "$(jq -r .head "$DV_STATE/TK-1/done.json")"
+  test "$(cat "$CASE_DIR/Desk project/input.txt")" = 'original input'
+  test "$(cat "$CASE_DIR/Desk project/TK-1/summary.txt")" = 'older result'
+  test "$(cat "$CASE_DIR/Desk project/TK-1-v2/summary.txt")" = 'Summary citing input.txt'
+}
