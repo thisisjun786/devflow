@@ -323,8 +323,11 @@ while [ ! -e "$DV_HOME/stop" ]; do
     cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
     if self_update_landed "$line"; then update_requested=1; fi
   done
-  retry_pending
+  # Managers first: their batches hold events for every job in a repository,
+  # while retrying workers (stack-land waiting for CI, failed done handlers)
+  # would otherwise take every slot each pass and starve them (#126).
   manager_dispatch
+  retry_pending
   qa_dispatch
   # All events have durable cursor/pending state. Never run EXIT cleanup here:
   # workers, manager turns, QA and pull streams keep their existing handles.

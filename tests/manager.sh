@@ -87,6 +87,29 @@ case_manager_busy() {
   test ! -f "$CASE_DIR/hermes/overlap"
   test ! -f "$CASE_DIR/hermes/over-capacity"
 }
+case_manager_before_retries() {
+  # Due retries (stack-land waiting for CI on a remote host) must not take
+  # every slot ahead of a waiting manager batch on each pass (#126).
+  manager_setup
+  export DV_MAX_WORKERS=2
+  dv manager start "$REPO"
+  export SSH_POLISH_UNREACHABLE=hang
+  mkdir -p "$DV_HOME/pending"
+  local n rc=0
+  for n in r1 r2 r3; do
+    jq -cn --arg id "far:S-$n:stack-land:x" --arg issue "S-$n" '{id:$id,kind:"stack-land",issue:$issue,host:"far",head:"x",message:"Resume stacked job"}' > "$DV_HOME/pending/$n.json"
+    printf '0\n' > "$DV_HOME/pending/$n.retry"
+  done
+  manager_event M-1 "$REPO"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & local watcher=$!
+  manager_wait_calls 2 || rc=1
+  touch "$DV_HOME/stop"
+  # Release the held stack workers (fixture ssh sleeps) so the watcher exits.
+  local pidfile
+  for pidfile in "$DV_HOME"/pending/*.pid; do [ ! -f "$pidfile" ] || pkill -P "$(cat "$pidfile")" 2>/dev/null || true; done
+  wait "$watcher" || true
+  [ "$rc" = 0 ] && grep -qF 'M-1' "$CASE_DIR/hermes/prompt-2"
+}
 case_manager_notice() { case_manager_busy notice; }
 case_manager_busy_default() {
   manager_setup
