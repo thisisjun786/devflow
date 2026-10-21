@@ -129,18 +129,15 @@ appserver_read_line() {
   # Read one complete JSON-RPC line from fd 8 within $1 seconds. Bash `read`
   # returns partial input on timeout; keep it and continue, so a multi-MB
   # thread/read reply is assembled instead of dropped one second at a time.
-  local deadline=$(( $(now) + $1 )) chunk rc
+  # Bash 3.2 reports both timeout and EOF as status 1, so a non-zero status
+  # only means "no newline yet"; callers detect a dead server via kill -0.
+  local deadline=$(( $(now) + $1 )) chunk
   AS_LINE=${AS_PARTIAL:-}; AS_PARTIAL=''
   while :; do
-    chunk=''; rc=0
-    IFS= read -r -t 1 chunk <&8 || rc=$?
+    chunk=''
+    if IFS= read -r -t 1 chunk <&8; then AS_LINE+=$chunk; return 0; fi
     AS_LINE+=$chunk
-    if [ "$rc" = 0 ]; then return 0; fi
-    if [ "$rc" -le 128 ]; then
-      # EOF: a final unterminated fragment is not a complete message.
-      AS_LINE=''; return 1
-    fi
-    if [ "$(now)" -gt "$deadline" ]; then AS_PARTIAL=$AS_LINE; AS_LINE=''; return 1; fi
+    if [ "$(now)" -ge "$deadline" ]; then AS_PARTIAL=$AS_LINE; AS_LINE=''; return 1; fi
   done
 }
 appserver_rpc() {
