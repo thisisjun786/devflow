@@ -23,6 +23,7 @@ watch_auto_update=$DV_AUTO_UPDATE
 # Child CLI calls must not pull while their parent is dispatching an event.
 export DV_AUTO_UPDATE=0
 need jq
+disk_settings
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
 [[ "$DV_METRICS_INTERVAL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_METRICS_INTERVAL must be positive seconds'
@@ -53,6 +54,7 @@ self_update_watch_version "$watch_commit"
 finish() {
   local pid
   metrics_stop
+  disk_stop
   for pid in $pull_pids; do if is_pull "$pid"; then kill "$pid" 2>/dev/null || true; fi; done
   for pid in $pids; do
     # After exec, bash no longer has the old child job table.
@@ -73,6 +75,11 @@ unset DV_WATCH_LAST_SCAN
 update_requested=0
 last_appserver_scan=0
 last_metrics=0
+last_disk=0
+# Host-local clocks own the 30-minute cadence. Check due hosts more often so
+# a restart or slow pass cannot postpone maintenance for another full period.
+disk_tick=$DV_DISK_INTERVAL
+[ "$disk_tick" -le 60 ] || disk_tick=60
 # Remote dev hosts: one dv-kick-pull stream per host, restarted with a back-off when it ends.
 pull_pids=''
 # A pid counts as our stream only if it is still alive AND still runs dv-kick-pull (pids are reused).
@@ -236,6 +243,10 @@ while [ ! -e "$DV_HOME/stop" ]; do
   reap
   qa_recover
   pulls
+  if [ $(( $(now) - last_disk )) -ge "$disk_tick" ]; then
+    disk_start
+    last_disk=$(now)
+  fi
   if [ $(( $(now) - last_appserver_scan )) -ge "$DV_APPSERVER_POLL" ]; then
     for appserver_host in $DV_HOSTS; do
       if [ "$appserver_host" = "$DV_HOST" ]; then

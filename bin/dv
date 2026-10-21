@@ -49,6 +49,9 @@ case "$command" in
   metrics) cmd_metrics "$@" ;;
   _metrics-sample) cmd__metrics_sample "$@" ;;
   _metrics-collect) cmd__metrics_collect "$@" ;;
+  _disk-maintain) cmd__disk_maintain "$@" ;;
+  _disk-prune) cmd__disk_prune "$@" ;;
+  _disk-collect) cmd__disk_collect "$@" ;;
   _agent) run_agent "$@" ;;
   _appserver-run) cmd__appserver_run "$@" ;;
   _appserver-watch) cmd__appserver_watch "$@" ;;

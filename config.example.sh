@@ -63,6 +63,9 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_MANAGER_MAX_WAIT:=120}" # busy seconds before other issues use plain workers
 : "${DV_MAX_JOBS:=}" # host capacity; empty = max(1, floor(logical cores / 8))
 : "${DV_MIN_MEMORY_MB:=512}" # reject bids below this available memory
+: "${DV_MIN_DISK_GB:=15}" # work/cache free GiB; reject either below this, penalize below 2x
+: "${DV_CACHE_TRIM_DAYS:=2}" # trim Go build files not accessed for this many days
+: "${DV_DISK_INTERVAL:=1800}" # dv-watch disk safety pass, seconds
 : "${DV_REPO_ROOT:=$HOME/code}" # existing clones, or clone destination after an award
 : "${DV_BID_TIMEOUT:=10}" # seconds per read-only SSH bid/auth probe
 : "${DV_AWARD_TIMEOUT:=90}" # seconds to confirm agent startup

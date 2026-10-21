@@ -7,6 +7,7 @@ setup() {
   CASE_DIR=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-test.XXXXXX")
   export CASE_DIR
   export HOME="$CASE_DIR/agent home"
+  export GOCACHE="$HOME/.cache/go-build"
   mkdir -p "$HOME/.claude"
   printf '{"hasCompletedOnboarding":true}\n' > "$HOME/.claude.json"
   printf '{"skipDangerousModePermissionPrompt":true}\n' > "$HOME/.claude/settings.json"
@@ -31,14 +32,36 @@ setup() {
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
   trap teardown EXIT
 }
+teardown_stop_pidfile() {
+  local pidfile=$1 pid attempt state
+  [ -f "$pidfile" ] || return 0
+  pid=$(cat "$pidfile" 2>/dev/null) || return 0
+  if ! [[ "$pid" =~ ^[1-9][0-9]*$ ]] || [ "$pid" -le 1 ] || [ "$pid" = "$$" ]; then
+    printf 'Refusing invalid fixture PID: %s\n' "$pidfile" >&2
+    return 1
+  fi
+  kill "$pid" 2>/dev/null || true
+  for attempt in {1..100}; do
+    state=$(ps -p "$pid" -o stat= 2>/dev/null | tr -d ' ') || state=''
+    if ! kill -0 "$pid" 2>/dev/null || [[ "$state" = Z* ]]; then
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    sleep 0.1
+  done
+  printf 'Fixture process %s did not stop: %s\n' "$pid" "$pidfile" >&2
+  return 1
+}
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
-  local pidfile
-  for pidfile in "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid; do
-    [ ! -f "$pidfile" ] || kill "$(cat "$pidfile")" 2>/dev/null || true
+  local pidfile rc=0
+  for pidfile in "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
+    teardown_stop_pidfile "$pidfile" || rc=1
   done
   if command -v tmux >/dev/null; then tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true; fi
-  if [ -f "$DV_HOME/watch.pid" ]; then kill "$(cat "$DV_HOME/watch.pid")" 2>/dev/null || true; fi
+  # Shutdown handlers can still publish receipts/exited markers after TERM.
+  # Preserve their directory if termination cannot be confirmed.
+  if [ "$rc" != 0 ]; then printf 'Retained live fixture: %s\n' "$CASE_DIR" >&2; return 1; fi
   if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$CASE_DIR"; else rm -rf "$CASE_DIR"; fi
 }
 repo() {
@@ -1642,12 +1665,18 @@ source "$ROOT/tests/metrics.sh"
 source "$ROOT/tests/pr-worker.sh"
 # shellcheck source=tests/self-update.sh
 source "$ROOT/tests/self-update.sh"
+# shellcheck source=tests/disk.sh
+source "$ROOT/tests/disk.sh"
 # shellcheck source=tests/stack.sh
 source "$ROOT/tests/stack.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
 for name in update_cli update_dirty update_landed update_safety update_guard update_offline update_watch_dirty update_host update_managed update_parallel update_timeout update_unrelated update_receipt; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cache_guard disk_cache_alias_guard disk_cache_canonical disk_cache_newline disk_env_cache_newline disk_home_newline disk_custom_cache disk_go_env_cache disk_separate_filesystems disk_unknown disk_award disk_bsd_stat disk_worktrees disk_host disk_watch disk_start_interval disk_watch_due teardown_wait_client teardown_preserve_live_client; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
