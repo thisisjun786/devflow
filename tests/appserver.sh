@@ -210,6 +210,9 @@ case_appserver_goal_override() {
   export DV_CODEX_MODE=auto DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive"
   dv start "$REPO" AS-1 override --mode goal
   wait_file "$DV_STATE/AS-1/done.json"
+  # done.json is published before metrics and the terminal metadata update.
+  # The completion event is emitted after both, so teardown cannot race them.
+  wait_file "$DV_STATE/AS-1/events.log"
   jq -e '.backend=="tmux" and .mode=="goal" and .status=="done"' "$DV_STATE/AS-1/meta"
   dv clean AS-1
 }
