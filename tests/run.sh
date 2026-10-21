@@ -1727,9 +1727,11 @@ STUB
   ln "$DV_STATE/.admission-lock/pid-$$" "$DV_STATE/.admission-lock/owner"
   if award_request LOCK-3 | bid_limit 1 bid_rpc "$DV_HOST" _award > "$CASE_DIR/live-owner.json"; then return 1; fi
   test -f "$DV_STATE/.admission-lock/pid-$$"
-  rm "$DV_STATE/.admission-lock/pid-$$"
-  rm "$DV_STATE/.admission-lock/owner"
-  rmdir "$DV_STATE/.admission-lock"
+  test "$DV_STATE/.admission-lock/pid-$$" -ef "$DV_STATE/.admission-lock/owner"
+  # Cancellation can leave the contender's PID marker. Release only our claim;
+  # the disposable fixture teardown removes any remaining unowned markers.
+  owned_unlock "$DV_STATE/.admission-lock" "$$"
+  test ! -e "$DV_STATE/.admission-lock/owner"
 }
 bid_without_tmux() {
   cat > "$CASE_DIR/no-tmux-env" <<'NO_TMUX'
