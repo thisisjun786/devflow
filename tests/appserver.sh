@@ -209,7 +209,8 @@ case_appserver_goal_override() {
   needs_tmux; repo goal-override
   export DV_CODEX_MODE=auto DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive"
   dv start "$REPO" AS-1 override --mode goal
-  wait_file "$DV_STATE/AS-1/done.json"
+  # The done event follows the metadata update; done.json precedes it.
+  wait_file "$DV_STATE/AS-1/events.log"
   jq -e '.backend=="tmux" and .mode=="goal" and .status=="done"' "$DV_STATE/AS-1/meta"
   dv clean AS-1
 }
