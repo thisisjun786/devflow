@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${SSH_POLISH_UNREACHABLE:-0}" != 0 ]; then
+  printf '%s\n' "$*" >> "$CASE_DIR/polish-ssh-calls"
+  [ "$SSH_POLISH_UNREACHABLE" != hang ] || exec sleep 30
+  echo 'Permission denied (publickey)' >&2
+  exit 255
+fi
 if [ "${SSH_BIDDING:-0}" = 1 ]; then
   while [ "$#" -gt 0 ]; do
     case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac
@@ -23,9 +29,11 @@ if [ "${SSH_BIDDING:-0}" = 1 ]; then
   exec env DV_CONFIG="$CASE_DIR/hosts/$host/config" bash -c "$*"
 fi
 if [ -n "${SSH_POLISH_PATH:-}" ]; then
-  test "$#" = 4 && test "$1" = -o && test "$2" = BatchMode=yes && test "$3" = lina-os
+  test "$#" = 8 && test "$1" = -o && test "$2" = BatchMode=yes
+  test "$3" = -o && test "$4" = ConnectTimeout=5
+  test "$5" = -o && test "$6" = ConnectionAttempts=1 && test "$7" = lina-os
   touch "$CASE_DIR/polish-ssh"
-  exec env PATH="$SSH_POLISH_PATH" bash -c "$4"
+  exec env PATH="$SSH_POLISH_PATH" bash -c "$8"
 fi
 # Default: a remote `dv status --json`. With SSH_FIXTURE_EXEC=1, run the remote command
 # locally as the "remote host", whose DV_HOME is $CASE_DIR/remote-home.
