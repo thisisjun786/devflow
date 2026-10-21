@@ -85,6 +85,7 @@ manager_turn() {
   local dir=$1 prompt=$2 log=$3 session next='' rc=0 fresh
   session=$(jq -r '.session_id // empty' "$dir/meta.json")
   if [ -n "$session" ]; then
+    [ -z "${METRICS_MANAGER_BATCH:-}" ] || metrics_manager_resumes "$METRICS_MANAGER_BATCH"
     manager_call "$dir" "$prompt" "$session" "$log.resume" || rc=$?
     next=$(manager_session_id "$log.resume.err")
     if [ "$rc" = 0 ] && [ -n "$next" ]; then
@@ -333,6 +334,7 @@ cmd__manager_run() (
   trap 'manager_unlock "$dir"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  local METRICS_MANAGER_BATCH="$dir/run.lock/batch.json"
   log="${job%.json}"
   prompt="$log.batch.prompt.md"
   {
@@ -355,7 +357,7 @@ cmd__manager_run() (
   while IFS= read -r item; do
     record=$(jq -r .job <<< "$item")
     manager_event_result "$item" manager "$rc" >> "$dir/events.log"
-    if [ "$rc" = 0 ]; then mv "$record" "${record%.json}.done"
+    if [ "$rc" = 0 ]; then metrics_handled "$(jq -c .event <<< "$item")"; mv "$record" "${record%.json}.done"
     else mv "$record" "$dir/failed/$(basename "$record")"; fi
   done < <(jq -c '.[]' "$dir/run.lock/batch.json")
   while IFS= read -r record; do

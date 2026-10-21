@@ -94,6 +94,7 @@ codex_exec_run() {
       if [ -s "$S/agent.session" ]; then
         session=$(cat "$S/agent.session")
         args+=(resume --json --dangerously-bypass-approvals-and-sandbox "$session")
+        metrics_note resume
       else args+=(--json --dangerously-bypass-approvals-and-sandbox); fi
       export DV_AGENT_INSTRUCTION="$instruction"
       "${args[@]}" "$instruction" >> "$S/agent.jsonl" 2>> "$S/agent.stderr" < /dev/null & exec_child=$!
@@ -126,6 +127,7 @@ codex_exec_run() {
     meta_set --arg reason "$exec_reason" '.exec_status=(if $reason|startswith("stalled:") then "stalled" elif $reason|startswith("failed-to-finish:") then "failed-to-finish" else "failed" end) | .failure_reason=$reason'
     if [ ! -f "$S/exec-retry.used" ]; then
       printf '%s\n' "$run" > "$S/exec-retry.used"
+      metrics_note revive
       # A failed event is terminal for the scheduler. Keep the retry local so
       # it cannot consume/deduplicate the eventual terminal failure event.
       printf '%s; retrying once in the same worktree\n' "$exec_reason" >> "$S/log"
