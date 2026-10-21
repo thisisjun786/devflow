@@ -39,7 +39,10 @@ task_submit() {
     if ! codex_repo_allowed "$REPO" || ! codex_environment; then fail 'Codex workspace trust or provider environment is not ready'; fi
   fi
   BACKEND=tmux
-  if [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then
+    BACKEND='exec'
+    [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be a positive integer'
+  elif [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
   mkdir -p "$DV_STATE" "$DV_WORK"
   S="$DV_STATE/$ISSUE"; SESSION="dv-$ISSUE"; BRANCH=''; BASE=''; KIND=task
   [ ! -e "$S" ] && [ ! -L "$S" ] || fail 'issue state already exists'
@@ -69,6 +72,10 @@ task_submit() {
     '{kind:"task",issue:$issue,repo:$repo,worktree:$worktree,branch:"",base:"",start_head:$start_head,
       agent:$agent,mode:$mode,slug:$slug,destination:$destination,host:$host,backend:$backend,started:$started,status:"running"}' > "$S/meta"
   : > "$S/log"
+  if [ "$BACKEND" = exec ] && ! task_codex_trust; then
+    meta_set '.status="start-failed"'
+    fail 'Codex persisted task folder trust is not ready'
+  fi
   if ! launch_agent; then
     meta_set '.status="start-failed"'
     fail "$BACKEND startup failed; task files retained"
@@ -123,6 +130,10 @@ task_land() {
     jq -r .landed_path "$S/meta"; return
   fi
   [ "$(jq -r .status "$S/meta")" = 'done' ] || fail 'task is not ready to land'
+  if [ "$BACKEND" = exec ]; then
+    ! codex_exec_alive "$S" || fail 'task exec is still running'
+    [ "$(jq -r .exec_status "$S/meta")" = 'done' ] || fail 'task exec did not finish successfully'
+  fi
   manifest=$(task_manifest "$WT/out" "$S/report.md") || return 1
   [ "task-$(printf '%s\n' "$manifest" | task_hash)" = "$checked" ] || fail 'task changed since done; inspect it and run dv done again'
   destination=$(jq -r .destination "$S/meta")
@@ -148,7 +159,9 @@ task_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean TASK'
   load_issue "$1"; issue_lock
   # Without Git there is no safe dirty check. Close the terminal, retain files.
-  if [ "$BACKEND" = herdr ]; then herdr_clean || fail 'task terminal was not closed'
+  if [ "$BACKEND" = exec ]; then
+    ! codex_exec_alive "$S" || fail 'task exec is still running; files retained'
+  elif [ "$BACKEND" = herdr ]; then herdr_clean || fail 'task terminal was not closed'
   else tmux_dv kill-session -t "=$SESSION" 2>/dev/null || true; fi
   meta_set --argjson time "$(now)" '.cleaned_at=$time'
   printf 'Task files retained: %s\n' "$WT"

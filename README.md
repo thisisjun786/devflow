@@ -15,7 +15,7 @@ dv send TK-1 '출처를 보완하고 같은 작업을 마무리하세요'
 
 브리프에는 한 줄짜리 `Destination: /absolute/path`와 완료 조건을 씁니다. task는 제출한 호스트에서 실행하고 같은 호스트의 목적지로 전달합니다. 호스트 입찰·원격 파일 전송은 하지 않으며, GitHub 이슈 없이 브리프와 `TK-<n>` 식별자만으로 실행할 수 있습니다. 기존 코드 제출은 그대로입니다(`--kind code`도 가능).
 
-새 임시 작업 폴더와 빈 `out/`를 만들고 원래 workspace는 참고용 입력으로 안내합니다. 이는 파일시스템 샌드박스가 아닙니다. Codex는 exec와 `--skip-git-repo-check`, Claude는 기존 실행 경로를 사용합니다. Codex의 원래 workspace는 `DV_TRUSTED_REPOS`에 등록되어 있어야 하며, 해당 작업 폴더에만 신뢰를 이어 줍니다. 같은 로컬 수용량, 터미널, 상태·경과 시간·파일 수, 완료 이벤트와 한 번의 revive를 사용합니다. 로컬 슬롯이 없으면 제출을 거절하며, task 상태는 `dv status`에서 봅니다(`dv queue`는 호스트 입찰용).
+새 임시 작업 폴더와 빈 `out/`를 만들고 원래 workspace는 참고용 입력으로 안내합니다. 이는 파일시스템 샌드박스가 아닙니다. Codex는 터미널 없이 기존 JSON exec 감독 경로와 `--skip-git-repo-check`를 사용하며, `DV_STALL_AFTER`와 한 번의 자동 재시도를 그대로 적용합니다. Claude와 사용자 지정 실행 명령은 기존 herdr/tmux·revive 경로를 사용합니다. Codex의 원래 workspace는 `DV_TRUSTED_REPOS`에 등록되어 있어야 하며, 해당 작업 폴더에만 신뢰를 이어 줍니다. 같은 로컬 수용량, 상태·경과 시간·파일 수와 완료 이벤트를 사용합니다. 로컬 슬롯이 없으면 제출을 거절하며, task 상태는 `dv status`에서 봅니다(`dv queue`는 호스트 입찰용).
 
 에이전트는 `out/`에 일반 파일을 만들고 `$DV_STATE/<ISSUE>/report.md`에 산출물·출처·미해결 사항을 쓴 뒤 `dv done <ISSUE>`를 실행합니다. 빈 산출물, 누락/빈 보고서, 심볼릭 링크·특수 파일은 완료를 거절합니다. done의 head는 산출물 경로·내용과 보고서의 SHA-256이며 수정되면 다시 완료·확인해야 합니다.
 
@@ -78,7 +78,15 @@ dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야
 
 GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고 squash → merge commit → rebase 순으로 선택합니다. `DV_LAND_METHOD=squash|merge|rebase`를 환경변수 또는 작업 worktree의 `.devflow`에 지정하면 해당 방식을 사용합니다(비어 있지 않은 환경변수가 우선). 예: `DV_LAND_METHOD=merge dv land APP-42`. 잘못된 값, 저장소가 허용하지 않는 지정값, 허용 방식 없음, 조회 실패 시 병합하지 않고 worktree를 보존합니다. 현재 PR head 고정과 병합 후 MERGED 확인은 그대로 적용됩니다. 로컬 저장소는 기존 `DV_LAND_MODE`를 사용합니다.
 
-herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 `dv start`가 포커스를 바꾸지 않고 `dv-<ISSUE>` workspace에서 에이전트를 직접 실행합니다(Codex hooks 유지). send·status·clean/land는 기록된 backend를 따르며 herdr 로그는 done/clean 시 화면을 저장합니다. 미설치 또는 `DV_HERDR=0`이면 tmux를 사용하고, 기존 backend 없는 이슈도 tmux로 처리합니다. herdr 시작 오류는 상태를 보존하고 실패를 알립니다.
+Codex 기본 모드는 `DV_CODEX_MODE=exec`입니다. `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Claude·Devin 기본값은 goal입니다.
+
+goal과 사용자 지정 실행기는 herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 포커스를 바꾸지 않고 `dv-<ISSUE>` workspace에서 실행합니다(Codex hooks 유지). send·status·clean/land는 기록된 backend를 따르며 herdr 로그는 done/clean 시 화면을 저장합니다. 미설치 또는 `DV_HERDR=0`이면 tmux를 사용하고, 기존 backend 없는 이슈도 tmux로 처리합니다. herdr 시작 오류는 상태를 보존하고 실패를 알립니다.
+
+exec의 `alive`는 래퍼 프로세스의 생존 여부입니다. 새 JSON 이벤트가 있으면 `agent_status=working`, `DV_STALL_AFTER`초(기본 600) 동안 새 이벤트가 없으면 stalled로 판단합니다. 비정상 종료·오류 이벤트·무응답 또는 `dv done` 없는 정상 종료(failed-to-finish)는 같은 worktree에서 한 번 자동 재시도하고 다시 실패하면 blocked를 알립니다. 기록된 세션 ID로 `codex exec resume`하며, ID를 받기 전 실패했다면 원래 요청을 담아 새 exec를 실행합니다. `exec/`에는 시도별 종료 코드·실패 이유·완료 표시를 보존합니다. 종료 코드 0만으로 완료 처리하지 않습니다.
+
+종료된 exec에 `dv send`를 보내면 같은 worktree·브랜치·세션에서 후속 exec를 실행합니다. 실행 중이면 중복 실행을 거절하므로 종료 후 다시 보내세요. 이전 done 기록은 보존하지만 새 실행도 `dv done`을 호출해야 합니다. 미커밋 변경·PR·`review-fix.sent`를 보존하고 자동 재시도는 이슈 전체에서 한 번만 허용합니다. `dv clean`은 실행 중인 exec와 dirty worktree를 보존합니다.
+
+자동 재시도 중의 실패는 로그에 남기며, 재시도를 소진하면 `agent.exit`를 기록한 뒤 `failed`와 `blocked` 이벤트를 보냅니다. 스케줄러는 최종 `failed`로 제출 작업의 실패를 확인하고 대기 작업을 다시 입찰합니다. 에이전트의 `dv done` 이후에도 CLI가 실패할 수 있으므로, `dv land`는 병합 전에 exec 래퍼의 종료, 종료 코드 0, 감독 상태 `done`을 모두 확인합니다. 정상·실패 반환과 신호 종료 시 exec 잠금을 해제합니다.
 
 herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있습니다. `dv send`는 전달 실패 후 에이전트 종료가 확인되면 같은 worktree·브랜치·에이전트 종류·실행 모드로 한 번 자동 재시작합니다. 요청 문장을 첫 입력에 넣고 기존 brief·보고서 경로를 함께 전달합니다. 미커밋 변경과 PR, `review-fix.sent`는 보존하며 같은 수정 요청을 이어가므로 두 번째 리뷰 수정으로 세지 않습니다.
 
@@ -90,7 +98,7 @@ Claude 기본 실행은 먼저 `~/.claude.json`의 `projects[worktree 경로].ha
 
 선택한 프로필의 `.claude.json`에서 `hasCompletedOnboarding`, `settings.json`에서 `skipDangerousModePermissionPrompt`가 모두 true여야 Claude를 띄웁니다. 환경 변수가 없거나 비어 있으면 각각 `~/.claude.json`과 `~/.claude/settings.json`을 읽습니다. 남은 온보딩이 있으면 `start-failed` 상태와 실패 이벤트를 남기며 화면에 키를 보내지 않습니다. 같은 `CLAUDE_CONFIG_DIR` 환경에서 `claude --dangerously-skip-permissions`를 한 번 대화형으로 실행해 테마·보안 안내·바이패스 경고를 끝내고 `dv host check`로 확인하세요. dv는 온보딩 플래그를 대신 설정하지 않습니다. `DV_AGENT_CMD_claude`로 전체 명령을 지정하면 이 준비 절차도 해당 명령에서 관리합니다.
 
-`DV_AGENT_QUESTIONS=sion`이 기본값이며 herdr에서 Codex의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 켜 둡니다. `DV_AGENT_QUESTIONS=off`이면 두 에이전트의 질문 도구를 끕니다. 질문 감시자가 없는 tmux에서는 항상 이 off 인자를 전달합니다. Codex goal·exec에 모두 적용하며, `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 질문 도구 설정도 해당 명령에서 정합니다.
+`DV_AGENT_QUESTIONS=sion`이 기본값이며 herdr에서 Codex goal의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 켜 둡니다. `DV_AGENT_QUESTIONS=off`이면 두 에이전트의 질문 도구를 끕니다. 질문 감시자가 없는 tmux와 백그라운드 exec에서는 항상 질문 도구를 끕니다. exec는 브리프의 지침에 따라 결정과 이유를 보고서에 기록합니다. `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 질문 도구 설정도 해당 명령에서 정합니다.
 
 에이전트는 브리프 안의 작거나 되돌릴 수 있는 선택을 직접 결정하고 보고서의 "결정"에 이유를 남깁니다. 설계 방향·범위·사용자에게 보이는 동작·데이터 형식처럼 결과를 바꾸는 선택만 시온에게 물으며, 선택지 2–3개와 추천안을 제시합니다. Codex의 `request_user_input_async`는 질문을 열어 둔 채 작업을 계속할 수 있으므로, 답에 의존하지 않는 작업은 진행합니다.
 
@@ -127,11 +135,13 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 ## 프로젝트 관리자
 
-`DV_MANAGER_HOST`(기본 lina-os)에서 `dv manager start ~/code/devflow`를 실행합니다. `DV_MANAGER_AGENT` 기본값과 지원 에이전트는 `hermes`입니다. start는 로그인된 `DV_HERMES_BIN`의 sion 프로필로 초기 역할 프롬프트를 한 번 실행하고 stderr의 `session_id:`를 저장합니다. 이후 같은 저장소의 이벤트는 `hermes -p sion chat -Q --yolo -t terminal,connections -s devflow --resume ID --query-file FILE`로 같은 대화를 이어갑니다. 매 이벤트마다 프로세스는 종료되며 대화 세션만 유지합니다.
+`DV_MANAGER_HOST`(기본 lina-os)에서 `dv manager start ~/code/devflow`를 실행합니다. `DV_MANAGER_AGENT` 기본값과 지원 에이전트는 `hermes`입니다. start는 로그인된 `DV_HERMES_BIN`의 sion 프로필로 초기 역할 프롬프트를 한 번 실행하고 stderr의 `session_id:`를 저장합니다. 이후 같은 저장소의 이벤트는 `hermes -p sion chat -Q --yolo -t terminal,connections -s devflow --resume ID --query-file FILE`로 같은 대화를 이어갑니다. 매 배치마다 프로세스는 종료되며 대화 세션만 유지합니다.
 
-관리자는 GitHub와 dv의 현재 상태에서 의존 이슈가 닫힌 작업을 milestone 순으로 골라 brief와 `dv submit`을 준비하고 빈 호스트 자리를 채웁니다. `templates/manager-prompt.md`가 참조하는 `templates/worker-prompt.md`를 초기 입력에 원문 그대로 포함합니다. 이벤트별 입력은 기존 worker 프롬프트입니다. 개발 호스트 worker와 기존 리뷰·병합 규칙은 그대로 사용합니다.
+관리자는 GitHub와 dv의 현재 상태에서 의존 이슈가 닫힌 작업을 milestone 순으로 골라 brief와 `dv submit`을 준비하고 빈 호스트 자리를 채웁니다. `templates/manager-prompt.md`가 참조하는 `templates/worker-prompt.md`를 초기 입력에 원문 그대로 포함합니다. 이후 입력에도 기존 worker 규칙을 포함하고, 해당 저장소의 대기 이벤트 전부를 한 배치로 보냅니다. 이슈별 최신 이벤트를 처리하며 이전 이벤트는 `superseded`와 `superseded_by`로 표시해 문맥으로만 읽습니다. 최신 순서는 이벤트의 `time`, 같은 시간이면 큐 순서로 정합니다. 실행 도중 도착한 이벤트는 다음 배치에 포함합니다.
 
-등록과 세션 ID는 `$DV_HOME/managers/<저장소 키>/meta.json`, 대기 이벤트는 `pending/`, 실행 결과는 `events.log`와 각 실행의 `.out`/`.err`에 남습니다. 저장소는 submission 또는 이슈 meta에서 찾으며 GitHub HTTPS/SSH URL을 같은 식별자로 정규화합니다. 원격 이슈는 설정된 `DV_HOSTS`에서만 상태와 origin을 조회하고 저장소 이름만으로 매칭하지 않습니다. 같은 저장소는 디스크 큐와 실행 잠금으로 한 번에 하나씩 처리합니다. 서로 다른 저장소와 기존 worker는 `DV_MAX_WORKERS` 한도 안에서 병렬 실행됩니다.
+등록과 세션 ID는 `$DV_HOME/managers/<저장소 키>/meta.json`, 대기 이벤트는 `pending/`, 실행 결과는 `events.log`와 각 실행의 `.out`/`.err`에 남습니다. 저장소는 submission 또는 이슈 meta에서 찾으며 GitHub HTTPS/SSH URL을 같은 식별자로 정규화합니다. 원격 이슈는 설정된 `DV_HOSTS`에서만 상태와 origin을 조회하고 저장소 이름만으로 매칭하지 않습니다. 같은 저장소의 관리자 배치는 디스크 큐와 실행 잠금으로 한 번에 하나씩 처리합니다. 서로 다른 저장소와 기존 worker는 `DV_MAX_WORKERS` 한도 안에서 병렬 실행됩니다.
+
+관리자 턴이 `DV_MANAGER_MAX_WAIT`(기본 120초)를 넘으면 그 턴과 다른 이슈의 대기 이벤트를 세션 없는 기존 worker 경로로 보냅니다. 관리자와 fallback worker를 합쳐 `DV_MAX_WORKERS`를 지키며, 같은 이슈가 실행 중이면 해당 이슈의 후속 이벤트는 기다립니다. `fallback/`에 전달을 먼저 보존하고 기존 worker 재시도·재시작 복구를 사용합니다. 성공 결과는 `notices/`에 저장해 관리자의 다음 입력에 덧붙입니다. 새 이벤트가 없어도 결과 전달을 위한 턴을 실행합니다. `events.log`의 `event_handled`에는 이벤트별 `event_id`, `event_time`, `handled_at`, `latency_seconds`(초), `route`(`manager` 또는 `fallback`), `exit_code`, `disposition`이 남습니다. 관리자 배치 실패도 종료 코드와 함께 기록하고, fallback 실패는 기존 worker 규칙으로 재시도하여 성공했을 때 기록합니다. 미래 시각의 이벤트는 지연을 0으로 기록합니다.
 
 재개가 실패하거나 세션 ID를 받지 못하면 실패를 기록하고 초기 역할과 해당 이벤트로 새 세션을 한 번 실행해 새 ID를 저장합니다. 새 실행까지 실패하면 이벤트를 `failed/`에 보관하며 자동으로 계속 재시도하지 않습니다. 재개 실패 전에 일부 동작이 실행됐을 수 있으므로 기존 worker의 head·중복·review-fix 확인 규칙이 계속 필요합니다. Hermes가 압축 후 새 ID를 반환하면 그 ID를 이어 사용합니다.
 
@@ -174,7 +184,7 @@ Codex 0.163의 폴더 온보딩은 CLI 신뢰 덮어쓰기만으로 생략되지
 
 비로그인 SSH와 오래된 터미널 서버에서도 인증을 준비하도록, Codex 입찰·시작·실제 에이전트 실행 때 호스트의 `DV_CODEX_ENV_FILE`을 읽습니다. 기본값은 `~/.opencodex/codex-auth-env.sh`이며 다른 인증을 쓰면 운영자가 경로를 지정하거나 빈 값으로 끌 수 있습니다. 이 파일은 신뢰할 수 있는 셸 코드여야 합니다. 활성 `model_provider`의 `env_key`가 비어 있으면 `login status`가 성공해도 입찰과 시작을 거절합니다. 파일에서 내보낸 인증 값은 에이전트에 상속하며 pane 명령이나 상태 파일에 넣지 않습니다. 터미널 서버 환경에만 의존하지 않도록 인증 변수는 이 파일에서 준비하세요.
 
-exec는 한 번 실행 후 성공할 때 래퍼가 done을 호출합니다. goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. `dv send`로 재시작한 goal은 이전 완료 기록과 별개로 새 `dv done`이 필요합니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리와 첫 입력인 `DV_AGENT_INSTRUCTION`을 받습니다.
+goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. `dv send`로 재시작한 goal은 이전 완료 기록과 별개로 새 `dv done`이 필요합니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리와 첫 입력인 `DV_AGENT_INSTRUCTION`을 받습니다. 사용자 지정 실행기와 이전 버전의 터미널 exec 작업은 기존 실행·완료·revive 동작을 유지합니다.
 
 ## 시험
 

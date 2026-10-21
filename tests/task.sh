@@ -110,15 +110,38 @@ case_task_native() {
   task_setup; herdr_setup
   export DV_CODEX_BIN="$ROOT/tests/fixtures/task-agent" DV_CLAUDE_BIN="$ROOT/tests/fixtures/task-agent"
   export DV_AGENT_CMD_claude='' DV_TRUSTED_REPOS="$CASE_DIR/Desk project"
-  task_start; wait_native TK-1
+  task_start; task_exec_wait TK-1
   jq -e '.args | index("exec")!=null and index("--skip-git-repo-check")!=null' "$DV_STATE/TK-1/task-agent.json"
-  rm "$CASE_DIR/herdr/w-TK-1/detected" "$CASE_DIR/herdr/w-TK-1/exit"
+  jq -e '.backend=="exec" and .exec_status=="done"' "$DV_STATE/TK-1/meta"
+  test ! -e "$CASE_DIR/herdr/calls"
   dv send TK-1 'Verify the sources once more'
-  wait_native TK-1
-  test -s "$DV_STATE/TK-1/revive/done"
+  task_exec_wait TK-1
+  jq -e '.args | index("resume")!=null and index("--skip-git-repo-check")!=null' "$DV_STATE/TK-1/task-agent.json"
+  dv land TK-1 --checked "$(jq -r .head "$DV_STATE/TK-1/done.json")"
+  dv clean TK-1
   dv submit --kind task "$CASE_DIR/Desk project" TK-2 summary --brief "$CASE_DIR/task-brief" --agent claude
   wait_native TK-2
   jq -e '.args | index("--dangerously-skip-permissions")!=null' "$DV_STATE/TK-2/task-agent.json"
+  test ! -f "$GH_STUB_DIR/calls"
+}
+task_exec_wait() {
+  wait_file "$DV_STATE/$1/agent.exit"
+  local i
+  for i in {1..100}; do
+    if dv status "$1" --json | jq -e '.[0].alive==false' >/dev/null; then return; fi
+    sleep 0.1
+  done
+  return 1
+}
+case_task_exec_stall() {
+  task_setup
+  export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/task-agent"
+  export DV_TRUSTED_REPOS="$CASE_DIR/Desk project" DV_STALL_AFTER=2 DV_TASK_TEST_HOLD=1
+  task_start; task_exec_wait TK-1
+  jq -e '.status=="blocked" and .exec_status=="blocked"' "$DV_STATE/TK-1/meta"
+  test -f "$DV_STATE/TK-1/exec-retry.used"
+  test "$(find "$DV_STATE/TK-1/exec" -name exit | wc -l | tr -d ' ')" = 2
+  jq -se 'map(.kind)==["failed","blocked"]' "$DV_STATE/TK-1/events.log"
   test ! -f "$GH_STUB_DIR/calls"
 }
 case_task_capacity() {
