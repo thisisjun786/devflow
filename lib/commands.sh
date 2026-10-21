@@ -365,6 +365,7 @@ cmd_done() {
     (if $pr_complete then {checks:"green",review:"handled"} else {} end) +
     (if $episode=="" then {} else {episode:$episode} end)' > "$tmp"
   mv "$tmp" "$S/done.json"
+  metrics_note 'done' "$head"
   if [ "$BACKEND" = exec ]; then
     local run
     run=$(jq -r '.exec_run // empty' "$S/meta")
@@ -381,7 +382,7 @@ cmd_done() {
 }
 cmd_kick() {
   [ "$#" -ge 2 ] || fail 'usage: dv kick kind ISSUE [message]'
-  local kind=$1 issue=$2 message=${3:-} head='' host=$DV_HOST rc=0 line remote event_id token=${DV_AWARD_TOKEN:-} episode=''
+  local kind=$1 issue=$2 message=${3:-} head='' host=$DV_HOST rc=0 line remote event_id event_time token=${DV_AWARD_TOKEN:-} episode=''
   valid_issue "$issue"; mkdir -p "$DV_STATE/$issue"
   if [ -f "$DV_STATE/$issue/meta" ]; then
     head=$(jq -r '.head // .start_head' "$DV_STATE/$issue/meta")
@@ -394,14 +395,15 @@ cmd_kick() {
   esac
   line=$(event_json "$kind" "$issue" "$message" "$host" "$head" '' "$token" "$episode")
   event_id=$(printf '%s\n' "$line" | jq -r .id)
+  event_time=$(printf '%s\n' "$line" | jq -r .time)
   if [ -z "$DV_KICK" ] && [ "$DV_KICK_HOST" = "$DV_HOST" ]; then
     # The watcher lives on this host: write to the local queue, no ssh to ourselves.
-    dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" "$token" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
+    dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" "$token" "$event_time" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   elif [ -n "$DV_KICK" ]; then
-    bash -c "$DV_KICK \"\$@\"" dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" "$token" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
+    bash -c "$DV_KICK \"\$@\"" dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" "$token" "$event_time" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   else
     # The remote shell often lacks ~/.local/bin: use the installed path explicitly.
-    remote=$(shell_join bash -lc "PATH=\$HOME/.local/bin:\$PATH $(shell_join dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" "$token")")
+    remote=$(shell_join bash -lc "PATH=\$HOME/.local/bin:\$PATH $(shell_join dv-kick "$kind" "$issue" "$message" "$host" "$head" "$event_id" "$token" "$event_time")")
     ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$DV_KICK_HOST" "$remote" >> "$DV_STATE/$issue/kick.log" 2>&1 || rc=$?
   fi
   printf '%s\n' "$line" | jq -c --argjson rc "$rc" '. + {delivered:($rc==0),exit:$rc}' >> "$DV_STATE/$issue/events.log"
@@ -526,6 +528,7 @@ revive_agent() {
     printf 'Do not create a new branch or force push. Finish with dv done %s.\n' "$ISSUE"
   } > "$S/revive/prompt.md"
   rm -f "$S/agent.exit" "$S/agent.pid"
+  metrics_note revive
   if ! launch_agent --revived; then
     printf '1\n' > "$S/agent.exit"
     revive_blocked 'could not start revived agent'
@@ -539,7 +542,7 @@ cmd_send() {
   if [ "$BACKEND" = exec ]; then codex_exec_send "$2"; return; fi
   # tmux can accept paste/Enter even when remain-on-exit retained a dead pane.
   if [ "$BACKEND" = tmux ] && agent_gone; then revive_agent "$2"; return; fi
-  if send_text "$2"; then return 0; fi
+  if send_text "$2"; then metrics_note resume; return 0; fi
   if agent_gone; then revive_agent "$2"; else return 1; fi
 }
 cmd_clean() {

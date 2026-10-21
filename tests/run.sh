@@ -1633,6 +1633,8 @@ source "$ROOT/tests/codex-exec-review.sh"
 source "$ROOT/tests/portability.sh"
 # shellcheck source=tests/qa.sh
 source "$ROOT/tests/qa.sh"
+# shellcheck source=tests/metrics.sh
+source "$ROOT/tests/metrics.sh"
 # shellcheck source=tests/pr-worker.sh
 source "$ROOT/tests/pr-worker.sh"
 main() {
@@ -1641,6 +1643,10 @@ pass=0; skip=0; fail=0
 for name in qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids qa_transport_retry qa_recovered_capacity qa_explicit_match qa_config_data qa_unbound_event qa_bound_event; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
   else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
+done
+for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart metrics_exec metrics_exec_events metrics_manager_batch metrics_manager_fallback metrics_timeout_snapshot; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
 for name in pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_no_rereview pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"

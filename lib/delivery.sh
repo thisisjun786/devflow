@@ -334,6 +334,7 @@ cmd_land() {
   else
     local_land
   fi
+  metrics_note merged "$(git -C "$WT" rev-parse HEAD)"
   meta_set '.status="landed"'
   clean_worktree
   cmd_kick landed "$ISSUE" 'Landed'

@@ -106,7 +106,7 @@ event_json() {
     if [ "$1" = question ]; then id="$id:${DV_QUESTION_EPISODE:-$(now):$$:$RANDOM}"; fi
   fi
   jq -cn --arg kind "$1" --arg issue "$2" --arg message "$3" --arg host "$4" --arg head "$5" \
-    --arg id "$id" --arg token "$token" --argjson time "$(now)" \
+    --arg id "$id" --arg token "$token" --argjson time "${9:-$(now)}" \
     '{id:$id,kind:$kind,issue:$issue,message:$message,host:$host,head:$head,time:$time} +
     (if $token=="" then {} else {token:$token} end)'
 }
@@ -127,3 +127,5 @@ session_enter() {
   if [ "$BACKEND" = herdr ]; then herdr_cmd pane send-keys "$HERDR_PANE" Enter >/dev/null
   else tmux_dv send-keys -t "$SESSION:0.0" Enter; fi
 }
+# shellcheck source=lib/metrics.sh
+source "$DV_ROOT/lib/metrics.sh"
