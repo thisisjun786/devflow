@@ -142,6 +142,8 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 대기 파일명은 `<cursor>-<event ID checksum>-<ID 길이>.json`입니다. 기존 숫자 슬롯과 새 슬롯 모두 실제 이벤트 ID를 비교해 재실행을 막습니다. 다른 이벤트가 차지한 슬롯은 `conflict/`에 보존하고 `queue_conflict`를 `events.log`와 `manager.log`에 기록합니다. 이미 실행 중인 배치나 fallback이 참조하는 파일은 사본을 보존하고 원래 경로에서 완료할 수 있게 둡니다. 새 이벤트는 다른 이름으로 계속 수신합니다. 운영자 메모는 큐 파일을 직접 만들지 않고 `dv manager note REPO FILE`로 넣습니다. `notices/note-*.json`에 파일 내용을 그대로 저장하며, 실행 중 도착한 메모는 다음 배치에서 fallback 처리 결과와 구분해 읽습니다.
 
+충돌한 파일이 정상 형식의 미처리 이벤트라면 보관본을 유지하면서 원래 `pending/` 또는 `fallback/` 큐에 별도 이름으로 복구합니다. 보관 직후 watcher가 재시작해도 이어서 복구하고, 이미 처리한 기록이 있으면 다시 실행하지 않습니다. 완료 기록이나 이벤트 형식을 갖추지 않은 수동 메모는 보관만 합니다.
+
 큐 처리가 실패해 같은 줄을 `DV_STALL_AFTER`초(기본 300) 넘게 재시도하면 `watcher-stuck` 이벤트를 기존 큐·이벤트 로그에 남기고 stderr와 `watch.log`에도 줄 번호·원인을 출력합니다. 한 멈춤 구간에 한 번 알리며, 커서가 진행하면 다음 멈춤을 다시 감지합니다. 큐가 비어 있는 유휴 상태에는 이 경보를 내지 않습니다. 경보 이벤트의 worker 전달은 막힌 줄이 풀린 뒤 이루어지므로, 멈춘 동안에는 stderr/로그로 확인할 수 있습니다.
 
 관리자 턴이 `DV_MANAGER_MAX_WAIT`(기본 120초)를 넘으면 그 턴과 다른 이슈의 대기 이벤트를 세션 없는 기존 worker 경로로 보냅니다. fallback worker는 `DV_MAX_WORKERS`를 지키며, 같은 이슈가 실행 중이면 해당 이슈의 후속 이벤트는 기다립니다. `fallback/`에 전달을 먼저 보존하고 기존 worker 재시도·재시작 복구를 사용합니다. 성공 결과는 `notices/`에 저장해 관리자의 다음 입력에 덧붙입니다. 새 이벤트가 없어도 결과 전달을 위한 턴을 실행합니다. `events.log`의 `event_handled`에는 이벤트별 `event_id`, `event_time`, `handled_at`, `latency_seconds`(초), `route`(`manager` 또는 `fallback`), `exit_code`, `disposition`이 남습니다. 관리자 배치 실패도 종료 코드와 함께 기록하고, fallback 실패는 기존 worker 규칙으로 재시도하여 성공했을 때 기록합니다. 미래 시각의 이벤트는 지연을 0으로 기록합니다.

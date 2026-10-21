@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fault injection after each library loads; used only with synthetic DV_HOME.
 # The watcher calls these injected library functions after sourcing this file.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 source() {
   builtin source "$@" || return
   case "$1:${WATCH_FAULT:-}" in

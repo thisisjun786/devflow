@@ -174,7 +174,7 @@ manager_note() (
   local dir tmp job
   dir=$(manager_dir "$1") || fail 'manager identity conflict'
   if [ ! -f "$dir/meta.json" ] || ! jq -e .enabled "$dir/meta.json" >/dev/null; then fail 'manager is not enabled'; fi
-  [ -f "$2" ] && [ -r "$2" ] || fail 'manager note needs a readable file'
+  if [ ! -f "$2" ] || [ ! -r "$2" ]; then fail 'manager note needs a readable file'; fi
   mkdir -p "$dir/notices"
   tmp=$(mktemp "$dir/notices/.note-XXXXXX") || return 1
   trap 'rm -f "$tmp"' EXIT
@@ -210,7 +210,7 @@ manager_event_repo() {
   fi
 }
 manager_conflict() {
-  local dir=$1 path=$2 id=$3 saved reserved=false slot
+  local dir=$1 path=$2 id=$3 saved reserved=false slot route=''
   # A running batch or durable fallback still refers to its original pathname.
   # Preserve an archival copy in that case; its owner must finish the receipt.
   if [ -f "$dir/run.lock/pid" ] && [ -f "$dir/run.lock/batch.json" ] &&
@@ -219,12 +219,50 @@ manager_conflict() {
   if [ -f "$slot.manager" ] && [ "$(cat "$slot.manager")" = "$path" ]; then reserved=true; fi
   mkdir -p "$dir/conflict" || return 2
   saved=$(mktemp -d "$dir/conflict/entry-XXXXXX") || return 2
+  case "$path" in
+    "$dir/pending/"*.json) route=pending ;;
+    "$dir/fallback/"*.json) route=fallback ;;
+  esac
+  # Genuine undelivered events must remain executable. Persist the recovery
+  # intent BEFORE the atomic move so a crash cannot strand the archived job.
+  # Hand-written notes/malformed records and terminal receipts stay archived.
+  if [ "$reserved" = false ] && [ -n "$route" ] && jq -e '.event |
+    all(.id,.host,.kind; type=="string" and length>0) and
+    (.issue | type=="string" and test("^[A-Za-z0-9][A-Za-z0-9_-]*$"))' "$path" >/dev/null; then
+    printf '%s\n' "$route" > "$saved/requeue" || return 2
+  fi
   saved="$saved/$(basename "$path")"
   if [ "$reserved" = true ]; then cp "$path" "$saved" || return 2
   else mv "$path" "$saved" || return 2; fi
   jq -cn --arg path "$path" --arg saved "$saved" --arg id "$id" --argjson reserved "$reserved" --argjson time "$(now)" \
     '{kind:"queue_conflict",path:$path,saved:$saved,event_id:$id,reserved:$reserved,time:$time}' >> "$dir/events.log" || return 2
   printf 'queue_conflict: %s preserved in %s (incoming %s)\n' "$path" "$saved" "$id" >&2
+}
+manager_conflict_recover() {
+  local marker archive dir route saved name job previous found tmp
+  for marker in "$DV_HOME"/managers/*/conflict/*/requeue; do
+    [ -f "$marker" ] || continue
+    archive=${marker%/requeue}; dir=${archive%/conflict/*}
+    route=$(cat "$marker") || return 1
+    case "$route" in pending|fallback) ;; *) return 1 ;; esac
+    for saved in "$archive"/*.json; do
+      [ -f "$saved" ] || continue
+      # Sort recovered work before new arrivals when event timestamps tie.
+      name="!recovered-$(basename "$archive")-$(jq -jr .event.id "$saved" | cksum | awk '{print $1 "-" $2}')"
+      job="$dir/$route/$name.json"; found=false
+      for previous in "$dir/pending/$name.json" "$dir/pending/$name.done" "$dir/failed/$name.json" \
+        "$dir/fallback/$name.json" "$dir/fallback/$name.done"; do
+        [ ! -f "$previous" ] || found=true
+      done
+      if [ "$found" = false ]; then
+        tmp=$(mktemp "$dir/.recovered-XXXXXX") || return 1
+        if ! cp "$saved" "$tmp" || ! ln "$tmp" "$job"; then rm -f "$tmp"; return 1; fi
+        rm -f "$tmp"
+      fi
+      # A crash before this rename finds the queued job or terminal receipt.
+      mv "$marker" "$archive/requeued" || return 1
+    done
+  done
 }
 manager_slot() {
   local dir=$1 name=$2 id=$3 previous occupied=1

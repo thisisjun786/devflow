@@ -245,3 +245,55 @@ case_watch_stuck_bid() { case_watch_stuck_route bid; }
 case_watch_stuck_stack() { case_watch_stuck_route stack; }
 case_watch_stuck_empty() { case_watch_stuck_route empty; }
 case_watch_stuck_worker() { case_watch_stuck_route worker; }
+case_manager_real_conflict() {
+  manager_setup
+  dv manager start "$REPO"
+  manager_event OLD "$REPO"
+  manager_functions
+  local dir old location=${1:-fallback} source_name
+  dir=$(dirname "$(manager_meta)"); old=$(cat "$DV_HOME/kick.q")
+  manager_enqueue "$old" "$CASE_DIR/brief" 0
+  source_name=$(manager_job_name 0 worker:OLD:pr-ready:abc)
+  mkdir -p "$dir/$location"
+  mv "$dir/pending/$source_name.json" "$dir/$location/00000000000000000000.json"
+  # Legacy work survives a reset cursor even if that line now names a new job.
+  : > "$DV_HOME/kick.q"
+  manager_event NEW "$REPO"
+  manager_watch_until 2
+  jq -se '[.[]|select(.kind=="event_handled")]|length==2 and
+    ([.[]|.event_id]|sort)==["worker:NEW:pr-ready:abc","worker:OLD:pr-ready:abc"]' "$dir/events.log"
+  test "$(cat "$DV_HOME/cursor")" = 1
+  # Replaying recovery after completed receipts cannot dispatch OLD twice.
+  manager_conflict_recover
+  test "$(find "$dir/pending" "$dir/fallback" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" = 0
+}
+case_manager_real_pending_conflict() { case_manager_real_conflict pending; }
+case_manager_conflict_restart() {
+  manager_setup
+  dv manager start "$REPO"
+  manager_event OLD "$REPO"
+  manager_functions
+  local dir old line source_name
+  dir=$(dirname "$(manager_meta)"); old=$(cat "$DV_HOME/kick.q")
+  manager_enqueue "$old" "$CASE_DIR/brief" 0
+  source_name=$(manager_job_name 0 worker:OLD:pr-ready:abc)
+  mkdir -p "$dir/fallback"
+  mv "$dir/pending/$source_name.json" "$dir/fallback/00000000000000000000.json"
+  : > "$DV_HOME/kick.q"
+  manager_event NEW "$REPO"
+  line=$(cat "$DV_HOME/kick.q")
+  manager_enqueue "$line" "$CASE_DIR/brief" 0
+  manager_conflict_recover
+  local marker
+  for marker in "$dir"/conflict/*/requeued; do
+    # Model a crash after publishing the job, before acknowledging recovery.
+    mv "$marker" "${marker%/requeued}/requeue"
+  done
+  # Restart before fallback restoration or cursor save.
+  manager_watch_until 2
+  jq -se '[.[]|select(.kind=="event_handled")]|length==2 and
+    ([.[]|.event_id]|sort)==["worker:NEW:pr-ready:abc","worker:OLD:pr-ready:abc"]' "$dir/events.log"
+  for marker in "$dir"/conflict/*/requeued; do mv "$marker" "${marker%/requeued}/requeue"; done
+  manager_conflict_recover
+  test "$(find "$dir/pending" "$dir/fallback" -name '*.json' | wc -l | tr -d ' ')" = 0
+}

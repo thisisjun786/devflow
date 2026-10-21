@@ -321,6 +321,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   done
   watch_stall "$stall_reason" "$line"
   # Resolve legacy slot conflicts before handing fallback records to workers.
+  manager_conflict_recover
   manager_fallback_recover
   retry_pending
   manager_dispatch
