@@ -21,7 +21,7 @@ herdr_start() {
   meta_set --arg pane "$pane" '.herdr_pane=$pane'
   # Match a prompt marker in the fresh pane without depending on line endings
   # or right-prompt decorations. Verified against herdr 0.9.1's Rust matcher.
-  herdr_cmd pane wait-output "$pane" --regex '[$#%>❯➜›]' --source recent-unwrapped --timeout "$((DV_START_WAIT * 1000))" >/dev/null || return 1
+  herdr_cmd pane wait-output "$pane" --regex '([$#%>]|❯|➜|›)' --source recent-unwrapped --timeout "$((DV_START_WAIT * 1000))" >/dev/null || return 1
   # agent start uses canonical executables; pane run preserves configured binaries,
   # DV_* environment and the _agent exit/done wrapper in the pane's own foreground.
   # This command is silent on success; its exit status is the acknowledgement.

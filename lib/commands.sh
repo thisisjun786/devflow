@@ -310,7 +310,7 @@ wait_codex_goal() {
           retried=1
           session_enter || true
         fi
-      elif printf '%s\n' "$screen" | grep -Eq '(^|[•*][[:space:]]+)Pursuing goal([[:space:]]|$)'; then
+      elif printf '%s\n' "$screen" | grep -Eq '(^|(•|[*])[[:space:]]+)Pursuing goal([[:space:]]|$)'; then
         [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
         return 0
       elif [ "$BACKEND" = herdr ] && agent=$(herdr_cmd agent get "$HERDR_PANE" 2>/dev/null) &&
@@ -518,10 +518,11 @@ cmd_status() {
         fi
         # The most recent visible goal banner wins if the old one is still on
         # screen. Explicit activity also resets a tmux stall (no herdr hooks).
+        # Keep multibyte markers outside bracket expressions for LC_ALL=C.
         goal_state=$(printf '%s\n' "$screen" | awk '
           /[Mm]odel is at capacity/ { state="stalled" }
-          /^[[:space:]│┃]*([•*][[:space:]]+)?Goal stalled([[:space:]:]|$)/ { state="stalled" }
-          /^[[:space:]│┃]*([•*][[:space:]]+)?(Pursuing goal|Working)([[:space:]:.]|$)/ { state="active" }
+          /^([[:space:]]|│|┃)*((•|[*])[[:space:]]+)?Goal stalled([[:space:]:]|$)/ { state="stalled" }
+          /^([[:space:]]|│|┃)*((•|[*])[[:space:]]+)?(Pursuing goal|Working)([[:space:]:.]|$)/ { state="active" }
           END { print state }')
         case "$goal_state" in stalled) goal_stalled=true ;; active) goal_active=true ;; esac
       fi
