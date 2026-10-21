@@ -53,6 +53,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_HOSTS=lina-os hx-linux amd-linux go2-linux}" # SSH aliases for status/bidding; add gos-linux explicitly as the last fallback
 : "${DV_MANAGER_HOST:=lina-os}" # submit/queue manager, independent of the local kick host
 : "${DV_MANAGER_AGENT:=hermes}" # persistent per-repository Hermes session
+: "${DV_MANAGER_MAX_WAIT:=120}" # busy seconds before other issues use plain workers
 : "${DV_MAX_JOBS:=}" # host capacity; empty = max(1, floor(logical cores / 8))
 : "${DV_MIN_MEMORY_MB:=512}" # reject bids below this available memory
 : "${DV_REPO_ROOT:=$HOME/code}" # existing clones, or clone destination after an award
