@@ -141,11 +141,11 @@ case_pr_worker_revive_exec() {
 }
 case_pr_worker_exit_race() {
   cat > "$CASE_DIR/waiter-race-env" <<'STUB'
-DV_RACE_WAITER=0
-[ "${1:-}" != pr-wait ] || DV_RACE_WAITER=1
 kill() {
   builtin kill "$@" || return $?
-  if [ "$DV_RACE_WAITER" = 1 ] && [ "$#" = 2 ] && [ "$1" = -0 ] &&
+  # Bash 3.2 has not populated script arguments while sourcing BASH_ENV.
+  # Inspect dv's parsed command when the hook actually runs instead.
+  if [ "${command:-}" = pr-wait ] && [ "$#" = 2 ] && [ "$1" = -0 ] &&
     [ "$2" = "$(cat "$DV_STATE/PW-1/agent.pid" 2>/dev/null)" ] &&
     [ -f "$DV_STATE/PW-1/pr-ready.json" ] && mkdir "$DV_STATE/PW-1/race-once" 2>/dev/null; then
     touch "$DV_STATE/PW-1/live-checked"

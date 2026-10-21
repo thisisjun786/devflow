@@ -54,16 +54,19 @@ appserver_ws_frame() {
   else cat "$file"; fi
 }
 appserver_ws_send() {
-  local masked=$1 line rc file pending=''
+  local masked=$1 first line rc file
   while :; do
-    rc=0
-    IFS= read -r -t 1 line || rc=$?
-    pending=$pending$line
+    # Bash 3.2 returns 1 and leaves the variable untouched on timeout; EOF
+    # clears it. Poll one character so a timeout cannot discard a partial
+    # record, then read the rest of our internal JSON line without a timeout.
+    rc=0; first=timeout
+    IFS= read -r -n 1 -t 1 first || rc=$?
     if [ "$rc" = 0 ]; then
-      printf '%s' "$pending" > "$AS_IO/send.payload"
+      line=''
+      if [ -n "$first" ]; then IFS= read -r line || return 0; fi
+      printf '%s%s' "$first" "$line" > "$AS_IO/send.payload"
       appserver_ws_frame "$AS_IO/send.payload" 1 "$masked" || return 1
-      pending=''
-    elif [ "$rc" -le 128 ]; then return 0; fi
+    elif [ "$rc" -le 128 ] && [ "$first" != timeout ]; then return 0; fi
     for file in "$AS_IO"/pong.*.ready; do
       [ -f "$file" ] || continue
       appserver_ws_frame "$file" 10 "$masked" || return 1

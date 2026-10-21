@@ -41,7 +41,7 @@ case_task_land() {
   if dv land TK-1 --checked stale; then return 1; fi
   dv land TK-1 --checked "$head"
   landed=$(jq -r .landed_path "$DV_STATE/TK-1/meta")
-  test "$landed" = "$CASE_DIR/destination/TK-1-v3"
+  test "$landed" = "$(cd "$CASE_DIR/destination/TK-1-v3" && pwd -P)"
   cmp "$wt/out/summary.txt" "$landed/summary.txt"
   cmp "$wt/out/nested/source.txt" "$landed/nested/source.txt"
   test "$(cat "$CASE_DIR/destination/TK-1/summary.txt")" = keep
