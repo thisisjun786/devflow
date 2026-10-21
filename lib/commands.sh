@@ -154,7 +154,15 @@ run_agent() {
     local args=()
     case "$agent" in
       codex)
-        if ! codex_environment || ! codex_trust_repo "$(codex_repo_root "$REPO")"; then
+        local trust_root trust_ready=0
+        if [ "$KIND" = task ]; then
+          trust_root=$WT
+          if task_codex_trust; then trust_ready=1; fi
+        else
+          trust_root=$(codex_repo_root "$REPO")
+          if codex_environment && codex_trust_repo "$trust_root"; then trust_ready=1; fi
+        fi
+        if [ "$trust_ready" = 0 ]; then
           printf '1\n' > "$S/agent.exit"
           agent_start_failed 'codex provider environment or persisted folder trust is not ready' ''
           return 1
@@ -163,12 +171,14 @@ run_agent() {
         [ "$DV_AGENT_QUESTIONS" != off ] || args+=(-c tools.experimental_request_user_input.enabled=false)
         args+=(-c "projects.$(jq -Rn --arg path "$(pwd -P)" '$path').trust_level=\"trusted\"")
         # Codex resolves a linked worktree's trust against the original repo.
-        args+=(-c "projects.$(jq -Rn --arg path "$(codex_repo_root "$REPO")" '$path').trust_level=\"trusted\"")
+        args+=(-c "projects.$(jq -Rn --arg path "$trust_root" '$path').trust_level=\"trusted\"")
         if [ "$BACKEND" = tmux ] && [ "$DV_CODEX_DISABLE_HOOKS" = 1 ]; then args+=(--disable hooks); fi
         [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
         if [ "$mode" = exec ]; then
           [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
-          "${args[@]}" exec "$instruction" || rc=$?
+          args+=(exec)
+          [ "$KIND" != task ] || args+=(--skip-git-repo-check)
+          "${args[@]}" "$instruction" || rc=$?
         else
           inject_goal "$instruction" & helper=$!
           "${args[@]}" || rc=$?
@@ -197,6 +207,9 @@ run_agent() {
   stop_question_sentinel
   trap - EXIT INT TERM
   printf '%s\n' "$rc" > "$S/agent.exit"
+  if [ "$KIND" = task ] && [ "$mode" = exec ] && [ "$rc" = 0 ]; then
+    task_exec_done "$revived"; return
+  fi
   if [ "$revived" = 1 ]; then
     if [ "$rc" -ne 0 ]; then revive_blocked "revived agent exited $rc"
     elif [ "$mode" = exec ]; then agent_exec_done 1 || rc=1
@@ -359,16 +372,21 @@ cmd_done() {
   if [ "$BACKEND" = herdr ]; then
     herdr_snapshot || printf 'dv: warning: could not capture herdr log for %s\n' "$ISSUE" >&2
   fi
-  head=$(git -C "$WT" rev-parse HEAD)
-  if is_github; then
-    pr_done_check "$head"
-    pr_complete=true
-    note="checks=green review=handled${note:+; $note}"
+  if [ "$KIND" = task ]; then
+    issue_lock
+    task_completion
+  else
+    head=$(git -C "$WT" rev-parse HEAD)
+    if is_github; then
+      pr_done_check "$head"
+      pr_complete=true
+      note="checks=green review=handled${note:+; $note}"
+    fi
+    files=$(git -C "$WT" diff --name-only "$(jq -r .start_head "$S/meta")" "$head" | wc -l | tr -d ' ')
   fi
   if [ "$BACKEND" = appserver ]; then
     appserver_request finish >/dev/null || fail 'App Server goal completion is unconfirmed; completion was not recorded (inspect receipts before retrying)'
   fi
-  files=$(git -C "$WT" diff --name-only "$(jq -r .start_head "$S/meta")" "$head" | wc -l | tr -d ' ')
   tmp=$(mktemp "$S/.done.XXXXXX")
   jq -n --arg head "$head" --argjson files "$files" --arg report "$S/report.md" --arg note "$note" \
     --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" \
@@ -539,7 +557,11 @@ revive_agent() {
   done
   {
     printf '%s\n\n' "$1"
-    printf 'Continue in the existing worktree %s on branch %s.\n' "$WT" "$BRANCH"
+    if [ "$KIND" = task ]; then
+      printf 'Continue the task in %s; preserve partial work and write deliverables to out/. No Git or PR.\n' "$WT"
+    else
+      printf 'Continue in the existing worktree %s on branch %s.\n' "$WT" "$BRANCH"
+    fi
     printf 'Read %s/brief.md and, if present, %s/report.md for context.\n' "$S" "$S"
     printf 'This continues the same request; preserve %s/review-fix.sent and the one-fix-per-PR limit.\n' "$S"
     printf 'Do not create a new branch or force push. Finish with dv done %s.\n' "$ISSUE"
