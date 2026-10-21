@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+jq -n --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" > "$state/task-agent.json"
+if [ "${DV_TASK_TEST_HOLD:-0}" = 1 ]; then
+  printf '%s\n' "$$" > "$state/held.pid"
+  while :; do sleep 0.1; done
+fi
+mkdir -p out/nested
+printf 'Summary citing input.txt\n' > out/summary.txt
+printf 'input.txt\n' > out/nested/source.txt
+printf 'Produced summary.txt. Source: input.txt. Open points: none.\n' > "$state/report.md"
+dv 'done' "$DV_ISSUE"

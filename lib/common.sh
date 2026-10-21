@@ -25,6 +25,7 @@ load_issue() {
   valid_issue "${1:-}"
   ISSUE=$1; S="$DV_STATE/$ISSUE"
   [ -f "$S/meta" ] || fail "unknown issue: $ISSUE"
+  KIND=$(jq -r '.kind // "code"' "$S/meta")
   REPO=$(jq -er .repo "$S/meta")
   WT=$(jq -er .worktree "$S/meta")
   BRANCH=$(jq -er .branch "$S/meta")
@@ -78,6 +79,7 @@ owned_unlock() {
 }
 require_worktree() {
   [ -d "$WT" ] || fail 'worktree is missing'
+  [ "${KIND:-code}" != task ] || return 0
   [ "$(git -C "$WT" symbolic-ref --short HEAD)" = "$BRANCH" ] || fail 'worktree branch changed'
 }
 require_clean() { [ -z "$(git -C "$1" status --porcelain)" ] || fail "uncommitted files: $1"; }
