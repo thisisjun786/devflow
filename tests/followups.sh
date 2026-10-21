@@ -276,10 +276,11 @@ case_pr_body_update() {
   dv pr PU-1
   wait_pr_ready PU-1
   cmp "$DV_STATE/PU-1/pr.md" "$GH_STUB_DIR/live-body"
-  test "$(grep -c '^pr edit ' "$GH_STUB_DIR/calls")" = 1
+  # The fake worker already completed its PR; both public bodies are updates.
+  test "$(grep -c '^pr edit ' "$GH_STUB_DIR/calls")" = 2
   dv pr PU-1
   wait_pr_ready PU-1
-  test "$(grep -c '^pr edit ' "$GH_STUB_DIR/calls")" = 1
+  test "$(grep -c '^pr edit ' "$GH_STUB_DIR/calls")" = 2
   cp "$DV_STATE/PU-1/pr-body.md" "$CASE_DIR/last-body"
   printf 'Retry this body.\n' > "$DV_STATE/PU-1/pr.md"
   touch "$GH_STUB_DIR/edit-fail"

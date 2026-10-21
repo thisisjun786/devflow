@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 metrics_fixture() {
   pr_fixture
-  rm "$DV_STATE/P-1/pr.json"
+  # The shared GitHub fixture must satisfy DF-100's completion gate.
+  jq '{head,green:true,review_handled:true}' "$DV_STATE/P-1/meta" > "$DV_STATE/P-1/pr-ready.json"
+  printf '{"review_handled":true}\n' > "$DV_STATE/P-1/pr-loop.json"
   jq '.status="running" | .started=100' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$DV_STATE/P-1/meta"
   DV_ENTRY="$ROOT/bin/dv"
@@ -9,6 +11,8 @@ metrics_fixture() {
   source "$ROOT/lib/common.sh"
   # shellcheck source=lib/commands.sh
   source "$ROOT/lib/commands.sh"
+  # shellcheck source=lib/delivery.sh
+  source "$ROOT/lib/delivery.sh"
   METRICS_NOW=100
   now() { printf '%s\n' "$METRICS_NOW"; }
 }
