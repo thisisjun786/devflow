@@ -14,6 +14,8 @@ source "$DV_ROOT/lib/bidding.sh"
 source "$DV_ROOT/lib/manager.sh"
 # shellcheck source=lib/stack.sh
 source "$DV_ROOT/lib/stack.sh"
+# shellcheck source=lib/qa.sh
+source "$DV_ROOT/lib/qa.sh"
 need jq
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
@@ -215,6 +217,7 @@ reconcile() {
 while [ ! -e "$DV_HOME/stop" ]; do
   manager_fallback_recover
   reap
+  qa_recover
   pulls
   if [ $(( $(now) - last_metrics )) -ge "$DV_METRICS_INTERVAL" ]; then
     metrics_start
@@ -230,6 +233,9 @@ while [ ! -e "$DV_HOME/stop" ]; do
     if ! id=$(printf '%s\n' "$line" | jq -er '.id | select(type=="string")'); then
       printf 'invalid queue line %s\n' "$((cursor + 1))" >> "$DV_HOME/watch.log"
     elif ! grep -Fxq -- "$id" "$DV_HOME/seen" && ! pending_event "$id"; then
+      if [ "$(jq -r .kind <<< "$line")" = landed ]; then
+        qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1 || break
+      fi
       # Deterministic scheduling is driven by this existing queue, never a bid poll.
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then break; fi
       if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then break; fi
@@ -264,5 +270,6 @@ while [ ! -e "$DV_HOME/stop" ]; do
   done
   retry_pending
   manager_dispatch
+  qa_dispatch
   sleep "$DV_WATCH_INTERVAL"
 done
