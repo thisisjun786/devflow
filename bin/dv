@@ -9,6 +9,9 @@ done
 entry_commit=$(git -C "$(dirname "$DV_ENTRY")/.." rev-parse HEAD 2>/dev/null || true)
 # shellcheck source=lib/common.sh
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+# Internal RPCs have their own deadlines. Defer network updates, including in
+# child CLI calls during an award, until an ordinary invocation or watcher pass.
+case "${1:-help}" in _*|bid) export DV_AUTO_UPDATE=0 ;; esac
 # shellcheck source=lib/bidding.sh
 source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/self-update.sh

@@ -242,3 +242,32 @@ case_update_unrelated() {
   test "$(wc -l < "$CASE_DIR/fetches" | tr -d ' ')" = 1
   test "$(git -C "$UPDATE_ROOT" rev-parse HEAD)" = "$UPDATE_OLD"
 }
+case_update_receipt() {
+  update_fixture; update_publish; update_git_fixture
+  bidding_functions
+  export UPDATE_FETCH_HANG=1 DV_BID_TIMEOUT=2 DV_HOSTS=test-host DV_MANAGER_HOST=test-host
+  local dir="$DV_HOME/submissions/RPC-1"
+  mkdir -p "$dir" "$DV_STATE/.awards/RPC-1"
+  jq -cn --arg repo "$UPDATE_ROOT" '{issue:"RPC-1",repo:$repo,agent:"codex",status:"submitted",host:null,attempts:[]}' > "$dir/task.json"
+  # Simulate a lost award response after the host has persisted success; the
+  # scheduler must recover the actual CLI receipt within its RPC budget.
+  # shellcheck disable=SC2329
+  bid_rpc() {
+    case "$2" in
+      bid) printf '{"status":"submitted","score":100}\n' ;;
+      _award) jq '{token,status:"working",head:"fake-head"}' > "$DV_STATE/.awards/RPC-1/receipt.json"; return 255 ;;
+      _receipt) "$UPDATE_ROOT/bin/dv" _receipt "$3" "$4" ;;
+      *) return 1 ;;
+    esac
+  }
+  bid_schedule_one "$dir"
+  jq -e '.status=="working" and .head=="fake-head"' "$dir/task.json"
+  test ! -f "$CASE_DIR/fetches"
+  # A direct bid is also a timed RPC, even when no agent is eligible.
+  bid_limit 2 "$UPDATE_ROOT/bin/dv" bid --json --repo "$UPDATE_ROOT" > "$CASE_DIR/bid.json"
+  jq -e '.status=="submitted" or .status=="rejected"' "$CASE_DIR/bid.json"
+  test ! -f "$CASE_DIR/fetches"
+  # The deferred update is still due for the next ordinary CLI command.
+  UPDATE_FETCH_HANG=0 "$UPDATE_ROOT/bin/dv" help > /dev/null
+  test "$(git -C "$UPDATE_ROOT" rev-parse HEAD)" = "$UPDATE_NEW"
+}
