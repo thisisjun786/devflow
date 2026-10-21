@@ -8,12 +8,12 @@ exec_setup() {
   export DV_EXEC_SCENARIO=${1:-success}
 }
 exec_wait() {
-  local i
+  local i issue=${1:-EX-1}
   for i in {1..200}; do
-    if [ -f "$DV_STATE/EX-1/agent.exit" ] && ! dv status EX-1 --json | jq -e '.[0].alive' >/dev/null; then return 0; fi
+    if [ -f "$DV_STATE/$issue/agent.exit" ] && dv status "$issue" --json | jq -e 'length==1 and .[0].alive==false' >/dev/null; then return 0; fi
     sleep 0.05
   done
-  cat "$DV_STATE/EX-1/log" >&2
+  cat "$DV_STATE/$issue/log" >&2
   return 1
 }
 case_exec_success() {
@@ -38,6 +38,38 @@ case_exec_config_flags() {
   jq -e '.status=="done"' "$DV_STATE/EX-1/meta"
   test "$(cat "$DV_STATE/EX-1/stub-count")" = 2
   grep -Fx 'trust_level = "trusted"' "$HOME/.codex/config.toml"
+}
+exec_launch_race() {
+  local issue=$1 s="$DV_STATE/$1" previous_exit=false published_pid wrapper_pid
+  mkfifo "$s/launch-release"
+  BASH_ENV="$ROOT/tests/fixtures/exec-launch-env" dv send "$issue" 'Follow-up with delayed wrapper startup'
+  wait_file "$s/launch-paused"
+  dv status "$issue" --json > "$CASE_DIR/launch-status.json"
+  [ ! -f "$s/agent.exit" ] || previous_exit=true
+  published_pid=$(cat "$s/agent.pid")
+  wrapper_pid=$(cat "$s/wrapper.pid")
+  cat "$CASE_DIR/launch-status.json"
+  printf 'previous_exit=%s pid_bytes=%s\n' "$previous_exit" "$(wc -c < "$s/agent.pid")"
+  local duplicate=0
+  # The pending wrapper already owns this follow-up even before provider start.
+  # Only exercise this on a valid live snapshot so red runs do not launch extras.
+  if jq -e '.[0].alive' "$CASE_DIR/launch-status.json" >/dev/null; then
+    dv send "$issue" 'Do not start a concurrent follow-up' && duplicate=1
+  fi
+  printf 'release\n' > "$s/launch-release"
+  exec_wait "$issue"
+  test "$duplicate" = 0
+  test "$previous_exit" = false
+  test "$published_pid" = "$wrapper_pid"
+  jq -e '.[0] | .alive and .status=="running" and .exec_status=="working" and .agent_status=="working"' "$CASE_DIR/launch-status.json"
+}
+case_exec_launch_race() {
+  exec_setup
+  dv start "$REPO" EX-1 exec
+  exec_wait
+  exec_launch_race EX-1
+  test "$(cat "$DV_STATE/EX-1/stub-count")" = 2
+  jq -e '.status=="done" and .exec_status=="done"' "$DV_STATE/EX-1/meta"
 }
 exec_failure() {
   exec_setup "$1"

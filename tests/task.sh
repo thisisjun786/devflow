@@ -126,13 +126,16 @@ case_task_native() {
   test ! -f "$GH_STUB_DIR/calls"
 }
 task_exec_wait() {
-  wait_file "$DV_STATE/$1/agent.exit"
-  local i
-  for i in {1..100}; do
-    if dv status "$1" --json | jq -e '.[0].alive==false' >/dev/null; then return; fi
-    sleep 0.1
-  done
-  return 1
+  exec_wait "$1"
+}
+case_task_exec_launch_race() {
+  task_setup
+  export DV_CODEX_MODE=exec DV_AGENT_CMD_codex=''
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/task-agent" DV_TRUSTED_REPOS="$CASE_DIR/Desk project"
+  task_start; task_exec_wait TK-1
+  exec_launch_race TK-1
+  jq -e '.status=="done" and .exec_status=="done"' "$DV_STATE/TK-1/meta"
+  jq -e '.args | index("resume")!=null' "$DV_STATE/TK-1/task-agent.json"
 }
 case_task_exec_stall() {
   task_setup
