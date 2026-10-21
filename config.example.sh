@@ -8,6 +8,11 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_KICK_HOST:=lina-os}" # host running dv-watch (lina-mac before 10-19)
 : "${DV_KICK:=}" # shell command; receives kind issue message host head as arguments
 : "${DV_CODEX_BIN:=codex}" # ~/node/bin/codex or ~/.opencodex/bin/codex
+: "${DV_CODEX_MODE:=auto}" # auto: existing App Server, otherwise TUI; appserver, tui, exec
+: "${DV_APPSERVER_SOCKET:=}" # empty uses Codex's existing default control socket
+: "${DV_APPSERVER_TIMEOUT:=10}" # bounded JSON-RPC response wait, seconds
+: "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds
+: "${DV_STALL_AFTER:=300}" # active goal without new items, seconds
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
 : "${DV_CLAUDE_BIN:=claude}"

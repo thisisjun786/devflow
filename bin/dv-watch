@@ -47,6 +47,7 @@ cursor=0
 [ ! -f "$DV_HOME/cursor" ] || cursor=$(cat "$DV_HOME/cursor")
 touch "$DV_HOME/kick.q" "$DV_HOME/seen"
 last_scan=0
+last_appserver_scan=0
 # Remote dev hosts: one dv-kick-pull stream per host, restarted with a back-off when it ends.
 pull_pids=''
 # A pid counts as our stream only if it is still alive AND still runs dv-kick-pull (pids are reused).
@@ -194,6 +195,16 @@ while [ ! -e "$DV_HOME/stop" ]; do
   retry_pending
   manager_dispatch
   pulls
+  if [ $(( $(now) - last_appserver_scan )) -ge "$DV_APPSERVER_POLL" ]; then
+    for appserver_host in $DV_HOSTS; do
+      if [ "$appserver_host" = "$DV_HOST" ]; then
+        dv _appserver-watch >> "$DV_HOME/reconcile.log" 2>&1 || true
+      else
+        bid_limit "$DV_BID_TIMEOUT" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$appserver_host" 'dv _appserver-watch' >> "$DV_HOME/reconcile.log" 2>&1 || true
+      fi
+    done
+    last_appserver_scan=$(now)
+  fi
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   while [ "$active" -lt "$DV_MAX_WORKERS" ] && [ ! -e "$DV_HOME/stop" ]; do

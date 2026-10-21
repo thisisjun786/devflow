@@ -27,6 +27,7 @@ cmd_start() {
     shift 2
   done
   case "$agent" in codex|claude|devin) ;; *) fail 'unknown agent' ;; esac
+  if [ "$agent" = codex ] && [ "$DV_CODEX_MODE" = exec ]; then mode='exec'; fi
   case "$mode" in goal|exec) ;; *) fail 'mode must be goal or exec' ;; esac
   [ "$agent" = codex ] || [ "$mode" = goal ] || fail 'exec mode is Codex-only'
   [ -z "$brief" ] || [ -f "$brief" ] || fail 'brief file not found'
@@ -36,10 +37,13 @@ cmd_start() {
     trust_root=$(codex_repo_root "$REPO") || fail 'cannot resolve Codex repository root'
     codex_repo_allowed "$trust_root" || fail 'Codex repository trust denied'
     codex_environment || fail 'Codex provider environment is not ready'
-    codex_trust_repo "$trust_root" || fail 'Codex persisted folder trust is not ready'
   fi
   BACKEND=tmux
-  if [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
+  if appserver_selected "$agent" "$mode"; then BACKEND=appserver
+  elif [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ "$BACKEND" != appserver ]; then
+    codex_trust_repo "$trust_root" || fail 'Codex persisted folder trust is not ready'
+  fi
   mkdir -p "$DV_STATE" "$DV_WORK"
   S="$DV_STATE/$ISSUE"; SESSION="dv-$ISSUE"
   [ ! -e "$S" ] || fail 'issue state already exists'
@@ -82,6 +86,7 @@ cmd_start() {
   printf '%s %s %s\n' "$ISSUE" "$BRANCH" "$WT"
 }
 launch_agent() {
+  if [ "$BACKEND" = appserver ]; then appserver_start; return; fi
   # Terminal server environments can predate this shell. Pass exported DV_* values explicitly.
   local env_args=() key launcher
   while IFS= read -r key; do
@@ -308,6 +313,9 @@ cmd_done() {
     note=$2
   fi
   require_worktree
+  if [ "$BACKEND" = appserver ]; then
+    appserver_request finish >/dev/null || printf 'dv: goal completion is unconfirmed; inspect App Server receipts\n' >&2
+  fi
   if [ "$BACKEND" = herdr ]; then
     herdr_snapshot || printf 'dv: warning: could not capture herdr log for %s\n' "$ISSUE" >&2
   fi
@@ -357,7 +365,12 @@ cmd_status() {
       backend=$(jq -r '.backend // "tmux"' "$path")
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
-      if [ "$backend" = herdr ]; then
+      if [ "$backend" = appserver ]; then
+        info=$(appserver_status "$(jq -r .issue "$path")")
+        agent_status=$(printf '%s\n' "$info" | jq -r .agent_status)
+        alive=$(printf '%s\n' "$info" | jq -r .alive)
+        question_pending=$(printf '%s\n' "$info" | jq -r .question_pending)
+      elif [ "$backend" = herdr ]; then
         pane=$(jq -r '.herdr_pane // empty' "$path")
         if [ -n "$pane" ]; then
           info=$(herdr_info "$pane" 2>/dev/null) || info='{}'
@@ -384,6 +397,7 @@ cmd_status() {
       # without changing metadata or the bidding code's historical done_at.
       done_head=$(jq -r '.head | select(type=="string")' "$(dirname "$path")/done.json" 2>/dev/null) || done_head=''
       row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending}' "$path")
+      if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1]}'); fi
       if [ "$json" = 1 ]; then printf '%s\n' "$row"
       else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
     done
@@ -457,6 +471,7 @@ revive_agent() {
 cmd_send() {
   [ "$#" -eq 2 ] || fail 'usage: dv send ISSUE text'
   load_issue "$1"; issue_lock; require_worktree
+  if [ "$BACKEND" = appserver ]; then appserver_request send "$2"; return; fi
   # tmux can accept paste/Enter even when remain-on-exit retained a dead pane.
   if [ "$BACKEND" = tmux ] && agent_gone; then revive_agent "$2"; return; fi
   if send_text "$2"; then return 0; fi
@@ -469,7 +484,12 @@ cmd_clean() {
 }
 clean_worktree() {
   if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; fi
-  if [ "$BACKEND" = herdr ]; then
+  if [ "$BACKEND" = appserver ]; then
+    local server
+    server=$(appserver_status "$ISSUE")
+    printf '%s\n' "$server" | jq -e '.agent_status=="goal-complete" or .agent_status=="idle" or .agent_status=="gone"' >/dev/null || fail 'App Server thread is active or uncertain; worktree retained'
+    if appserver_alive; then kill "$(cat "$S/appserver/client.pid")"; fi
+  elif [ "$BACKEND" = herdr ]; then
     herdr_clean || fail 'herdr workspace not closed; worktree and saved id retained'
   else tmux_dv kill-session -t "=$SESSION" 2>/dev/null || true; fi
   if [ -d "$WT" ]; then (cd "$REPO" && git worktree remove "$WT"); fi

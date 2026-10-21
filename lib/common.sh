@@ -12,6 +12,8 @@ source "$DV_ROOT/config.example.sh"
 source "$DV_ROOT/lib/claude.sh"
 # shellcheck source=lib/codex.sh
 source "$DV_ROOT/lib/codex.sh"
+# shellcheck source=lib/appserver.sh
+source "$DV_ROOT/lib/appserver.sh"
 export DV_CONFIG DV_ROOT DV_STATE DV_WORK DV_HOME DV_HOST
 export PATH="$DV_ROOT/bin:$PATH"
 fail() { printf 'dv: %s\n' "$*" >&2; exit 1; }
