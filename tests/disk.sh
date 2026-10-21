@@ -90,6 +90,34 @@ case_disk_cache_guard() {
   test -f "$CASE_DIR/elsewhere/old"
   test ! -e "$CASE_DIR/go.calls"
 }
+case_disk_cache_alias_guard() {
+  disk_fixture
+  mkdir -p "$HOME/keep" "$CASE_DIR/aliases"
+  ln -s "$HOME" "$CASE_DIR/aliases/home"
+  local cache
+  for cache in "$HOME/.cache/.." "$HOME/" "$CASE_DIR/aliases/home/." "$HOME/.."; do
+    printf 'user document\n' > "$HOME/keep/document"
+    touch -a -t 202001010000 "$HOME/keep/document"
+    GOCACHE="$cache" DF_STUB_KB=1048576 dv _disk-maintain
+    test -f "$HOME/keep/document"
+    test ! -e "$CASE_DIR/go.calls"
+    printf '0\n' > "$DV_STATE/.disk/last-run"
+  done
+  # Do not attempt to traverse a real root even in a regression. Exercise the
+  # destructive-target validator directly for aliases resolving to root.
+  bidding_functions
+  if disk_cache_target /.; then return 1; fi
+  if disk_cache_target //; then return 1; fi
+}
+case_disk_cache_canonical() {
+  disk_fixture
+  mkdir -p "$CASE_DIR/physical/cache"
+  ln -s "$CASE_DIR/physical" "$CASE_DIR/cache-parent"
+  printf recent > "$CASE_DIR/physical/cache/recent"
+  GOCACHE="$CASE_DIR/cache-parent/cache/." DF_STUB_KB=1048576 dv _disk-maintain
+  test ! -e "$CASE_DIR/physical/cache/recent"
+  test "$(cat "$CASE_DIR/go.cache")" = "$(cd "$CASE_DIR/physical/cache" && pwd -P)"
+}
 case_disk_custom_cache() {
   host_setup; disk_fixture
   export GOCACHE="$CASE_DIR/other disk/go cache"
@@ -102,7 +130,7 @@ case_disk_custom_cache() {
   dv _disk-maintain
   test ! -e "$GOCACHE/old"
   test -f "$HOME/.cache/go-build/untouched"
-  grep -F "$GOCACHE" "$DV_STATE/.disk/cleanup.log"
+  grep -F "$(cd "$GOCACHE" && pwd -P)" "$DV_STATE/.disk/cleanup.log"
 }
 case_disk_go_env_cache() {
   disk_fixture
@@ -111,17 +139,19 @@ case_disk_go_env_cache() {
   printf recent > "$CASE_DIR/go env cache/recent"
   DF_STUB_KB=1048576 dv _disk-maintain
   test ! -e "$CASE_DIR/go env cache/recent"
-  test "$(cat "$CASE_DIR/go.cache")" = "$CASE_DIR/go env cache"
+  test "$(cat "$CASE_DIR/go.cache")" = "$(cd "$CASE_DIR/go env cache" && pwd -P)"
 }
 case_disk_separate_filesystems() {
   disk_fixture
   export GOCACHE="$CASE_DIR/cache disk"
   mkdir -p "$GOCACHE"
+  export CACHE_DF_PATH
+  CACHE_DF_PATH=$(cd "$GOCACHE" && pwd -P)
   printf recent > "$GOCACHE/recent"
   cat > "$CASE_DIR/disk-bin/df" <<'STUB'
 #!/usr/bin/env bash
 case "$2" in
-  "$GOCACHE") export DF_STUB_KB=${CACHE_FREE_KB:-104857600} ;;
+  "$GOCACHE"|"$CACHE_DF_PATH") export DF_STUB_KB=${CACHE_FREE_KB:-104857600} ;;
   *) export DF_STUB_KB=${WORK_FREE_KB:-1048576} ;;
 esac
 exec "$ROOT/tests/fixtures/df" "$@"
@@ -138,7 +168,7 @@ STUB
   printf '0\n' > "$DV_STATE/.disk/last-run"
   CACHE_FREE_KB=1048576 WORK_FREE_KB=104857600 dv _disk-maintain
   test ! -e "$GOCACHE/recent"
-  test "$(cat "$CASE_DIR/go.cache")" = "$GOCACHE"
+  test "$(cat "$CASE_DIR/go.cache")" = "$CACHE_DF_PATH"
   grep '"cache_disk_available_gb":' "$DV_STATE/.disk/cleanup.log"
 }
 case_disk_unknown() {

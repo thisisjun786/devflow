@@ -26,6 +26,21 @@ disk_cache_path() {
   esac
   printf '%s\n' "$cache"
 }
+disk_cache_target() {
+  local cache=$1 target home_root
+  if [ ! -d "$cache" ] || [ -L "${cache%/}" ]; then return 1; fi
+  target=$(cd "$cache" && pwd -P) || return 1
+  home_root=$(cd "$HOME" && pwd -P) || return 1
+  # POSIX permits pwd to retain exactly two leading slashes. Normalize those
+  # too so // and //home/user cannot bypass the physical-root comparisons.
+  while [[ "$target" = //* ]]; do target=${target#/}; done
+  while [[ "$home_root" = //* ]]; do home_root=${home_root#/}; done
+  [ "$target" != / ] || return 1
+  # Resolve .., repeated slashes and symlink ancestors before deciding whether
+  # this is a cache. Never recurse into HOME or a directory containing HOME.
+  case "$home_root/" in "$target/"*) return 1 ;; esac
+  printf '%s\n' "$target"
+}
 disk_size_kb() {
   if [ ! -e "$1" ]; then printf '0\n'; return; fi
   local size
@@ -98,9 +113,10 @@ cmd__disk_prune() {
   disk_log worktree "$before" 0 "$WT"
 }
 disk_maintain() {
-  local cache before after free meta issue at
+  local cache target before after free meta issue at
   cache=$(disk_cache_path) || cache=''
-  if [ -n "$cache" ] && [ -d "$cache" ] && [ ! -L "$cache" ]; then
+  if target=$(disk_cache_target "$cache"); then
+    cache=$target
     before=$(disk_size_kb "$cache" || echo null)
     # atime, not mtime: frequently reused build outputs can have old mtimes.
     if find "$cache" -type f -amin "+$((DV_CACHE_TRIM_DAYS * 1440))" -exec rm -f '{}' +; then
@@ -118,7 +134,7 @@ disk_maintain() {
     fi
     [ "$free" != null ] || printf 'disk cleanup: cache disk unavailable: %s\n' "$cache" >&2
   else
-    printf 'disk cleanup: cache absent, disabled, unresolved or symlinked: %s\n' "$cache"
+    printf 'disk cleanup: cache absent, disabled, unresolved, symlinked or unsafe: %s\n' "$cache"
   fi
   for meta in "$DV_STATE"/*/meta; do
     [ -f "$meta" ] || continue

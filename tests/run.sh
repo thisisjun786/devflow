@@ -1645,7 +1645,7 @@ source "$ROOT/tests/disk.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cache_guard disk_custom_cache disk_go_env_cache disk_separate_filesystems disk_unknown disk_award disk_bsd_stat disk_worktrees disk_host disk_watch; do
+for name in disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cache_guard disk_cache_alias_guard disk_cache_canonical disk_custom_cache disk_go_env_cache disk_separate_filesystems disk_unknown disk_award disk_bsd_stat disk_worktrees disk_host disk_watch; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
