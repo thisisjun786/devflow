@@ -44,7 +44,7 @@ CLIENT
 appserver_setup() {
   repo appserver "${1:-}"
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
-  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=2
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-2}
   export DV_APPSERVER_POLL=1 DV_STALL_AFTER=300
   mkdir -p "$CASE_DIR/server"
   printf 'idle\n' > "$CASE_DIR/server/status"
@@ -307,9 +307,9 @@ READ_PARTIAL
 case_appserver_large_reply() {
   # A multi-MB thread/read reply arrives over many one-second reads. It must be
   # assembled, not dropped, so status, clean and land see the real state.
-  appserver_setup
-  # Production RPC budget; the reply still spans many one-second reads.
-  export DV_APPSERVER_TIMEOUT=30
+  # The job client starts in setup; give it a production-scale RPC budget so
+  # slow CI hosts still assemble the reply across many one-second reads.
+  DV_APPSERVER_TIMEOUT_CASE=30 appserver_setup
   head -c 1500000 /dev/zero | tr '\0' 'x' > "$CASE_DIR/big.txt"
   jq -cn --rawfile big "$CASE_DIR/big.txt" '{thread:{id:"thread-1",status:{type:"idle"},
     turns:[{id:"turn-1",status:"completed",error:null,
