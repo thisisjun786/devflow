@@ -146,7 +146,8 @@ case_stack_closed_base() {
 case_stack_api_failure() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   touch "$GH_STUB_DIR/fail-1"
-  stack_waiting 2
+  if dv land S-2; then return 1; fi
+  jq -e '.status=="ready" and .stack_head!=null' "$DV_STATE/S-2/meta"
   test ! -f "$GH_STUB_DIR/order"
 }
 case_stack_conflict() {
@@ -225,6 +226,7 @@ case_stack_checks() {
     mv "$CASE_DIR/checks" "$GH_STUB_DIR/pr-2.json"
     stack_green 2
     if dv land S-2; then return 1; fi
+    jq -e '.status=="ready"' "$DV_STATE/S-2/meta"
     test "$(cat "$GH_STUB_DIR/order")" = 1
     test -d "$DV_WORK/stack-2"
   done
@@ -452,4 +454,20 @@ case_stack_land_requeue() {
     stack_queue_host "$DV_HOST" "$(dv status --json)"
     jq -se 'any(.[]; .kind=="stack-land" and .issue=="S-2")' "$DV_HOME"/pending/stack-*.json
   )
+}
+
+case_stack_land_retry() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  stack_waiting 2; dv land S-1
+  touch "$GH_STUB_DIR/fail-merge-2"
+  stack_watch; stack_await 2 '.stack_resume.status=="sent"'
+  stack_green 2
+  wait_file "$GH_STUB_DIR/merge-failed-2"
+  stack_stop
+  jq -e '.status=="ready"' "$DV_STATE/S-2/meta"
+  test "$(wc -l < "$DV_STATE/S-2/sent-input" | tr -d ' ')" = 1
+  rm "$GH_STUB_DIR/fail-merge-2"
+  stack_watch; stack_await 2 '.status=="landed"'; stack_stop
+  test "$(wc -l < "$DV_STATE/S-2/sent-input" | tr -d ' ')" = 1
+  test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
 }

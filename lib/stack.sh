@@ -2,6 +2,11 @@
 # jq variables are literal; ISSUE is loaded by the caller.
 # shellcheck disable=SC2016,SC2153
 # Stacks use the normal land lock and the watcher's durable, bounded worker queue.
+stack_waiting_base() {
+  meta_set --argjson at "$(now)" \
+    '.stack_waiting_since=(if .status=="waiting-base" then (.stack_waiting_since // $at) else $at end) |
+     .status="waiting-base"'
+}
 stack_land_gate() {
   local pr=$1 head=$2 snapshot body local_body='' dependencies dependency state base_head current
   local merge_commit merged_commits=''
@@ -21,13 +26,13 @@ stack_land_gate() {
     if ! jq -e --arg head "$head" '.stack_update_head==$head' "$S/meta" >/dev/null ||
       ! git -C "$WT" merge-base --is-ancestor "$current" "$head"; then fail 'PR head mismatch'; fi
   fi
-  meta_set --arg head "$head" --argjson dependencies "$dependencies" --argjson at "$(now)" \
-    '.stack_waiting_since=(if .status=="waiting-base" then (.stack_waiting_since // $at) else $at end) |
-     .status="waiting-base" | .stack_head=(.stack_head // $head) | .stack_dependencies=$dependencies'
+  meta_set --arg head "$head" --argjson dependencies "$dependencies" \
+    '.stack_head=(.stack_head // $head) | .stack_dependencies=$dependencies'
   git -C "$WT" merge-base --is-ancestor "$(jq -r .stack_head "$S/meta")" "$head" || fail 'stack head is no longer an ancestor'
   for dependency in $(printf '%s\n' "$dependencies" | jq -r '.[]'); do
     state=$(cd "$WT" && gh pr view "${pr%/*}/$dependency" --json state,mergeCommit) || return 1
     if [ "$(printf '%s\n' "$state" | jq -er .state)" != MERGED ]; then
+      stack_waiting_base
       printf 'dv: waiting-base: PR #%s is not merged\n' "$dependency" >&2
       return 75 # Wait for another landed event, not continuous dependency polls.
     fi
@@ -41,10 +46,14 @@ stack_land_gate() {
     # GitHub records the resulting merge/squash commit or final rebased commit.
     # MERGED into a different branch alone does not satisfy this stack's base.
     if ! git -C "$WT" merge-base --is-ancestor "$merge_commit" "$base_head"; then
+      stack_waiting_base
       printf 'dv: waiting-base: dependency merge %s is absent from origin/%s\n' "$merge_commit" "$BASE" >&2
       return 75
     fi
   done
+  # A completed worker remains completed when CI, push, merge policy or the
+  # GitHub merge temporarily fails. Only unmet bases require a new resume.
+  meta_set '.status="ready"'
   if ! git -C "$WT" merge --no-edit "$base_head"; then
     if git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null && [ ! -e "$S/stack-conflict.sent" ]; then
       printf 'Resolve the existing merge of origin/%s in this worktree, commit and push with dv pr %s, wait for green CI, and finish with dv done %s. Preserve review-fix.sent; do not request another review or force push. Stack ordering and landing remain dv responsibilities.\n' \
