@@ -3,7 +3,13 @@
 # shellcheck disable=SC2016
 codex_default_mode() {
   if [ -n "$DV_MODE" ]; then printf '%s\n' "$DV_MODE"
-  elif [ "$1" = codex ]; then printf '%s\n' "$DV_CODEX_MODE"
+  elif [ "$1" = codex ]; then
+    case "$DV_CODEX_MODE" in
+      auto|appserver) printf 'auto\n' ;;
+      goal|tui) printf 'goal\n' ;;
+      exec) printf 'exec\n' ;;
+      *) fail 'DV_CODEX_MODE must be auto, appserver, exec, goal or tui' ;;
+    esac
   else printf 'goal\n'; fi
 }
 codex_exec_alive() {

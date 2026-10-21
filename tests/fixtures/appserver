@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = --peer ]; then
+  # shellcheck source=lib/appserver-transport.sh
+  source "$ROOT/lib/appserver-transport.sh"
+  AS_IO=$(mktemp -d /tmp/dv-ws-peer.XXXXXX)
+  trap 'rm -rf "$AS_IO"' EXIT
+  ws_key=''
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    [ -n "$line" ] || break
+    case "$line" in Sec-WebSocket-Key:*) ws_key=${line#*: }; esac
+  done
+  printf 'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n' "$(appserver_ws_accept "$ws_key")"
+  (trap - EXIT; appserver_ws_receive 1) | bash "$0" --json | (trap - EXIT; appserver_ws_send 0)
+  exit
+fi
+if [ "${1:-}" != --json ]; then
+[ "${1:-}" = app-server ] || exit 1
+[ "${2:-}" = proxy ] || exit 1
+command -v nc >/dev/null || { echo 'App Server socket tests require OpenBSD nc' >&2; exit 1; }
+# Two shell processes exchange JSON-RPC through a real Unix socket, using
+# the same stdio-to-socket boundary as `codex app-server proxy`.
+socket_dir=$(mktemp -d /tmp/dv-as.XXXXXX)
+mkfifo "$socket_dir/in" "$socket_dir/out"
+exec 6<> "$socket_dir/in" 7<> "$socket_dir/out"
+bash "$0" --peer < "$socket_dir/in" > "$socket_dir/out" 6>&- 7>&- & peer=$!
+nc -lU "$socket_dir/socket" < "$socket_dir/out" > "$socket_dir/in" 6>&- 7>&- & listener=$!
+client=''
+# EXIT invokes this callback; older ShellCheck reports SC2317, newer SC2329.
+# shellcheck disable=SC2317,SC2329
+cleanup() {
+  kill "$listener" ${client:+"$client"} 2>/dev/null || true
+  wait "$listener" ${client:+"$client"} 2>/dev/null || true
+  for _ in {1..100}; do kill -0 "$peer" 2>/dev/null || break; sleep 0.01; done
+  kill "$peer" 2>/dev/null || true
+  wait "$peer" 2>/dev/null || true
+  rm -rf "$socket_dir"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+for _ in {1..100}; do [ ! -S "$socket_dir/socket" ] || break; sleep 0.01; done
+nc -U "$socket_dir/socket" <&0 6>&- 7>&- & client=$!
+touch "$CASE_DIR/server/socket-used"
+exec 6>&- 7>&-
+wait "$client"
+exit
+fi
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$CASE_DIR/server/requests"
+  id=$(printf '%s\n' "$line" | jq -c '.id // null')
+  method=$(printf '%s\n' "$line" | jq -r '.method // ""')
+  result='{}'
+  case "$method" in
+    initialize) result='{"userAgent":"stub"}' ;;
+    initialized) continue ;;
+    thread/start|thread/resume) result='{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}' ;;
+    thread/goal/set|thread/goal/get)
+      if [ -f "$CASE_DIR/server/no-goal" ]; then
+        jq -cn --argjson id "$id" '{id:$id,error:{code:-32601,message:"Method not found"}}'; continue
+      fi
+      if [ "$method" = thread/goal/set ] && [ "$(printf '%s\n' "$line" | jq -r '.params.status')" = complete ] && [ -f "$CASE_DIR/server/finish-outcome" ]; then
+        outcome=$(cat "$CASE_DIR/server/finish-outcome")
+        if [ "$outcome" = refused ]; then
+          jq -cn --argjson id "$id" '{id:$id,error:{code:-32600,message:"goal completion refused"}}'; continue
+        elif [ "$outcome" = unknown ]; then printf 'complete\n' > "$CASE_DIR/server/goal"; continue; fi
+      fi
+      if [ "$method" = thread/goal/set ]; then
+        printf '%s\n' "$line" | jq -r '.params.status // "active"' > "$CASE_DIR/server/goal"
+      fi
+      goal=active; [ ! -f "$CASE_DIR/server/goal" ] || goal=$(cat "$CASE_DIR/server/goal")
+      result=$(jq -cn --arg goal "$goal" '{goal:{status:$goal}}') ;;
+    thread/read)
+      if [ -f "$CASE_DIR/server/interrupt-remaining" ]; then
+        remaining=$(cat "$CASE_DIR/server/interrupt-remaining")
+        if [ "$remaining" -gt 0 ]; then printf '%s\n' "$((remaining - 1))" > "$CASE_DIR/server/interrupt-remaining"
+        else printf 'idle\n' > "$CASE_DIR/server/status"; rm "$CASE_DIR/server/interrupt-remaining"; fi
+      fi
+      status=$(cat "$CASE_DIR/server/status")
+      if [ "$status" = gone ]; then
+        jq -cn --argjson id "$id" '{id:$id,error:{code:-32600,message:"thread not found: thread-1"}}'; continue
+      elif [ "$status" = unknown ]; then continue
+      fi
+      if [ -f "$CASE_DIR/server/thread.json" ]; then result=$(cat "$CASE_DIR/server/thread.json")
+      else result=$(jq -cn --arg status "$status" '{thread:{id:"thread-1",status:{type:$status},turns:(if $status=="active" then [{id:"turn-1",status:"inProgress",items:[]}] else [] end)}}'); fi ;;
+    turn/start|turn/steer)
+      outcome=accepted; [ ! -f "$CASE_DIR/server/outcome" ] || outcome=$(cat "$CASE_DIR/server/outcome")
+      if [ "$outcome" = refused ]; then
+        jq -cn --argjson id "$id" '{id:$id,error:{code:-32602,message:"turn mismatch"}}'; continue
+      fi
+      if [ "$outcome" = malformed ]; then
+        jq -cn --argjson id "$id" '{id:$id,result:{}}'; continue
+      fi
+      printf 'active\n' > "$CASE_DIR/server/status"
+      [ "$outcome" != unknown ] || continue
+      if [ "$method" = turn/start ]; then result='{"turn":{"id":"turn-1","status":"inProgress","items":[]}}'
+      else result='{"turnId":"turn-1"}'; fi ;;
+    turn/interrupt)
+      if [ -f "$CASE_DIR/server/interrupt-polls" ]; then cp "$CASE_DIR/server/interrupt-polls" "$CASE_DIR/server/interrupt-remaining"
+      else printf 'idle\n' > "$CASE_DIR/server/status"; fi ;;
+    '')
+      if [ ! -f "$CASE_DIR/server/answer-unknown" ]; then
+        jq -cn --argjson id "$id" '{method:"serverRequest/resolved",params:{threadId:"thread-1",requestId:$id}}'
+      fi
+      continue ;;
+    *) jq -cn --argjson id "$id" '{id:$id,error:{code:-32601,message:"Method not found"}}'; continue ;;
+  esac
+  jq -cn --argjson id "$id" --argjson result "$result" '{id:$id,result:$result}'
+  if [ "${DV_APP_TEST_WORK:-0}" = 1 ] && [ "$method" = turn/start ] && [ "$id" = '"initial-turn"' ]; then
+    (
+      cd "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
+      DV_ISSUE=AS-1 "$ROOT/tests/fixtures/agent"
+      printf 'idle\n' > "$CASE_DIR/server/status"
+      touch "$CASE_DIR/server/work.done"
+    ) > "$CASE_DIR/server/work.log" 2>&1 &
+  fi
+  if [ -f "$CASE_DIR/server/notify" ]; then
+    mv "$CASE_DIR/server/notify" "$CASE_DIR/server/notified"
+    cat "$CASE_DIR/server/notified"
+  fi
+done
