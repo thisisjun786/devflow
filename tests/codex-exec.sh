@@ -73,7 +73,8 @@ case_exec_send() {
   printf 'keep\n' > "$s/review-fix.sent"
   dv send EX-1 "$message"
   exec_wait
-  jq -se --arg message "$message" --arg wt "$wt" 'length==2 and .[1].cwd==$wt and (.[1].args|index("resume")!=null and index("fixture-thread")!=null) and (.[1].args[-1]|startswith($message))' "$s/stub-runs.jsonl"
+  jq -se --arg message "$message" 'length==2 and (.[1].args|index("resume")!=null and index("fixture-thread")!=null) and (.[1].args[-1]|startswith($message))' "$s/stub-runs.jsonl"
+  test "$(cd "$(jq -sr '.[1].cwd' "$s/stub-runs.jsonl")" && pwd -P)" = "$(cd "$wt" && pwd -P)"
   test -f "$wt/dirty"; test ! -e "$wt/BAD"
   grep -Fx keep "$s/review-fix.sent"
   test ! -e "$CASE_DIR/herdr/calls"

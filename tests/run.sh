@@ -1680,6 +1680,14 @@ source "$ROOT/tests/task.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
+  fi
+done
 for name in task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
