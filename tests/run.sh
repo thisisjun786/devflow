@@ -1898,6 +1898,8 @@ source "$ROOT/tests/followups.sh"
 source "$ROOT/tests/watcher.sh"
 # shellcheck source=tests/stall.sh
 source "$ROOT/tests/stall.sh"
+# shellcheck source=tests/screen-locale.sh
+source "$ROOT/tests/screen-locale.sh"
 # shellcheck source=tests/pr-wait-caller.sh
 source "$ROOT/tests/pr-wait-caller.sh"
 # shellcheck source=tests/bidding-edge.sh
@@ -1933,6 +1935,10 @@ source "$ROOT/tests/task.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in screen_locale_c screen_locale_utf8; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
 for name in appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
