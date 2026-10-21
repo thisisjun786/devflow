@@ -173,10 +173,12 @@ host_check() {
   result=$(printf '%s\n' "$tools_json" | jq -s --arg host "$DV_HOST" --arg shell "${DV_HOST_SHELL:-${SHELL:-/bin/bash}}" \
     --arg configured "$DV_CODEX_BIN" --argjson proxy "$proxy" --argjson auth "$auth" \
     --argjson login "$codex_login" --argjson ssh "$codex_ssh" --argjson probe "$probe_result" --argjson onboarding "$(claude_onboarding)" \
-    '{host:$host,shell:$shell,tools:.,auth:$auth,codex:{configured:$configured,proxy:$proxy,login:$login,ssh:$ssh,probe:$probe},claude:{onboarding:$onboarding}}')
+    --argjson watcher "$(self_update_watch_status)" \
+    '{host:$host,shell:$shell,tools:.,auth:$auth,watcher:$watcher,codex:{configured:$configured,proxy:$proxy,login:$login,ssh:$ssh,probe:$probe},claude:{onboarding:$onboarding}}')
   if [ "$json" = 1 ]; then printf '%s\n' "$result"
   else
     printf 'Host: %s (local login / non-interactive SSH shell startup)\n' "$DV_HOST"
+    printf '%s\n' "$result" | jq -r '.watcher | "watcher: \(.status) commit=\(.commit) origin/main=\(.origin_main)"'
     printf '%s\n' "$result" | jq -r '.tools[] | "\(.name) expected=\(.expected)\n  login: \(.login.status) \(.login.version) \(.login.path) \(.login.reason)\n  ssh:   \(.ssh.status) \(.ssh.version) \(.ssh.path) \(.ssh.reason)"'
     printf '%s\n' "$result" | jq -r '.auth | to_entries[] | "auth \(.key): login=\(.value.login) ssh=\(.value.ssh)"'
     printf '%s\n' "$result" | jq -r '.claude.onboarding | "claude onboarding: hasCompletedOnboarding=\(.hasCompletedOnboarding) skipDangerousModePermissionPrompt=\(.skipDangerousModePermissionPrompt)"'

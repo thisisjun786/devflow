@@ -6,8 +6,15 @@ while [ -L "$DV_ENTRY" ]; do
   DV_ENTRY=$(readlink "$DV_ENTRY")
   [[ "$DV_ENTRY" = /* ]] || DV_ENTRY="$entry_dir/$DV_ENTRY"
 done
+entry_commit=$(git -C "$(dirname "$DV_ENTRY")/.." rev-parse HEAD 2>/dev/null || true)
 # shellcheck source=lib/common.sh
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+# shellcheck source=lib/bidding.sh
+source "$DV_ROOT/lib/bidding.sh"
+# shellcheck source=lib/self-update.sh
+source "$DV_ROOT/lib/self-update.sh"
+self_update
+if [ "$(self_update_head)" != "$entry_commit" ]; then exec "$DV_ROOT/bin/dv" "$@"; fi
 # shellcheck source=lib/herdr.sh
 source "$DV_ROOT/lib/herdr.sh"
 # shellcheck source=lib/commands.sh
@@ -16,8 +23,6 @@ source "$DV_ROOT/lib/commands.sh"
 source "$DV_ROOT/lib/delivery.sh"
 # shellcheck source=lib/polish.sh
 source "$DV_ROOT/lib/polish.sh"
-# shellcheck source=lib/bidding.sh
-source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/manager.sh
 source "$DV_ROOT/lib/manager.sh"
 # shellcheck source=lib/qa.sh
