@@ -108,6 +108,10 @@ event_json() {
     [ -z "$token" ] || id="$id:$token"
     [ -z "$episode" ] || id="$id:revive:$episode"
     if [ "$1" = question ]; then id="$id:${DV_QUESTION_EPISODE:-$(now):$$:$RANDOM}"; fi
+    # A job can block more than once at one head (e.g. a scope request after a
+    # PR is open). Without the reason in the ID the later event is dropped as
+    # already seen. Identical retransmissions still share one ID.
+    if [ "$1" = blocked ]; then id="$id:m$(printf '%s' "$3" | cksum | cut -d' ' -f1)"; fi
   fi
   jq -cn --arg kind "$1" --arg issue "$2" --arg message "$3" --arg host "$4" --arg head "$5" \
     --arg id "$id" --arg token "$token" --argjson time "${9:-$(now)}" \
