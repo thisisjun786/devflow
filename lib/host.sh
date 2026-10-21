@@ -172,11 +172,13 @@ host_check() {
   fi
   result=$(printf '%s\n' "$tools_json" | jq -s --arg host "$DV_HOST" --arg shell "${DV_HOST_SHELL:-${SHELL:-/bin/bash}}" \
     --arg configured "$DV_CODEX_BIN" --argjson proxy "$proxy" --argjson auth "$auth" \
-    --argjson login "$codex_login" --argjson ssh "$codex_ssh" --argjson probe "$probe_result" --argjson onboarding "$(claude_onboarding)" --argjson disk "$(disk_info)" \
-    '{host:$host,shell:$shell,tools:.,auth:$auth,codex:{configured:$configured,proxy:$proxy,login:$login,ssh:$ssh,probe:$probe},claude:{onboarding:$onboarding}} + $disk')
+    --argjson login "$codex_login" --argjson ssh "$codex_ssh" --argjson probe "$probe_result" --argjson onboarding "$(claude_onboarding)" \
+    --argjson watcher "$(self_update_watch_status)" --argjson disk "$(disk_info)" \
+    '{host:$host,shell:$shell,tools:.,auth:$auth,watcher:$watcher,codex:{configured:$configured,proxy:$proxy,login:$login,ssh:$ssh,probe:$probe},claude:{onboarding:$onboarding}} + $disk')
   if [ "$json" = 1 ]; then printf '%s\n' "$result"
   else
     printf 'Host: %s (local login / non-interactive SSH shell startup)\n' "$DV_HOST"
+    printf '%s\n' "$result" | jq -r '.watcher | "watcher: \(.status) commit=\(.commit) origin/main=\(.origin_main)"'
     printf '%s\n' "$result" | jq -r '"Disk available: \(.disk_available_gb // "unknown") GiB (\(.work_root))\nCache disk available: \(.cache_disk_available_gb // "unknown") GiB (\(.go_cache_path // "unavailable"))\nGo build cache: \(.cache_sizes_kb.go_build // "unknown") KiB; total ~/.cache: \(.cache_sizes_kb.total // "unknown") KiB"'
     printf '%s\n' "$result" | jq -r '.tools[] | "\(.name) expected=\(.expected)\n  login: \(.login.status) \(.login.version) \(.login.path) \(.login.reason)\n  ssh:   \(.ssh.status) \(.ssh.version) \(.ssh.path) \(.ssh.reason)"'
     printf '%s\n' "$result" | jq -r '.auth | to_entries[] | "auth \(.key): login=\(.value.login) ssh=\(.value.ssh)"'
