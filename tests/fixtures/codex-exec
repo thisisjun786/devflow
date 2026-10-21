@@ -10,6 +10,14 @@ jq -cn --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" >> "$s
 if [ "$scenario" = fresh ] && [ "$n" = 1 ]; then exit 9; fi
 printf '{"type":"thread.started","thread_id":"fixture-thread"}\n'
 case "$scenario" in
+  config-flags)
+    for arg in "$@"; do
+      case "$arg" in
+        projects.*)
+          printf '{"type":"item.completed","item":{"type":"error","message":"Codex is ignoring unrecognized session-flags: projects trust settings"}}\n'
+          sleep 30; exit 0 ;;
+      esac
+    done ;;
   nonzero) exit 7 ;;
   retry) if [ "$n" = 1 ]; then exit 7; fi ;;
   capacity) printf '{"type":"error","message":"model at capacity"}\n'; sleep 30; exit 0 ;;

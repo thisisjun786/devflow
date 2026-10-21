@@ -28,6 +28,17 @@ case_exec_success() {
   test ! -e "$CASE_DIR/herdr/calls"
   dv clean EX-1
 }
+case_exec_config_flags() {
+  exec_setup config-flags
+  dv start "$REPO" EX-1 exec
+  exec_wait
+  jq -e '.status=="done"' "$DV_STATE/EX-1/meta"
+  dv send EX-1 'Continue with supported exec resume flags'
+  exec_wait
+  jq -e '.status=="done"' "$DV_STATE/EX-1/meta"
+  test "$(cat "$DV_STATE/EX-1/stub-count")" = 2
+  grep -Fx 'trust_level = "trusted"' "$HOME/.codex/config.toml"
+}
 exec_failure() {
   exec_setup "$1"
   dv start "$REPO" EX-1 exec --mode exec

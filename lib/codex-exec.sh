@@ -81,8 +81,8 @@ codex_exec_run() {
     else
       args=("$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\"" -C "$WT")
       args+=(-c tools.experimental_request_user_input.enabled=false)
-      args+=(-c "projects.$(jq -Rn --arg path "$(pwd -P)" '$path').trust_level=\"trusted\"")
-      args+=(-c "projects.$(jq -Rn --arg path "$(codex_repo_root "$REPO")" '$path').trust_level=\"trusted\"")
+      # Project trust is persisted by cmd_start. Current exec rejects projects
+      # session overrides and emits error items even though the turn starts.
       [ "$DV_CODEX_DISABLE_HOOKS" != 1 ] || args+=(--disable hooks)
       [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
       args+=(exec)
