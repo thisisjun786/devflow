@@ -155,6 +155,8 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 정리 간격은 각 호스트의 마지막 **시작** 시각을 기준으로 계산합니다. watcher는 최대 60초 간격(`DV_DISK_INTERVAL`이 더 짧으면 해당 간격)으로 기한을 확인합니다. 정리가 오래 걸리거나 watcher가 기한 직전에 재시작되어도 다음 정리를 30분 더 미루지 않으며, 호스트 잠금과 실행 중인 수집 프로세스 확인으로 중복 정리를 막습니다.
 
+개행이 포함된 캐시 경로는 지원하지 않습니다. `go env GOCACHE` 출력과 심볼릭 링크를 해석한 캐시·홈 경로도 개행을 잃지 않고 검사합니다. 경로를 안전하게 비교할 수 없으면 캐시를 정리하지 않고 보존합니다.
+
 관리자 상태는 `$DV_HOME/submissions/ISSUE/task.json`이고 `dv queue`로 봅니다. A2A 상태 `submitted/working/input-required/completed/failed/canceled`를 사용하며, 개별 입찰은 `submitted/rejected`입니다. 기존 개발·PR 상태(`dv status`의 running/pr/ready 등)는 그대로 유지합니다. `bids.json`에는 점수·거절 이유, `dispatch.log`에는 시작 결과가 남습니다. 모두 거절하면 submitted로 남고, 기존 done/failed/landed 이벤트가 올 때만 재입찰합니다. 별도 입찰 폴링이나 데몬은 없습니다. `dv cancel`은 아직 배정되지 않은 제출만 취소합니다.
 
 로컬 저장소를 제출할 때는 HTTP(S)·SSH origin만 분산 clone 주소로 바꿉니다. 로컬 경로 또는 `file://` origin이면 작업 저장소 경로를 유지하므로 그 경로에 접근할 수 있는 호스트만 입찰할 수 있습니다. 성공한 `dv clean`은 `cleaned_at`을 기록해 done·agent.exit 없이도 수용량을 반환하며, dirty worktree 등으로 정리가 실패하면 자리를 유지합니다.

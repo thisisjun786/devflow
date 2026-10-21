@@ -6,7 +6,7 @@ disk_fixture() {
   cat > "$CASE_DIR/disk-bin/go" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "$*" = 'env GOCACHE' ]; then printf '%s\n' "$CASE_DIR/go env cache"; exit; fi
+if [ "$*" = 'env GOCACHE' ]; then printf '%s\n' "${DISK_ENV_CACHE:-$CASE_DIR/go env cache}"; exit; fi
 test "$*" = 'clean -cache'
 printf '%s\n' "$GOCACHE" > "$CASE_DIR/go.cache"
 printf '%s\n' "$*" >> "$CASE_DIR/go.calls"
@@ -118,6 +118,41 @@ case_disk_cache_canonical() {
   GOCACHE="$CASE_DIR/cache-parent/cache/." DF_STUB_KB=1048576 dv _disk-maintain
   test ! -e "$CASE_DIR/physical/cache/recent"
   test "$(cat "$CASE_DIR/go.cache")" = "$(cd "$CASE_DIR/physical/cache" && pwd -P)"
+}
+case_disk_cache_newline() {
+  disk_fixture
+  local cache="$CASE_DIR/"$'build\n'
+  mkdir -p "$cache" "$CASE_DIR/build"
+  ln -s "$cache" "$CASE_DIR/cache-link"
+  printf keep > "$CASE_DIR/build/document"
+  touch -a -t 202001010000 "$CASE_DIR/build/document"
+  GOCACHE="$CASE_DIR/cache-link/." DF_STUB_KB=1048576 dv _disk-maintain
+  test -f "$CASE_DIR/build/document"
+  test ! -e "$CASE_DIR/go.calls"
+}
+case_disk_env_cache_newline() {
+  disk_fixture
+  export DISK_ENV_CACHE="$CASE_DIR/"$'build\n'
+  mkdir -p "$DISK_ENV_CACHE" "$CASE_DIR/build"
+  printf keep > "$CASE_DIR/build/document"
+  touch -a -t 202001010000 "$CASE_DIR/build/document"
+  unset GOCACHE
+  DF_STUB_KB=1048576 dv _disk-maintain
+  test -f "$CASE_DIR/build/document"
+  test ! -e "$CASE_DIR/go.calls"
+}
+case_disk_home_newline() {
+  disk_fixture
+  local physical="$CASE_DIR/"$'physical-home\n'
+  mkdir -p "$physical"
+  ln -s "$physical" "$CASE_DIR/home-link"
+  export HOME="$CASE_DIR/home-link"
+  # Refuse cleanup when the physical HOME cannot be compared losslessly.
+  printf keep > "$GOCACHE/document"
+  touch -a -t 202001010000 "$GOCACHE/document"
+  DF_STUB_KB=1048576 dv _disk-maintain
+  test -f "$GOCACHE/document"
+  test ! -e "$CASE_DIR/go.calls"
 }
 case_disk_custom_cache() {
   host_setup; disk_fixture

@@ -17,9 +17,19 @@ disk_available_gb() {
   [ -n "$value" ] || return 1
   printf '%s\n' "$value"
 }
+disk_path_output() {
+  local path
+  # Preserve trailing newlines until validation. Plain $(pwd/go env) could
+  # silently change the path to an unrelated existing sibling directory.
+  path=$("$@" && printf '.') || return 1
+  path=${path%.}
+  path=${path%$'\n'} # remove the command's output delimiter, exactly once
+  [[ "$path" != *$'\n'* ]] || return 1
+  printf '%s\n' "$path"
+}
 disk_cache_path() {
   local cache=${GOCACHE:-}
-  if [ -z "$cache" ]; then cache=$(GOTOOLCHAIN=local go env GOCACHE 2>/dev/null) || return 1; fi
+  if [ -z "$cache" ]; then cache=$(GOTOOLCHAIN=local disk_path_output go env GOCACHE 2>/dev/null) || return 1; fi
   case "$cache" in
     /*) [ "$cache" != / ] && [ "$cache" != "$HOME" ] && [[ "$cache" != *$'\n'* ]] || return 1 ;;
     *) return 1 ;; # GOCACHE=off, absent Go, or an invalid relative path
@@ -29,8 +39,8 @@ disk_cache_path() {
 disk_cache_target() {
   local cache=$1 target home_root
   if [ ! -d "$cache" ] || [ -L "${cache%/}" ]; then return 1; fi
-  target=$(cd "$cache" && pwd -P) || return 1
-  home_root=$(cd "$HOME" && pwd -P) || return 1
+  target=$(cd "$cache" && disk_path_output pwd -P) || return 1
+  home_root=$(cd "$HOME" && disk_path_output pwd -P) || return 1
   # POSIX permits pwd to retain exactly two leading slashes. Normalize those
   # too so // and //home/user cannot bypass the physical-root comparisons.
   while [[ "$target" = //* ]]; do target=${target#/}; done
