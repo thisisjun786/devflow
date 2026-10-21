@@ -201,7 +201,7 @@ appserver_snapshot() {
   printf '%s\n' "$AS_SNAPSHOT" | appserver_atomic "$S/appserver/snapshot.json"
 }
 appserver_deliver() {
-  local id=$1 text=$2 recovery=${3:-0} state turn params method active
+  local id=$1 text=$2 recovery=${3:-0} state turn params method active cleaned
   appserver_snapshot
   state=$(printf '%s\n' "$AS_SNAPSHOT" | jq -r .agent_status)
   turn=$(printf '%s\n' "$AS_SNAPSHOT" | jq -r '.turn_id // ""')
@@ -216,7 +216,16 @@ appserver_deliver() {
     method=turn/steer
     params=$(printf '%s\n' "$params" | jq -c --arg turn "$turn" 'del(.effort) | .expectedTurnId=$turn')
   fi
+  # Invalidate the old cleanup before a new turn can finish. An unknown
+  # delivery can be running; only an explicit refusal restores the old state.
+  cleaned=$(jq -c 'select(.cleaned_at!=null) | {cleaned_at,status,done_at}' "$S/meta")
+  if [ -n "$cleaned" ]; then
+    meta_set '.status="running" | del(.cleaned_at,.done_at)'
+  fi
   appserver_mutate "$id" "$method" "$params"
+  if [ "$AS_CLASS" = refused ] && [ -n "$cleaned" ]; then
+    meta_set --argjson previous "$cleaned" '. + $previous'
+  fi
   if [ "$AS_CLASS" = accepted ]; then
     rm -f "$S/appserver/error.json"
     now > "$S/appserver/activity"

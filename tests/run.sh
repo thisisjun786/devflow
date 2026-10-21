@@ -159,6 +159,115 @@ case_clean() {
   git -C "$REPO" show-ref --verify "refs/heads/$branch"
   git -C "$CASE_DIR/remote.git" show-ref --verify "refs/heads/$branch"
 }
+resume_capacity_rejected() {
+  local rc=0
+  dv submit --kind task "$CASE_DIR/Desk project" TK-2 summary --brief "$CASE_DIR/task-brief" > "$CASE_DIR/second-submit" 2>&1 || rc=$?
+  cat "$CASE_DIR/second-submit"
+  printf 'second_submit_exit=%s\n' "$rc"
+  test "$rc" != 0
+  grep -F 'host has no free task slots' "$CASE_DIR/second-submit"
+  test ! -e "$DV_STATE/TK-2"
+}
+resume_capacity_observed() {
+  local issue=$1
+  jq -e '.cleaned_at==null' "$DV_STATE/$issue/meta"
+  # Metrics fingerprinting currently requires Git. Exercise its cleanup
+  # classification on dev jobs; keep non-Git task fixtures non-Git.
+  if jq -e '.kind!="task"' "$DV_STATE/$issue/meta" >/dev/null; then
+    dv _metrics-sample | jq -e --arg issue "$issue" '.[] | select(.issue==$issue) | .status!="cleaned"'
+  fi
+  # Check a copy for later cleanup eligibility, never the live fixture.
+  DV_ENTRY="$ROOT/bin/dv" bash -s -- "$issue" <<'DISK_CHECK'
+set -euo pipefail
+source "$ROOT/lib/common.sh"
+if disk_terminal_at "$DV_STATE/$1/meta"; then exit 1; fi
+jq '.status="landed" | .landed_at=123' "$DV_STATE/$1/meta" > "$CASE_DIR/terminal-meta"
+test "$(disk_terminal_at "$CASE_DIR/terminal-meta")" = 123
+DISK_CHECK
+}
+resume_capacity() {
+  local kind=$1 backend=$2 issue=RC-1 wt branch
+  task_setup
+  export DV_MAX_JOBS=1 DV_STALL_AFTER=300 DV_CODEX_MODE=exec
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/resume-capacity" DV_AGENT_CMD_codex=''
+  if [ "$backend" = tmux ]; then
+    needs_tmux
+    export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/resume-capacity"
+  fi
+  if [ "$kind" = task ]; then
+    issue=TK-1
+    export DV_TRUSTED_REPOS="$CASE_DIR/Desk project"
+    task_start
+  else
+    repo resume
+    export DV_TRUSTED_REPOS="$DV_TRUSTED_REPOS"$'\n'"$CASE_DIR/Desk project"
+    dv start "$REPO" "$issue" resume --mode exec
+  fi
+  if [ "$backend" = exec ]; then exec_wait "$issue"; else wait_done "$issue"; fi
+  wt=$(jq -r .worktree "$DV_STATE/$issue/meta")
+  cp "$DV_STATE/$issue/report.md" "$CASE_DIR/report-before"
+  dv clean "$issue"
+  jq -e '.cleaned_at>0' "$DV_STATE/$issue/meta"
+  if [ "$kind" = task ]; then
+    test -f "$wt/out/summary.txt"
+  else
+    # Restore the retained unmerged branch explicitly. Send must not recreate
+    # a worktree deleted by code clean.
+    test ! -d "$wt"
+    if dv send "$issue" 'Missing worktree must stay missing'; then return 1; fi
+    jq -e '.cleaned_at>0' "$DV_STATE/$issue/meta"
+    branch=$(jq -r .branch "$DV_STATE/$issue/meta")
+    git -C "$REPO" worktree add "$wt" "$branch"
+  fi
+  cmp "$DV_STATE/$issue/report.md" "$CASE_DIR/report-before"
+  touch "$DV_STATE/$issue/hold"
+  dv send "$issue" 'Revise the synthetic summary before delivery.'
+  if [ "$backend" = exec ]; then
+    dv status "$issue" --json | jq -e '.[0] | .alive and .status=="running" and .exec_status=="working"'
+  fi
+  wait_file "$DV_STATE/$issue/held.pid"
+  dv status "$issue" --json | jq -e '.[0].alive'
+  resume_capacity_rejected
+  resume_capacity_observed "$issue"
+  touch "$DV_STATE/$issue/release"
+  if [ "$backend" = exec ]; then exec_wait "$issue"; else wait_done "$issue"; fi
+  dv clean "$issue"
+  jq -e '.cleaned_at>0' "$DV_STATE/$issue/meta"
+  cmp "$DV_STATE/$issue/report.md" "$CASE_DIR/report-before"
+  if [ "$kind" = task ]; then test -f "$wt/out/summary.txt"; else test ! -d "$wt"; fi
+  dv submit --kind task "$CASE_DIR/Desk project" TK-2 summary --brief "$CASE_DIR/task-brief"
+  if [ "$backend" = exec ]; then exec_wait TK-2; else wait_done TK-2; fi
+}
+case_clean_resume_task_exec() { resume_capacity task exec; }
+case_clean_resume_code_exec() { resume_capacity code exec; }
+case_clean_resume_task_tmux() { resume_capacity task tmux; }
+case_clean_resume_code_tmux() { resume_capacity code tmux; }
+clean_resume_appserver() {
+  task_appserver_setup; task_start
+  export DV_MAX_JOBS=1
+  local s="$DV_STATE/TK-1" wt outcome=$1 rc=0
+  wt=$(jq -r .worktree "$s/meta")
+  printf 'summary\n' > "$wt/out/summary.txt"
+  printf 'synthetic report\n' > "$s/report.md"
+  printf 'idle\n' > "$CASE_DIR/server/status"
+  dv 'done' TK-1
+  dv clean TK-1
+  teardown_stop_pidfile "$s/appserver/client.pid"
+  jq -e '.cleaned_at>0' "$s/meta"
+  printf 'refused\n' > "$CASE_DIR/server/outcome"
+  if dv send TK-1 'Refused follow-up'; then return 1; fi
+  jq -e '.cleaned_at>0' "$s/meta"
+  printf '%s\n' "$outcome" > "$CASE_DIR/server/outcome"
+  dv send TK-1 'Revise the summary' > "$CASE_DIR/resume-receipt" || rc=$?
+  jq -e --arg outcome "$outcome" '.outcome==$outcome' "$CASE_DIR/resume-receipt"
+  if [ "$outcome" = accepted ]; then test "$rc" = 0; else test "$rc" != 0; fi
+  dv status TK-1 --json | jq -e '.[0] | .alive and .agent_status=="working"'
+  resume_capacity_rejected
+  resume_capacity_observed TK-1
+  test -f "$wt/out/summary.txt"
+}
+case_clean_resume_appserver() { clean_resume_appserver accepted; }
+case_clean_resume_appserver_unknown() { clean_resume_appserver unknown; }
 case_parallel() {
   needs_tmux; repo parallel
   # A linked source worktree must use the same repository lock as the main one.
@@ -1686,7 +1795,7 @@ source "$ROOT/tests/task.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race; do
+for name in clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
