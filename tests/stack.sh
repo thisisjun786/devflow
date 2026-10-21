@@ -21,7 +21,8 @@ stack_pr() {
   head=$(git -C "$wt" rev-parse HEAD)
   mkdir "$DV_STATE/S-$number"
   jq -n --arg issue "S-$number" --arg repo "$REPO" --arg wt "$wt" --arg branch "stack-$number" --arg head "$head" \
-    '{issue:$issue,repo:$repo,worktree:$wt,branch:$branch,base:"dev",status:"ready",host:"test-host",agent:"codex",backend:"herdr",herdr_pane:$issue,started:1,head:$head,start_head:$head}' > "$DV_STATE/S-$number/meta"
+    '{issue:$issue,repo:$repo,worktree:$wt,branch:$branch,base:"dev",status:"ready",host:"test-host",agent:"codex",backend:"herdr",herdr_pane:$issue,started:1,head:$head,start_head:$head,done_at:2}' > "$DV_STATE/S-$number/meta"
+  jq -n --arg head "$head" '{head:$head,done_at:2,checks:"green",review:"handled"}' > "$DV_STATE/S-$number/done.json"
   printf '{"url":"https://github.com/test/repo/pull/%s"}\n' "$number" > "$DV_STATE/S-$number/pr.json"
   jq -n --arg body "$body" --arg head "$head" --slurpfile checks "$GH_STUB_DIR/checks" \
     '{body:$body,state:"OPEN",baseRefName:"dev",checked_head:$head,reviews:[],statusCheckRollup:$checks[0]}' > "$GH_STUB_DIR/pr-$number.json"
@@ -470,4 +471,99 @@ case_stack_land_retry() {
   stack_watch; stack_await 2 '.status=="landed"'; stack_stop
   test "$(wc -l < "$DV_STATE/S-2/sent-input" | tr -d ' ')" = 1
   test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
+}
+
+case_stack_unfinished_auto_land() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  dv land S-1
+  rm -f "$DV_STATE/S-2/done.json"
+  local status
+  for status in pr running waiting-base; do
+    jq --arg status "$status" '.status=$status' "$DV_STATE/S-2/meta" > "$CASE_DIR/meta"
+    mv "$CASE_DIR/meta" "$DV_STATE/S-2/meta"
+    if dv land S-2; then return 1; fi
+    test "$(jq -r .status "$DV_STATE/S-2/meta")" = "$status"
+  done
+  # Even an old, incorrectly ready record cannot authorize automatic landing.
+  jq '.status="ready"' "$DV_STATE/S-2/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/S-2/meta"
+  stack_green 2
+  dv _stack-land S-2 "$(jq -r .stack_head "$DV_STATE/S-2/meta")"
+  test ! -f "$DV_STATE/S-2/done.json"
+  test -d "$DV_WORK/stack-2"
+  test "$(cat "$GH_STUB_DIR/order")" = 1
+}
+case_stack_auto_done_guard() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  dv land S-1
+  if dv land S-2; then return 1; fi
+  stack_green 2
+  local head approved variant
+  head=$(jq -r .head "$DV_STATE/S-2/meta")
+  approved=$(jq -r .stack_head "$DV_STATE/S-2/meta")
+  for variant in missing stale episode; do
+    jq '.status="ready" | .done_episode="current"' "$DV_STATE/S-2/meta" > "$CASE_DIR/meta"
+    mv "$CASE_DIR/meta" "$DV_STATE/S-2/meta"
+    case "$variant" in
+      missing) rm -f "$DV_STATE/S-2/done.json" ;;
+      stale) jq -n --arg head "$(git -C "$REPO" rev-parse main)" '{head:$head,episode:"current"}' > "$DV_STATE/S-2/done.json" ;;
+      episode) jq -n --arg head "$head" '{head:$head,episode:"previous"}' > "$DV_STATE/S-2/done.json" ;;
+    esac
+    dv _stack-land S-2 "$approved"
+    test -d "$DV_WORK/stack-2"
+    test "$(cat "$GH_STUB_DIR/order")" = 1
+  done
+  # A manually pushed worker commit cannot inherit an older matching meta head.
+  printf 'unfinished\n' > "$DV_WORK/stack-2/unfinished"
+  git -C "$DV_WORK/stack-2" add unfinished
+  git -C "$DV_WORK/stack-2" commit -qm 'unfinished worker change'
+  git -C "$DV_WORK/stack-2" push -q origin stack-2
+  jq -n --arg head "$head" '{head:$head,episode:"current"}' > "$DV_STATE/S-2/done.json"
+  dv _stack-land S-2 "$approved"
+  test -d "$DV_WORK/stack-2"
+  test "$(cat "$GH_STUB_DIR/order")" = 1
+  # Current-episode completion restores the normal automatic path.
+  head=$(git -C "$DV_WORK/stack-2" rev-parse HEAD)
+  jq --arg head "$head" '.head=$head' "$DV_STATE/S-2/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/S-2/meta"
+  jq -n --arg head "$head" '{head:$head,episode:"current"}' > "$DV_STATE/S-2/done.json"
+  stack_green 2
+  dv _stack-land S-2 "$approved"
+  jq -e '.status=="landed"' "$DV_STATE/S-2/meta"
+}
+case_stack_auto_done_merge() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  local completed approved
+  completed=$(git -C "$DV_WORK/stack-2" rev-parse HEAD)
+  jq -n --arg head "$completed" '{head:$head}' > "$DV_STATE/S-2/done.json"
+  dv land S-1
+  if dv land S-2; then return 1; fi
+  approved=$(jq -r .stack_head "$DV_STATE/S-2/meta")
+  jq -e --arg head "$completed" '.stack_update_from==$head and .stack_update_head==.head and .head!=$head' "$DV_STATE/S-2/meta"
+  # Another base advance while CI is pending must retain the completion that
+  # authorized our own merge chain, not authorize unrelated worker commits.
+  printf 'advance\n' > "$REPO/advance"
+  git -C "$REPO" add advance; git -C "$REPO" commit -qm advance
+  git -C "$REPO" push -q origin dev
+  if dv _stack-land S-2 "$approved"; then return 1; fi
+  jq -e --arg head "$completed" '.stack_update_from==$head' "$DV_STATE/S-2/meta"
+  stack_green 2
+  dv _stack-land S-2 "$approved"
+  jq -e '.status=="landed"' "$DV_STATE/S-2/meta"
+}
+case_stack_resume_done_episode() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  local head
+  head=$(jq -r .head "$DV_STATE/S-2/meta")
+  jq -n --arg head "$head" '{head:$head}' > "$DV_STATE/S-2/done.json"
+  stack_waiting 2; dv land S-1
+  stack_watch; stack_await 2 '.stack_resume.status=="sent"'; stack_stop
+  # The earlier completion must not satisfy the new resume episode.
+  jq -e '(.done_episode | type=="string" and length>0)' "$DV_STATE/S-2/meta"
+  if dv land S-2; then return 1; fi
+  jq -e '.status=="running"' "$DV_STATE/S-2/meta"
+  stack_green 2
+  jq -e --slurpfile meta "$DV_STATE/S-2/meta" '.episode==$meta[0].done_episode' "$DV_STATE/S-2/done.json"
+  dv _stack-land S-2 "$(jq -r .stack_head "$DV_STATE/S-2/meta")"
+  jq -e '.status=="landed"' "$DV_STATE/S-2/meta"
 }

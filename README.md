@@ -90,6 +90,8 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 대기 시작 시각은 `stack_waiting_since`에 보존합니다. 대기가 `DV_STALL_AFTER`를 넘었고 모든 기반이 대상 브랜치에 병합됐으면 `stalled` 이벤트의 메시지로 `bases-merged`를 보냅니다. 시각이 없는 과거 기록은 처음 관측한 시각부터 셉니다. 재개 요청은 `stack_resume`과 `stack-resume.log`에 기록하여 watcher 재시작과 이벤트 재전달에도 중복 전송하지 않습니다. 전송 실패는 `blocked`로 알리고 로그를 남깁니다.
 
+자동 land는 현재 작업 episode의 `done.json`을 확인합니다. 완료 head가 현재 head 또는 devflow가 base를 병합하기 전의 완료 head와 일치해야 합니다. 재개 전의 완료 기록, 다른 head의 기록, 완료 기록이 없는 작업으로는 자동 병합하지 않습니다. 미완료 작업의 land 시도가 실패해도 `pr`·`running`·`waiting-base` 상태를 `ready`로 승격하지 않습니다.
+
 업데이트 충돌은 worktree에 남기고 해당 에이전트에 `dv send`를 한 번 요청합니다. 요청은 `stack-conflict.sent`, 전달 결과는 `stack-conflict.log`에 보존합니다. 에이전트가 충돌을 해결·커밋·push하면 큐가 새 head의 CI를 확인하여 이어갑니다. 전달 실패는 자동으로 중복 전송하지 않으므로 로그를 확인해야 합니다. dirty worktree, API 오류, 비어 있거나 실패한 CI는 병합하지 않으며 기존 완료·리뷰 기록과 원격 브랜치를 보존합니다.
 
 Codex 기본 모드는 `DV_CODEX_MODE=auto`입니다. 실행 호스트에 연결 가능한 App Server가 있으면 사용하고, 없으면 exec를 선택합니다. `DV_CODEX_MODE=exec` 또는 `--mode exec`는 `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal`/`tui` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Claude·Devin 기본값은 goal입니다. auto 제출은 큐에서도 auto를 보존해 실제 실행 호스트에서 backend를 선택합니다.

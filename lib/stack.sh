@@ -7,9 +7,26 @@ stack_waiting_base() {
     '.stack_waiting_since=(if .status=="waiting-base" then (.stack_waiting_since // $at) else $at end) |
      .status="waiting-base"'
 }
+stack_completion() {
+  local head=$1
+  # Match both the worker episode and the actual worktree head. Our own base
+  # merges may advance that head, but unrelated commits need a fresh done.
+  jq -e --arg head "$head" --slurpfile meta "$S/meta" '
+    $meta[0] as $m |
+    (.head | type=="string" and length>0) and
+    ((.episode // "")==($m.done_episode // "")) and
+    (.head==$m.head or (.head==$m.stack_update_from and $m.head==$m.stack_update_head)) and
+    ($head==.head or ($head==$m.stack_update_head and .head==$m.stack_update_from))
+  ' "$S/done.json" >/dev/null 2>&1
+}
 stack_land_gate() {
   local pr=$1 head=$2 snapshot body local_body='' dependencies dependency state base_head current
-  local merge_commit merged_commits=''
+  local merge_commit merged_commits='' update_from=$head
+  # cmd_land holds the operation lock here. Recheck after the automatic
+  # caller's initial check in case another operation changed the episode.
+  if [ "${STACK_AUTOMATIC:-0}" = 1 ]; then
+    [ "$(jq -r .status "$S/meta")" = ready ] && stack_completion "$head" || return 75
+  fi
   snapshot=$(cd "$WT" && gh pr view "$pr" --json body,headRefOid,baseRefName,state) || return 1
   body=$(printf '%s\n' "$snapshot" | jq -er '.body | select(type=="string")') || return 1
   [ ! -f "$S/pr.md" ] || local_body=$(cat "$S/pr.md") || return 1
@@ -51,9 +68,12 @@ stack_land_gate() {
       return 75
     fi
   done
-  # A completed worker remains completed when CI, push, merge policy or the
-  # GitHub merge temporarily fails. Only unmet bases require a new resume.
-  meta_set '.status="ready"'
+  # Preserve unfinished pr/running/waiting-base states. Only completion for
+  # this episode can restore ready after waiting on a dependency.
+  if stack_completion "$head"; then
+    update_from=$(jq -er .head "$S/done.json") || return 1
+    meta_set '.status="ready"'
+  fi
   if ! git -C "$WT" merge --no-edit "$base_head"; then
     if git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null && [ ! -e "$S/stack-conflict.sent" ]; then
       printf 'Resolve the existing merge of origin/%s in this worktree, commit and push with dv pr %s, wait for green CI, and finish with dv done %s. Preserve review-fix.sent; do not request another review or force push. Stack ordering and landing remain dv responsibilities.\n' \
@@ -63,7 +83,8 @@ stack_land_gate() {
   fi
   require_clean "$WT"
   head=$(git -C "$WT" rev-parse HEAD) || return 1
-  meta_set --arg head "$head" '.stack_update_head=$head'
+  meta_set --arg head "$head" --arg from "$update_from" \
+    '.stack_update_head=$head | .stack_update_from=$from'
   if [ "$current" != "$head" ]; then
     git -C "$WT" push origin "$BRANCH:refs/heads/$BRANCH" || return 1
   fi
@@ -88,7 +109,8 @@ cmd_stack_land() {
   # Old queue entries cannot authorize a different stack episode.
   jq -e --arg head "$2" '.stack_head==$head' "$S/meta" >/dev/null || return 0
   [ "$(jq -r .status "$S/meta")" = ready ] || return 0
-  cmd_land "$1"
+  stack_completion "$(git -C "$WT" rev-parse HEAD)" || return 0
+  STACK_AUTOMATIC=1 cmd_land "$1"
 }
 stack_resume_key() {
   jq -c '[.started,.stack_waiting_since,.stack_head,.head,.start_head,.stack_dependencies]' |
@@ -142,7 +164,7 @@ cmd_stack_resume() {
   fi
   prompt="All stack dependencies are merged into origin/$BASE. Resume this job in its existing worktree: merge origin/$BASE, resolve any conflict while preserving local work, rerun the required checks, commit changes, run dv pr $ISSUE, wait for green CI on the current head, and finish with dv done $ISSUE. Preserve review-fix.sent and handled reviews; do not request another review or force push."
   meta_set --arg key "$key" --arg base "$base_head" --argjson at "$(now)" \
-    '.stack_resume={key:$key,base:$base,status:"sending",at:$at}'
+    '.stack_resume={key:$key,base:$base,status:"sending",at:$at} | .done_episode=("stack-"+$key)'
   # dv send owns its own operation lock; keep only the resume reservation.
   rmdir "$S/.operation"
   trap 'owned_unlock "$S/.stack-resume-lock" "$$"' EXIT
@@ -187,7 +209,7 @@ stack_queue_host() {
       head=$(printf '%s\n' "$row" | jq -er .stack_head) || return 1
       # Completion after a resume is a fresh attempt, even if an older
       # watcher already consumed an event for this same land approval.
-      key=$(printf '%s\n' "$row" | jq -r '[.head // .start_head, .done_at // 0] | map(tostring) | join(":")') || return 1
+      key=$(printf '%s\n' "$row" | jq -r '[.head // .start_head, .done_at // 0, .done_episode // ""] | map(tostring) | join(":")') || return 1
       id="$host:$issue:stack-land:$head:$key"
     fi
     event=$(event_json "$kind" "$issue" 'Resume stacked job' "$host" "$head" "$id") || return 1
