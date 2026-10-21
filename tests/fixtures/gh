@@ -26,6 +26,9 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
   esac
 fi
 case "$*" in
+  'api --paginate repos/'*/comments)
+    [ ! -f "$GH_STUB_DIR/comments-fail" ] || exit 1
+    if [ -f "$GH_STUB_DIR/comments" ]; then cat "$GH_STUB_DIR/comments"; else printf '[]\n'; fi ;;
   'repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed')
     [ ! -f "$GH_STUB_DIR/repo-fail" ] || exit 1
     if [ "${GH_REPO:-}" = other/repo ]; then

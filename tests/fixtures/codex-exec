@@ -10,12 +10,21 @@ jq -cn --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" >> "$s
 if [ "$scenario" = fresh ] && [ "$n" = 1 ]; then exit 9; fi
 printf '{"type":"thread.started","thread_id":"fixture-thread"}\n'
 case "$scenario" in
+  pr-loop)
+    "$ROOT/tests/fixtures/pr-worker"
+    printf '{"type":"turn.completed"}\n'
+    exit 0 ;;
   done-hold|done-fail)
     printf '%s\n' "$$" > "$s/held.pid"
     printf '%s\n' "$PPID" > "$s/wrapper.pid"
     printf 'completed work\n' > completed.txt
     git add completed.txt
     git diff --cached --quiet || git commit -qm "$DV_ISSUE: completed fixture work"
+    if git config --get remote.origin.url | grep -q github.com; then
+      dv pr "$DV_ISSUE" > /dev/null
+      dv pr-wait "$DV_ISSUE" --foreground > /dev/null
+      dv pr-wait "$DV_ISSUE" --foreground --review-handled > /dev/null
+    fi
     dv 'done' "$DV_ISSUE" --note 'done before exit' > /dev/null
     touch "$s/after-done"
     while [ ! -f "$s/release" ]; do
