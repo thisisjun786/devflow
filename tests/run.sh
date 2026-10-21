@@ -1597,6 +1597,8 @@ source "$ROOT/tests/claude.sh"
 source "$ROOT/tests/followups.sh"
 # shellcheck source=tests/watcher.sh
 source "$ROOT/tests/watcher.sh"
+# shellcheck source=tests/stall.sh
+source "$ROOT/tests/stall.sh"
 # shellcheck source=tests/bidding-edge.sh
 source "$ROOT/tests/bidding-edge.sh"
 # shellcheck source=tests/bidding-order.sh
@@ -1606,6 +1608,14 @@ source "$ROOT/tests/manager.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+  fi
+done
 for name in manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi

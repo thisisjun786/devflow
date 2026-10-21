@@ -329,6 +329,7 @@ cmd_kick() {
 }
 cmd_status() {
   local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
+  local goal_stalled goal_active goal_state screen agent_state_seq agent_session
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   {
@@ -336,6 +337,7 @@ cmd_status() {
       [ -f "$path" ] || continue
       [ -z "$selected" ] || [ "$(basename "$(dirname "$path")")" = "$selected" ] || continue
       alive=false; tmux_alive=false; agent_status=unknown; question_pending=false
+      goal_stalled=false; goal_active=false; agent_state_seq=null; agent_session=null
       backend=$(jq -r '.backend // "tmux"' "$path")
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
@@ -344,6 +346,8 @@ cmd_status() {
         if [ -n "$pane" ]; then
           info=$(herdr_info "$pane" 2>/dev/null) || info='{}'
           agent_status=$(printf '%s\n' "$info" | jq -r '.agent_status // "unknown"')
+          agent_state_seq=$(printf '%s\n' "$info" | jq -c '.state_change_seq // null')
+          agent_session=$(printf '%s\n' "$info" | jq -c '.agent_session // null')
           # A live pane may be running a custom command with no detected agent.
           alive=$(printf '%s\n' "$info" | jq -r '.pane_id!=null')
           pending="$(dirname "$path")/question.pending"
@@ -361,11 +365,28 @@ cmd_status() {
       elif command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then
         alive=true; tmux_alive=true
       fi
+      if [ "$alive" = true ] && jq -e '.status=="running" and .agent=="codex"' "$path" >/dev/null; then
+        screen=''
+        if [ "$backend" = herdr ]; then
+          screen=$(herdr_cmd pane read "$pane" --source visible 2>/dev/null) || screen=''
+        else
+          screen=$(tmux_dv capture-pane -p -t "dv-$(jq -r .issue "$path"):0.0" 2>/dev/null) || screen=''
+        fi
+        # The most recent visible goal banner wins if the old one is still on
+        # screen. Explicit activity also resets a tmux stall (no herdr hooks).
+        goal_state=$(printf '%s\n' "$screen" | awk '
+          /^[[:space:]│┃]*([•*][[:space:]]+)?Goal stalled([[:space:]:]|$)/ { state="stalled" }
+          /^[[:space:]│┃]*([•*][[:space:]]+)?Pursuing goal([[:space:]:]|$)/ { state="active" }
+          END { print state }')
+        case "$goal_state" in stalled) goal_stalled=true ;; active) goal_active=true ;; esac
+      fi
       elapsed=$(( $(now) - $(jq -r .started "$path") ))
       # done_at can describe an earlier PR revision. Read the completion head
       # without changing metadata or the bidding code's historical done_at.
       done_head=$(jq -r '.head | select(type=="string")' "$(dirname "$path")/done.json" 2>/dev/null) || done_head=''
-      row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending}' "$path")
+      row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" \
+        --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" \
+        '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session}' "$path")
       if [ "$json" = 1 ]; then printf '%s\n' "$row"
       else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
     done
