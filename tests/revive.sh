@@ -6,9 +6,13 @@ revive_setup() {
   repo revive
   herdr_setup
   export DV_START_WAIT=2
-  dv start "$REPO" RV-1 followup --mode exec
+  dv start "$REPO" RV-1 followup --mode goal
   wait_native RV-1
   RV_STATE="$DV_STATE/RV-1"
+  # Saved terminal-based exec jobs from before DF-84 keep their old revival
+  # path. New background exec jobs are covered in codex-exec.sh.
+  jq '.mode="exec"' "$RV_STATE/meta" > "$CASE_DIR/legacy-meta"
+  mv "$CASE_DIR/legacy-meta" "$RV_STATE/meta"
   RV_WT=$(jq -r .worktree "$RV_STATE/meta")
   printf 'Original review correction\n' > "$RV_STATE/review-fix.sent"
   printf '{"url":"https://github.com/test/repo/pull/1"}\n' > "$RV_STATE/pr.json"

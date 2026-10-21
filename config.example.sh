@@ -23,7 +23,9 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_AGENT_QUESTIONS:=sion}" # herdr: question tools on; off (always under tmux): disable Codex/Claude question tools
 : "${DV_CODEX_SESSIONS:=${CODEX_HOME:-$HOME/.codex}/sessions}" # question transcripts, read only
 : "${DV_CLAUDE_SESSIONS:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" # question transcripts, read only
-: "${DV_MODE:=goal}"
+: "${DV_CODEX_MODE:=exec}" # exec (background JSONL) or goal (interactive terminal)
+: "${DV_MODE:=}" # optional legacy override; --mode takes precedence
+: "${DV_STALL_AFTER:=600}" # exec: seconds without a new JSON event before retry/block
 : "${DV_AGENT_CMD_codex:=}" # complete shell command, no extra CLI flags
 : "${DV_AGENT_CMD_claude:=}"
 : "${DV_AGENT_CMD_devin:=}"

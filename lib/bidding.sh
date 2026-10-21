@@ -74,6 +74,9 @@ bid_active() {
   for path in "$DV_STATE"/*/meta; do
     [ -f "$path" ] || continue
     [ ! -f "$(dirname "$path")/agent.exit" ] || continue
+    if jq -e '.backend=="exec"' "$path" >/dev/null; then
+      codex_exec_alive "$(dirname "$path")" || continue
+    fi
     jq -c 'select(.done_at==null and .cleaned_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required"))' "$path"
   done | jq -s length
 }
@@ -122,6 +125,7 @@ cmd_bid() {
     if ! codex_repo_allowed "$root" 2>/dev/null; then trust=false; fi
   fi
   if { [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; } || command -v tmux >/dev/null; then backend=true; fi
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ "$(codex_default_mode "$agent")" = exec ]; then backend=true; fi
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
     --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" \
@@ -142,6 +146,7 @@ cmd_submit() {
     shift 2
   done
   [ -f "$brief" ] || fail 'brief file not found'
+  [ -n "$mode" ] || mode=$(codex_default_mode "$agent")
   case "$agent:$mode" in codex:goal|codex:exec|claude:goal|devin:goal) ;; *) fail 'invalid agent/mode' ;; esac
   [ -z "$base" ] || git check-ref-format "refs/heads/$base" >/dev/null || fail 'invalid base'
   if [ -d "$repo" ]; then
