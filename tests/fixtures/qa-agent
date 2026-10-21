@@ -7,6 +7,10 @@ jq -c '{head,issue,worktree}' "$DV_STATE/$DV_ISSUE/meta" >> "$CASE_DIR/qa-runs"
 while [ ! -f "$CASE_DIR/qa-release" ]; do sleep 0.1; done
 if [ "${DV_QA_FINDING:-0}" = 1 ]; then
   printf '{"title":"Cannot start a conversation","kind":"bug","steps":"Open the TUI and type hello","expected":"A response","actual":"No response","evidence":"Synthetic transcript: no response"}\n' > "$DV_STATE/$DV_ISSUE/finding.json"
+  if [ -n "${DV_QA_MATCH:-}" ]; then
+    jq --argjson match "$DV_QA_MATCH" '.match=$match' "$DV_STATE/$DV_ISSUE/finding.json" > "$DV_STATE/$DV_ISSUE/finding.tmp"
+    mv "$DV_STATE/$DV_ISSUE/finding.tmp" "$DV_STATE/$DV_ISSUE/finding.json"
+  fi
   dv qa finding "$DV_ISSUE" "$DV_STATE/$DV_ISSUE/finding.json"
   dv qa finding "$DV_ISSUE" "$DV_STATE/$DV_ISSUE/finding.json"
 fi

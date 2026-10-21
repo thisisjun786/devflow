@@ -344,8 +344,15 @@ wait_file() {
   return 1
 }
 wait_pr_ready() {
+  local pid
   for _ in {1..100}; do
-    if [ -s "$DV_STATE/$1/pr-ready.json" ] && [ ! -d "$DV_STATE/$1/.pr-wait" ]; then return; fi
+    if [ -s "$DV_STATE/$1/pr-ready.json" ] && [ ! -d "$DV_STATE/$1/.pr-wait" ]; then
+      # The waiter releases its lock before checking worker recovery. Wait for
+      # that process too, so teardown cannot race its final metadata writes.
+      pid=$(cat "$DV_STATE/$1/pr-wait.pid" 2>/dev/null || true)
+      if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null ||
+        [ "$(ps -p "$pid" -o stat= 2>/dev/null | cut -c 1)" = Z ]; then return; fi
+    fi
     sleep 0.1
   done
   printf 'Timed out waiting for PR waiter to finish: %s\n' "$1" >&2
@@ -1631,11 +1638,11 @@ source "$ROOT/tests/pr-worker.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids; do
+for name in qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids qa_transport_retry qa_recovered_capacity qa_explicit_match qa_config_data qa_unbound_event qa_bound_event; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
   else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
 done
-for name in pr_worker_foreground pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_no_rereview pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
+for name in pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_no_rereview pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

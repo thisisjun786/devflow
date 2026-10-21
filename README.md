@@ -185,9 +185,16 @@ shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fix
 `DV_QA=1`을 호스트 설정 또는 저장소의 `.devflow`에 두면 `landed` 뒤에
 새 QA 작업이 실행됩니다. 기본값은 `0`입니다. QA는 최신 merged base를 별도
 임시 clone으로 가져와 그 revision의 `.devflow`를 읽습니다. 소유자의 checkout과
-설정은 바꾸지 않습니다. `DV_QA_AGENT=codex`는 새 Codex exec 세션,
+설정은 바꾸지 않습니다. QA 설정은 `DV_QA=1`, `DV_QA_AGENT=claude` 같은
+literal 대입만 읽으며 `.devflow`의 shell 코드를 실행하지 않습니다.
+`DV_QA_AGENT=codex`는 새 Codex exec 세션,
 `claude`는 새 Claude Code 세션입니다. `DV_QA_AGENT_CMD`는 prompt 파일을
 받는 명령으로 시험 또는 별도 실행기에 쓸 수 있습니다.
+
+QA 저장소의 승인 기준은 watcher가 보관한 작업 기록입니다. 로컬 landed meta
+또는 원래 제출의 repo·host·head·발급 token과 맞는 이벤트만 받으며, 원격 호스트의
+status/origin 응답으로 저장소를 선택하지 않습니다. 기록 없는 원격 수동 작업은
+QA를 시작하지 않으므로 해당 watcher를 통해 `dv submit`으로 배정하세요.
 
 watcher가 저장소마다 한 작업만 실행하고, 실행 중 들어온 병합은 다음 최신
 head 작업 하나로 합칩니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이고

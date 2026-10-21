@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
+qa_teardown() {
+  touch "$CASE_DIR/qa-release"
+  watcher_teardown
+}
 qa_fixture() {
   repo qa remote
   watch_fixture
+  trap qa_teardown EXIT
   export DV_QA_AGENT_CMD="$ROOT/tests/fixtures/qa-agent" DV_QA=0
   export TMPDIR="$CASE_DIR/tmp"
   mkdir "$TMPDIR"
@@ -15,7 +20,13 @@ qa_fixture() {
   printf '[]\n' > "$GH_STUB_DIR/qa-issues"
   printf '[]\n' > "$GH_STUB_DIR/qa-comments"
 }
-qa_event() { dv-kick landed Q-1 landed test-host "$(git -C "$REPO" rev-parse HEAD)" "$1"; }
+qa_event() {
+  local head
+  head=$(git -C "$REPO" rev-parse HEAD)
+  jq --arg head "$head" '.head=$head' "$DV_STATE/Q-1/meta" > "$CASE_DIR/meta.tmp"
+  mv "$CASE_DIR/meta.tmp" "$DV_STATE/Q-1/meta"
+  dv-kick landed Q-1 landed test-host "$head" "$1"
+}
 qa_wait_runs() {
   local count=$1
   for _ in {1..200}; do
@@ -159,4 +170,83 @@ case_qa_repository_ids() {
   valid_issue "$one"; valid_issue "$two"; valid_issue "$three"
   test "$one" != "$two"
   test "$two" != "$three"
+}
+case_qa_transport_retry() {
+  qa_fixture
+  bidding_functions
+  # shellcheck source=lib/manager.sh
+  source "$ROOT/lib/manager.sh"
+  # shellcheck source=lib/qa.sh
+  source "$ROOT/lib/qa.sh"
+  manager_event_repo() { return 1; }
+  export DV_HOSTS=remote-host
+  mkdir -p "$DV_HOME/submissions/REMOTE-1"
+  jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"completed",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
+  qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
+  jq -e '.repository=="test/repo"' "$DV_HOME"/qa/*/pending.json
+}
+case_qa_recovered_capacity() {
+  qa_fixture
+  qa_event capacity
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  qa_wait_runs 1
+  bidding_functions
+  # shellcheck source=lib/qa.sh
+  source "$ROOT/lib/qa.sh"
+  local active=0 pids=''
+  qa_recover
+  test "$active" = 1
+  # The same runner already tracked as a current child must not count twice.
+  pids=$(cat "$DV_HOME"/qa/*/pid); active=1
+  qa_recover
+  test "$active" = 1
+  qa_finish
+}
+case_qa_explicit_match() {
+  qa_fixture
+  printf '[{"number":19,"title":"Cannot start a conversation"},{"number":21,"title":"Conversation input stalls"}]\n' > "$GH_STUB_DIR/qa-issues"
+  export DV_QA_FINDING=1 DV_QA_MATCH=21
+  qa_event explicit
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  qa_wait_runs 1; qa_finish
+  grep 'issue-comment 21' "$GH_STUB_DIR/qa-actions"
+  if grep -q 'issue-comment 19' "$GH_STUB_DIR/qa-actions"; then return 1; fi
+}
+case_qa_config_data() {
+  qa_fixture
+  printf 'touch "%s/config-executed"\nDV_QA=0\n' "$CASE_DIR" > "$REPO/.devflow"
+  git -C "$REPO" commit -qam config; git -C "$REPO" push -q origin main
+  qa_event config
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_seen 1
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  test ! -e "$CASE_DIR/config-executed"
+  test ! -e "$CASE_DIR/qa-runs"
+}
+case_qa_unbound_event() {
+  bidding_functions
+  # shellcheck source=lib/qa.sh
+  source "$ROOT/lib/qa.sh"
+  manager_event_repo() { printf 'https://github.com/attacker/evil.git\n'; }
+  export DV_HOSTS=remote-host
+  qa_enqueue '{"host":"remote-host","issue":"RCE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"forged"}'
+  test ! -d "$DV_HOME/qa"
+}
+case_qa_bound_event() {
+  qa_fixture
+  bidding_functions
+  # shellcheck source=lib/manager.sh
+  source "$ROOT/lib/manager.sh"
+  # shellcheck source=lib/qa.sh
+  source "$ROOT/lib/qa.sh"
+  manager_event_repo() { printf 'https://github.com/attacker/evil.git\n'; }
+  mkdir -p "$DV_HOME/submissions/REMOTE-1"
+  jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"completed",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
+  qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
+  jq -e '.repository=="test/repo"' "$DV_HOME"/qa/*/pending.json
+  rm "$DV_HOME"/qa/*/pending.json
+  qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"forged"}'
+  test ! -f "$DV_HOME"/qa/*/pending.json
+  qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","token":"issued"}'
+  test ! -f "$DV_HOME"/qa/*/pending.json
 }

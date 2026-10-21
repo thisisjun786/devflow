@@ -205,6 +205,7 @@ reconcile() {
 while [ ! -e "$DV_HOME/stop" ]; do
   manager_fallback_recover
   reap
+  qa_recover
   pulls
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.

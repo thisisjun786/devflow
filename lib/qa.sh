@@ -13,17 +13,31 @@ qa_job_id() {
   printf 'QA-%s-%s-%s\n' "$slug" "$key" "${head:0:12}"
 }
 qa_enqueue() {
-  local event=$1 repo key dir remote base='' issue host tmp
-  repo=$(manager_event_repo "$event") || return 0
+  local event=$1 repo key dir remote base='' issue host tmp head token record=''
+  issue=$(jq -er '.issue | select(test("^[A-Za-z0-9][A-Za-z0-9_-]*$"))' <<< "$event") || return 0
+  host=$(jq -r .host <<< "$event"); head=$(jq -r .head <<< "$event"); token=$(jq -r '.token // ""' <<< "$event")
+  # Operator-owned job records are the repository allowlist. A remote queue
+  # or status response cannot nominate a repository or grant QA authority.
+  if [ "$host" = "$DV_HOST" ] && [ -f "$DV_STATE/$issue/meta" ]; then
+    record=$(jq -ce --arg host "$host" --arg head "$head" --arg token "$token" \
+      'select(.host==$host and .status=="landed" and .head==$head and (.award_token // "")==$token)' \
+      "$DV_STATE/$issue/meta") || record=''
+  elif [ -f "$DV_HOME/submissions/$issue/task.json" ] && [ -n "$token" ]; then
+    record=$(jq -ce --arg host "$host" --arg head "$head" --arg token "$token" \
+      'select(.host==$host and .status=="completed" and .head==$head and .token==$token)' \
+      "$DV_HOME/submissions/$issue/task.json") || record=''
+  fi
+  if [ -z "$record" ]; then
+    printf 'Ignoring QA event without an authorized landed job: %s\n' "$issue"
+    return 0
+  fi
+  repo=$(jq -er .repo <<< "$record") || return 1
+  base=$(jq -r '.base // ""' <<< "$record")
   key=$(manager_identity "$repo") || return 1
   case "$key" in github.com/*/*) ;; *) return 0 ;; esac
   remote="https://$key.git"
   if [ -d "$repo" ]; then
     remote=$(git -C "$repo" ls-remote --get-url origin) || return 1
-  fi
-  issue=$(jq -r .issue <<< "$event"); host=$(jq -r .host <<< "$event")
-  if [ "$host" = "$DV_HOST" ] && [ -f "$DV_STATE/$issue/meta" ]; then
-    base=$(jq -r '.base // empty' "$DV_STATE/$issue/meta")
   fi
   dir="$DV_HOME/qa/$(printf '%s' "$key" | cksum | awk '{print $1 "-" $2}')"
   mkdir -p "$dir"
@@ -36,6 +50,18 @@ qa_enqueue() {
     '{event:$event,repository:$repo,remote:$remote,base:$base}' > "$tmp"
   mv "$tmp" "$dir/pending.json"
 }
+qa_recover() {
+  local marker dir runner child
+  for marker in "$DV_HOME"/qa/*/pid; do
+    [ -f "$marker" ] || continue
+    dir=$(dirname "$marker")
+    runner=$(cat "$dir/runner.pid" 2>/dev/null) || runner=$(cat "$marker")
+    child=$(cat "$dir/child.pid" 2>/dev/null || true)
+    if qa_alive "$runner" || qa_alive "$child"; then
+      case " $pids " in *" $runner "*) ;; *) active=$((active + 1)) ;; esac
+    fi
+  done
+}
 qa_dispatch() {
   local request dir pid child
   for request in "$DV_HOME"/qa/*/pending.json; do
@@ -47,21 +73,30 @@ qa_dispatch() {
       if qa_alive "$pid" || qa_alive "$child"; then continue; fi
       # An interrupted job is retained for inspection, never restarted with
       # uncertain external effects. A later landing may start the latest head.
-      rm -f "$dir/pid" "$dir/child.pid" "$dir/claim"
+      rm -f "$dir/pid" "$dir/child.pid" "$dir/claim" "$dir/runner.pid"
     fi
     mv "$request" "$dir/running.json"
     printf '%s\n' "$$" > "$dir/pid"
     "$DV_ROOT/bin/dv" _qa-run "$dir" >> "$dir/log" 2>&1 &
     pid=$!
+    printf '%s\n' "$pid" > "$dir/runner.pid"
     pids="$pids $pid"; active=$((active + 1))
   done
 }
 qa_settings() (
+  local line key value
   cd "$1" || exit 1
   if [ -f .devflow ]; then
-    # Repository-owned configuration, like DV_TEST_CMD; isolated from watcher.
-    # shellcheck source=/dev/null
-    source ./.devflow >&2 || exit 1
+    # Opt-in discovery is data, not permission to execute repository code on
+    # the watcher. Read only literal QA assignments; never source .devflow.
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(DV_QA|DV_QA_AGENT)= ]]; then
+        key=${BASH_REMATCH[2]}
+        value=$(printf '%s' "${line#*=}" | sed 's/[[:space:]]*#.*$//;s/^[[:space:]]*//;s/[[:space:]]*$//')
+        case "$value" in \"*\") value=${value#\"}; value=${value%\"} ;; \'*\') value=${value#\'}; value=${value%\'} ;; esac
+        if [ "$key" = DV_QA ]; then DV_QA=$value; else DV_QA_AGENT=$value; fi
+      fi
+    done < .devflow
   fi
   case "$DV_QA" in 0|1) ;; *) fail 'DV_QA must be 0 or 1' ;; esac
   case "$DV_QA_AGENT" in codex|claude) ;; *) fail 'DV_QA_AGENT must be codex or claude' ;; esac
@@ -195,7 +230,8 @@ qa_finding() (
   # keyword search when titles differ. A supplied match must still be open.
   issues=$(qa_open_issues)
   match=$(jq -r --arg title "$title" --argjson data "$data" '[.[] | select(
-    (.title|ascii_downcase)==($title|ascii_downcase) or .number==$data.match)] | first | .number // empty' <<< "$issues")
+    if $data.match!=null then .number==$data.match
+    else (.title|ascii_downcase)==($title|ascii_downcase) end)] | first | .number // empty' <<< "$issues")
   if jq -e '.match!=null' <<< "$data" >/dev/null && [ -z "$match" ]; then fail 'matching issue is no longer open'; fi
   body=$(mktemp "$S/.finding.XXXXXX")
   {
