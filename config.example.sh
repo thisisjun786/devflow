@@ -73,3 +73,4 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_QA:=0}" # 1: real-use QA after landed; .devflow on merged base may opt in/out
 : "${DV_QA_AGENT:=codex}" # codex exec or claude (fresh session)
 : "${DV_QA_AGENT_CMD:=}" # optional command receiving the QA prompt path
+: "${DV_MANAGER_LAST=1}" # 1: the manager host (lina-os) bids only after work hosts; 0: it competes on score like the others
