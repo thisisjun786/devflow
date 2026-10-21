@@ -2,7 +2,7 @@
 # Deterministic worker acting on fake CI and inline review findings.
 set -euo pipefail
 state="$DV_STATE/$DV_ISSUE"
-if [ "${DV_PR_EARLY_EXIT:-0}" = 1 ] && [ ! -d "$state/revive" ]; then
+if [ "${DV_PR_EARLY_EXIT:-0}" = 1 ] && [ ! -d "$state/revive" ] && [ ! -f "$state/exec-retry.used" ]; then
   dv pr "$DV_ISSUE"
   if [ "${DV_PR_EXIT_GATE:-0}" = 1 ]; then
     while [ ! -f "$state/exit-release" ]; do sleep 0.05; done

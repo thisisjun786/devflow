@@ -168,3 +168,16 @@ case_pr_worker_exec_missing_pr() {
   jq -se 'any(.[]; .kind=="failed") and all(.[]; .kind!="done")' "$DV_HOME/kick.q"
   test "$(cat "$DV_STATE/PW-2/agent.exit")" = 1
 }
+case_pr_worker_native_exec() {
+  exec_setup pr-loop remote
+  export DV_PR_EARLY_EXIT=1 DV_STALL_AFTER=30
+  printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]\n' > "$GH_STUB_DIR/checks"
+  printf '[{"body":"P1: fix the write","path":"file.sh","line":3}]\n' > "$GH_STUB_DIR/comments"
+  dv start "$REPO" EX-1 worker
+  exec_wait
+  jq -e '.backend=="exec" and .exec_status=="done" and .status=="ready"' "$DV_STATE/EX-1/meta"
+  jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/EX-1/done.json"
+  jq -se 'map(.kind)==["done"]' "$DV_STATE/EX-1/events.log"
+  test "$(cat "$DV_STATE/EX-1/stub-count")" = 2
+  test ! -d "$DV_STATE/EX-1/revive"
+}

@@ -228,6 +228,9 @@ cmd_pr_wait() {
   # then start a successor. If its wrapper already observed our lock, agent.exit
   # was published first; wait for that wrapper to finish its handoff instead.
   pr_wait_unlock; trap - EXIT
+  # Native exec supervision already retries locally once and reports exhaustion.
+  # It must not also enter the terminal revival path.
+  [ "$BACKEND" != exec ] || return 0
   local pid
   pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
@@ -302,6 +305,15 @@ github_land_method() (
 cmd_land() {
   [ "$#" -eq 1 ] || fail 'usage: dv land ISSUE'
   load_issue "$1"; issue_lock; require_worktree; require_clean "$WT"
+  if [ "$BACKEND" = exec ]; then
+    ! codex_exec_alive "$S" || fail 'exec is still running; cannot land'
+    # dv done can precede a later CLI error or retry. Only the supervisor's
+    # successful terminal state permits either local or GitHub merging.
+    if [ ! -f "$S/agent.exit" ] || [ "$(cat "$S/agent.exit")" != 0 ] ||
+      ! jq -e '.exec_status=="done"' "$S/meta" >/dev/null; then
+      fail 'exec has not completed successfully; cannot land'
+    fi
+  fi
   if is_github; then
     local pr head method
     pr=$(jq -er .url "$S/pr.json"); head=$(git -C "$WT" rev-parse HEAD)
