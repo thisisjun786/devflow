@@ -1602,6 +1602,8 @@ source "$ROOT/tests/claude.sh"
 source "$ROOT/tests/followups.sh"
 # shellcheck source=tests/watcher.sh
 source "$ROOT/tests/watcher.sh"
+# shellcheck source=tests/stall.sh
+source "$ROOT/tests/stall.sh"
 # shellcheck source=tests/bidding-edge.sh
 source "$ROOT/tests/bidding-edge.sh"
 # shellcheck source=tests/bidding-order.sh
@@ -1613,7 +1615,7 @@ source "$ROOT/tests/revive.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
+for name in stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
