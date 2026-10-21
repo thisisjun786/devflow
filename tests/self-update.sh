@@ -118,6 +118,53 @@ case_update_safety() {
   update_wait_watcher "$UPDATE_NEW"
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
 }
+case_update_stall_cadence() {
+  update_fixture; update_git_fixture
+  export DV_HOSTS=$DV_HOST DV_STALL_AFTER=600
+  printf '10000\n' > "$CASE_DIR/clock"
+  cat > "$DV_CONFIG" <<'CONFIG'
+date() {
+  if [ "$*" = +%s ]; then cat "$CASE_DIR/clock"; else command date "$@"; fi
+}
+sleep() {
+  if [ "${0##*/}" = dv-watch ] && [ "$*" = 0.1 ]; then
+    local tick
+    tick=$(date +%s)
+    touch "$CASE_DIR/tick-$tick"
+    while [ "$(date +%s)" = "$tick" ] && [ ! -e "$DV_HOME/stop" ]; do command sleep 0.02; done
+  fi
+  command sleep "$@"
+}
+if [ "${0##*/}" = dv ] && [ "${1:-}" = status ]; then touch "$CASE_DIR/scan-$(date +%s)"; fi
+CONFIG
+  "$UPDATE_ROOT/bin/dv-watch" > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_file "$CASE_DIR/tick-10000"
+  update_wait_idle
+  local tick expected
+  for tick in 10060 10120; do
+    printf '%s\n' "$tick" > "$CASE_DIR/clock.next"; mv "$CASE_DIR/clock.next" "$CASE_DIR/clock"
+    wait_file "$CASE_DIR/tick-$tick"
+    test -f "$CASE_DIR/scan-$tick"
+    printf 'time=%s fetches=%s expected=1\n' "$tick" "$(wc -l < "$CASE_DIR/fetches" | tr -d ' ')"
+    test "$(wc -l < "$CASE_DIR/fetches" | tr -d ' ')" = 1
+  done
+  # An external checkout update must preserve both clocks through real exec.
+  update_publish
+  "$UPDATE_REAL_GIT" -C "$UPDATE_ROOT" fetch -q origin
+  "$UPDATE_REAL_GIT" -C "$UPDATE_ROOT" merge --ff-only origin/main > /dev/null
+  printf '10121\n' > "$CASE_DIR/clock.next"; mv "$CASE_DIR/clock.next" "$CASE_DIR/clock"
+  update_wait_watcher "$UPDATE_NEW"
+  wait_file "$CASE_DIR/tick-10121"
+  for tick in 10180 11800 11860; do
+    printf '%s\n' "$tick" > "$CASE_DIR/clock.next"; mv "$CASE_DIR/clock.next" "$CASE_DIR/clock"
+    wait_file "$CASE_DIR/tick-$tick"
+    test -f "$CASE_DIR/scan-$tick"
+    expected=1; [ "$tick" -lt 11800 ] || expected=2
+    printf 'time=%s fetches=%s expected=%s\n' "$tick" "$(wc -l < "$CASE_DIR/fetches" | tr -d ' ')" "$expected"
+    test "$(wc -l < "$CASE_DIR/fetches" | tr -d ' ')" = "$expected"
+  done
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+}
 case_update_guard() {
   update_fixture; update_publish
   git -C "$UPDATE_ROOT" checkout -qb feature

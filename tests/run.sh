@@ -1649,6 +1649,8 @@ source "$ROOT/tests/claude.sh"
 source "$ROOT/tests/followups.sh"
 # shellcheck source=tests/watcher.sh
 source "$ROOT/tests/watcher.sh"
+# shellcheck source=tests/stall.sh
+source "$ROOT/tests/stall.sh"
 # shellcheck source=tests/pr-wait-caller.sh
 source "$ROOT/tests/pr-wait-caller.sh"
 # shellcheck source=tests/bidding-edge.sh
@@ -1684,7 +1686,7 @@ source "$ROOT/tests/task.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send; do
+for name in appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
@@ -1700,7 +1702,7 @@ for name in task_snapshot task_snapshot_done_race task_snapshot_land_race task_a
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
-for name in update_cli update_dirty update_landed update_safety update_guard update_offline update_watch_dirty update_host update_managed update_parallel update_timeout update_unrelated update_receipt; do
+for name in update_stall_cadence update_cli update_dirty update_landed update_safety update_guard update_offline update_watch_dirty update_host update_managed update_parallel update_timeout update_unrelated update_receipt; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
