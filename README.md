@@ -59,11 +59,11 @@ dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야
 
 GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고 squash → merge commit → rebase 순으로 선택합니다. `DV_LAND_METHOD=squash|merge|rebase`를 환경변수 또는 작업 worktree의 `.devflow`에 지정하면 해당 방식을 사용합니다(비어 있지 않은 환경변수가 우선). 예: `DV_LAND_METHOD=merge dv land APP-42`. 잘못된 값, 저장소가 허용하지 않는 지정값, 허용 방식 없음, 조회 실패 시 병합하지 않고 worktree를 보존합니다. 현재 PR head 고정과 병합 후 MERGED 확인은 그대로 적용됩니다. 로컬 저장소는 기존 `DV_LAND_MODE`를 사용합니다.
 
-Codex 기본 모드는 `DV_CODEX_MODE=exec`입니다. `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Claude·Devin 기본값은 goal입니다.
+Codex 기본 모드는 `DV_CODEX_MODE=auto`입니다. 실행 호스트에 연결 가능한 App Server가 있으면 사용하고, 없으면 exec를 선택합니다. `DV_CODEX_MODE=exec` 또는 `--mode exec`는 `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal`/`tui` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Claude·Devin 기본값은 goal입니다. auto 제출은 큐에서도 auto를 보존해 실제 실행 호스트에서 backend를 선택합니다.
 
 goal과 사용자 지정 실행기는 herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 포커스를 바꾸지 않고 `dv-<ISSUE>` workspace에서 실행합니다(Codex hooks 유지). send·status·clean/land는 기록된 backend를 따르며 herdr 로그는 done/clean 시 화면을 저장합니다. 미설치 또는 `DV_HERDR=0`이면 tmux를 사용하고, 기존 backend 없는 이슈도 tmux로 처리합니다. herdr 시작 오류는 상태를 보존하고 실패를 알립니다.
 
-exec의 `alive`는 래퍼 프로세스의 생존 여부입니다. 새 JSON 이벤트가 있으면 `agent_status=working`, `DV_STALL_AFTER`초(기본 600) 동안 새 이벤트가 없으면 stalled로 판단합니다. 비정상 종료·오류 이벤트·무응답 또는 `dv done` 없는 정상 종료(failed-to-finish)는 같은 worktree에서 한 번 자동 재시도하고 다시 실패하면 blocked를 알립니다. 기록된 세션 ID로 `codex exec resume`하며, ID를 받기 전 실패했다면 원래 요청을 담아 새 exec를 실행합니다. `exec/`에는 시도별 종료 코드·실패 이유·완료 표시를 보존합니다. 종료 코드 0만으로 완료 처리하지 않습니다.
+exec의 `alive`는 래퍼 프로세스의 생존 여부입니다. 새 JSON 이벤트가 있으면 `agent_status=working`, App Server와 공유하는 `DV_STALL_AFTER`초(기본 300) 동안 새 이벤트가 없으면 stalled로 판단합니다. 비정상 종료·오류 이벤트·무응답 또는 `dv done` 없는 정상 종료(failed-to-finish)는 같은 worktree에서 한 번 자동 재시도하고 다시 실패하면 blocked를 알립니다. 기록된 세션 ID로 `codex exec resume`하며, ID를 받기 전 실패했다면 원래 요청을 담아 새 exec를 실행합니다. `exec/`에는 시도별 종료 코드·실패 이유·완료 표시를 보존합니다. 종료 코드 0만으로 완료 처리하지 않습니다.
 
 종료된 exec에 `dv send`를 보내면 같은 worktree·브랜치·세션에서 후속 exec를 실행합니다. 실행 중이면 중복 실행을 거절하므로 종료 후 다시 보내세요. 이전 done 기록은 보존하지만 새 실행도 `dv done`을 호출해야 합니다. 미커밋 변경·PR·`review-fix.sent`를 보존하고 자동 재시도는 이슈 전체에서 한 번만 허용합니다. `dv clean`은 실행 중인 exec와 dirty worktree를 보존합니다.
 
@@ -92,7 +92,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv submit REPO ISSUE SLUG --brief FILE [--agent AGENT] [--base BRANCH] [--mode MODE]` | 관리자에게 제출, 호스트는 입찰로 결정 |
 | `dv bid --json [--repo REPO] [--agent AGENT]` | 수용량·부하·메모리·clone·로그인 조회, 상태 변경 없음 |
 | `dv queue [ISSUE] [--json]` / `dv cancel ISSUE` | 관리자 배정 상태 조회 / 미배정 제출 취소 |
-| `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin] [--brief FILE] [--base BRANCH] [--mode goal\|exec]` | worktree·브랜치·상태·herdr/tmux 생성 |
+| `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치·상태 및 선택한 backend 생성 |
 | `dv done ISSUE [--note TEXT]` | head·변경 파일 수·보고서 경로·완료 이벤트 |
 | `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작. 상태 폴더에 `pr.md`(작업자가 쓴 공개용 본문)가 있으면 그대로 본문으로 쓰고, 없으면 브리프와 보고서로 만든다 |
 | `dv polish ISSUE` | PR 본문 퇴고·코드/URL 보존 검증 후 본문만 갱신 |
@@ -111,7 +111,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 
 `dv metrics`는 로컬 기록과 감시자가 수집한 원격 기록을 호스트·이슈별로 합칩니다. `--since`는 `30m`, `6h`, `7d`처럼 초(s)·분(m)·시간(h)·일(d)을 받습니다. 유휴 시간은 조회 구간과 겹치는 관측 구간만 합산하고, 이벤트 지연은 그 구간에 성공 처리가 끝난 이벤트의 평균 초입니다. `--json`에는 처리 건수·최대 지연·마지막 관측 시각(`observed_at`)·현재 유휴 초도 나옵니다. 완료→병합은 조회 구간 안의 마지막 병합과 **같은 head**의 마지막 완료 사이 초이며, 완료가 조회 구간 전이어도 연결합니다. 아직 관측하거나 완료하지 못한 값은 표에서 `-`, JSON에서 `null`입니다.
 
-기존 `dv-watch`가 `DV_HOSTS`를 `DV_METRICS_INTERVAL`초(기본 60)마다 수집합니다. 각 호스트에도 이 기능을 지원하는 dv가 필요합니다. Git의 추적 파일·무시되지 않은 새 파일의 내용/속성, HEAD, 작업 상태·이벤트가 두 관측 사이 같으면 그 구간을 유휴 시간으로 셉니다. 무시된 빌드 산출물과 터미널 화면 재출력은 진행으로 세지 않습니다. 첫 관측 이전과 관측 사이에 바뀌었다가 원상복구된 내용은 알 수 없으며, 긴 수집 간격에서는 근사값입니다. `DV_STALL_AFTER`초(기본 600)를 **초과**하면 에이전트가 working·idle·종료 중 어느 상태든 `idle` 이벤트를 보냅니다. 파일/이벤트가 바뀌기 전까지 재시작 후에도 한 번만 알립니다. 병합·취소·정리한 작업은 알리지 않습니다.
+기존 `dv-watch`가 `DV_HOSTS`를 `DV_METRICS_INTERVAL`초(기본 60)마다 수집합니다. 각 호스트에도 이 기능을 지원하는 dv가 필요합니다. Git의 추적 파일·무시되지 않은 새 파일의 내용/속성, HEAD, 작업 상태·이벤트가 두 관측 사이 같으면 그 구간을 유휴 시간으로 셉니다. 무시된 빌드 산출물과 터미널 화면 재출력은 진행으로 세지 않습니다. 첫 관측 이전과 관측 사이에 바뀌었다가 원상복구된 내용은 알 수 없으며, 긴 수집 간격에서는 근사값입니다. `DV_STALL_AFTER`초(기본 300)를 **초과**하면 에이전트가 working·idle·종료 중 어느 상태든 `idle` 이벤트를 보냅니다. 파일/이벤트가 바뀌기 전까지 재시작 후에도 한 번만 알립니다. 병합·취소·정리한 작업은 알리지 않습니다.
 
 revive는 자동 재시작/exec 재시도 횟수, resume은 살아 있는 에이전트에 성공적으로 전달한 후속 입력, Codex exec resume 시도, 관리자 세션 재개 시도의 합입니다. JSON은 `agent_resume_count`와 `manager_resume_count`도 구분합니다. exec의 JSON 이벤트도 유휴 관측을 갱신합니다. 이벤트는 큐 등록이 아니라 작업자·관리자 성공 종료 때 처리된 것으로 기록하며, 실패·재시도·전송·관리자 대기 시간도 지연에 포함합니다. 중복 이벤트 ID는 한 번만 집계합니다. GitHub에서 직접 병합한 PR도 수집 때 서버의 `mergedAt`으로 확인합니다.
 
@@ -163,7 +163,7 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 감시 호스트의 `$DV_HOME/kick.q`와 `events.log`는 JSON Lines입니다. 이벤트 ID(host/issue/kind/head)로 중복을 무시하며, 작업자 로그·프롬프트는 `workers/`에 남습니다. 3초 간격은 로컬 파일 읽기이며 원격 안전망은 `ssh HOST dv status --json`입니다(감시 호스트 자신은 ssh 없이). 점검 간격은 `DV_RECONCILE_INTERVAL`, `DV_STALL_AFTER`, 60초 중 최솟값입니다. 원격 개발 호스트는 감시 호스트의 dv-watch가 `DV_PULL_HOSTS`에 적힌 호스트마다 `dv-kick-pull <host>`를 띄워, 그 호스트의 `kick.q`를 ssh 한 줄기로 `tail -f` 해 받아 옵니다(끊기면 dv-watch가 다시 띄움, 별도 데몬 없음). 개발 호스트에서 감시 호스트로 가는 ssh 키가 필요 없고, 폴링 없이 쓰는 즉시 도착하며, 줄 위치와 파일 inode를 이 쪽 큐에 쓴 뒤에만 저장해, 전달 실패·재접속·큐 교체 때도 빠짐없이 이어 받습니다. 원격 쪽은 그 호스트의 devflow 설정(DV_HOME)을 읽습니다. 그 호스트의 `DV_KICK_HOST`는 자기 자신(로컬 큐)으로 둡니다. `$DV_HOME/stop`을 만들면 새 작업을 멈추고 실행 중인 작업자를 기다립니다. 재시작할 때 stop 파일을 지우세요. 비정상 종료의 잠금은 PID와 실제 프로세스를 확인한 뒤 사람이 지웁니다.
 
-`DV_STALL_AFTER`는 양의 정수 초이며 기본값은 600입니다. `DV_HOSTS`의 `running` 작업에서 살아 있는 에이전트의 `idle` 또는 현재 Codex 화면의 `Goal stalled`를 이 시간 이상 관측하면 `stalled` 이벤트를 보냅니다. 화면 기록이나 로그의 옛 문구는 사용하지 않으며, herdr의 `working`은 남아 있는 화면 문구보다 우선합니다. 현재 화면에 두 문구가 함께 남아 있으면 마지막 goal 상태 문구를 사용합니다. `dv status --json`은 `goal_stalled`, `goal_active`, `agent_state_seq`, `agent_session`도 제공합니다. 첫 정체 관측부터 시간을 재므로 알림에는 점검 주기와 호스트 조회 시간이 추가될 수 있습니다. tmux에서는 명시적인 `Goal stalled` 화면으로 감지하고 `Pursuing goal`로 활동 재개를 확인합니다.
+`DV_STALL_AFTER`는 양의 정수 초이며 기본값은 App Server와 공유하는 300입니다. `DV_HOSTS`의 `running` 작업에서 살아 있는 에이전트의 `idle` 또는 현재 Codex 화면의 `Goal stalled`를 이 시간 이상 관측하면 `stalled` 이벤트를 보냅니다. 화면 기록이나 로그의 옛 문구는 사용하지 않으며, herdr의 `working`은 남아 있는 화면 문구보다 우선합니다. 현재 화면에 두 문구가 함께 남아 있으면 마지막 goal 상태 문구를 사용합니다. `dv status --json`은 `goal_stalled`, `goal_active`, `agent_state_seq`, `agent_session`도 제공합니다. 첫 정체 관측부터 시간을 재므로 알림에는 점검 주기와 호스트 조회 시간이 추가될 수 있습니다. tmux에서는 명시적인 `Goal stalled` 화면으로 감지하고 `Pursuing goal`로 활동 재개를 확인합니다.
 
 정체 구간과 고유 이벤트 ID는 watcher의 `$DV_HOME/stalls.json`에 보관합니다. 같은 구간은 watcher 재시작 후에도 한 번만 알리고, 활동이나 herdr 상태 전환이 확인되면 새 구간으로 계산합니다. 상태 불명·죽은 pane에서는 타이머를 멈추고, 긴 점검 공백 뒤에는 다시 시간을 잽니다. `done`·`landed` 등 실행 중이 아닌 작업과 완료·정리 기록이 있는 작업은 제외합니다. 작업자는 현재 화면·로그와 이벤트 유효성을 확인하고, goal 일시 정지나 오래된 pane의 provider 환경 누락처럼 복구 가능한 경우에만 WIP 커밋을 남깁니다. failed와 stalled 처리는 같은 이슈 잠금을 사용하고, `revive/`가 이미 있으면 기존 에이전트를 정지하거나 새로 띄우지 않습니다. 잠금 안에서 기존 에이전트와 wrapper의 종료를 확인한 후 `dv send ISSUE 'resume'`의 기존 revive 경로만 사용해 같은 worktree에서 재개하고 `/goal resume`의 활동을 확인합니다. 이 명령의 작업 잠금과 영구 `revive/` 기록이 새 에이전트를 하나로 제한하므로, 정지로 발생한 failed 이벤트가 겹쳐도 별도 launcher를 실행하지 않습니다. 원인 불명·권한 필요·재개 실패는 준에게 차단으로 보고합니다. 복구 판단과 실행은 기존 worker 프롬프트가 담당합니다.
 
@@ -182,6 +182,81 @@ Codex 0.163의 폴더 온보딩은 CLI 신뢰 덮어쓰기만으로 생략되지
 
 goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. 터미널 goal의 종료 래퍼 자체는 재시작하지 않으며, 실행 중 정체는 위 `stalled` 작업자가 `dv send`의 단일 revive 경로로 복구합니다. `dv send`로 재시작한 goal은 이전 완료 기록과 별개로 새 `dv done`이 필요합니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리와 첫 입력인 `DV_AGENT_INSTRUCTION`을 받습니다. 사용자 지정 실행기와 이전 버전의 터미널 exec 작업은 기존 실행·완료·revive 동작을 유지합니다.
 
+## Codex App Server
+
+`DV_CODEX_MODE=auto`가 기본값입니다. 호스트에 이미 실행 중인 Codex App Server의
+`initialize`가 성공하면 App Server를 사용하고, 연결할 수 없으면 백그라운드 exec로 시작합니다.
+`DV_CODEX_MODE=appserver`는 이 경로만 사용하며 시작 실패 후 다른 backend로 중복 실행하지
+않습니다. `DV_CODEX_MODE=goal`/`tui`는 기존 herdr/tmux 경로, `DV_CODEX_MODE=exec` 또는
+`dv start ... --mode exec`는 일회 실행 경로입니다. 사용자 지정 `DV_AGENT_CMD_codex`는
+기존 실행기를 유지합니다. Claude와 Devin의 경로는 바뀌지 않습니다.
+
+호스트 운영자가 준비한 `codex app-server daemon`에 `codex app-server proxy`로 연결합니다.
+daemon과 proxy를 지원하는 Codex 및 표준 암호 도구 `openssl`이 필요합니다.
+proxy는 원시 바이트를 전달하므로 Bash 전송 계층이 WebSocket upgrade, 클라이언트 masking,
+분할 frame과 ping/pong을 처리합니다. dv는 데몬을 설치·시작·재시작하거나 인증
+설정을 바꾸지 않습니다. 기본 control socket을 쓰며, 다른 소켓은 `DV_APPSERVER_SOCKET`에
+지정합니다. 데몬의 provider 환경과 devflow 실행 경로는 운영자가 미리 준비해야 합니다.
+새 thread의 cwd는 해당 worktree이며 기존 Codex 실행과 같은 model, effort,
+`approvalPolicy=never`, `sandbox=danger-full-access`를 지정합니다.
+App Server 경로는 폴더 trust 설정을 추가하지 않습니다. 서버에서 실행한 `dv done` 등이 같은
+설정과 이슈 상태를 사용하도록 devflow 경로와 상태 환경만 thread에 지정하며 인증 값은 보내지 않습니다.
+
+각 이슈는 터미널 pane 대신 연결을 유지하는 Bash 작업 클라이언트 하나를 사용합니다.
+클라이언트는 시작 셸과 다른 프로세스 그룹을 사용해 SSH/실행 셸 종료 후에도 연결을 유지합니다.
+`thread/start`로 받은 ID와 소켓 경로를 meta에 보존하고, 지원되는 서버에는 thread goal을
+설정한 뒤 브리프 전체로 첫 turn을 시작합니다. `thread/goal/set`의 method-not-found만
+goal 미지원으로 처리합니다. 연결 클라이언트가 종료된 뒤 새 `dv send`는 기존 thread를
+resume하며, 이전 전송 결과가 불명확한 메시지는 재전송하지 않습니다.
+
+`dv send ISSUE TEXT`는 서버에서 현재 turn을 확인해 idle이면 `turn/start`, 작업 중이면
+`expectedTurnId`를 지정한 `turn/steer`를 보냅니다. `$DV_STATE/ISSUE/appserver/outbox/`에
+요청 ID, 원문, 실제 JSON-RPC와 영수증을 남기고 JSON 결과를 출력합니다.
+
+| outcome | 의미 |
+| --- | --- |
+| accepted | 해당 ID에 대한 서버 응답을 받음. 작업 완료를 의미하지 않음 |
+| refused | 서버가 거절했거나 전송 전 로컬 검증이 거절함 |
+| unknown | 응답 유실·연결 종료·잘못된 응답·대기 시간 초과. 실행됐을 수도 있음 |
+
+전송 전에 unknown 영수증을 원자적으로 기록하므로 클라이언트가 죽어도 자동 재전송하지
+않습니다. 같은 내용의 미확정 `dv send`도 기존 ID를 반환하고 실패합니다. 요청 ID는 서버의
+멱등성 보장이 아닙니다. 운영자는 영수증과 thread 이력을 확인한 뒤 다음 지시를 결정해야
+합니다. 기록은 프로세스 재시작을 견디며 전원 장애 시 디스크 flush까지 보장하지 않습니다.
+
+`dv status --json`의 `appserver`에 thread와 최신 turn의 요약, goal 응답을 담고 `agent_status`를
+`working`, `idle-with-goal-active`, `goal-complete`, `idle`, `failed`, `gone`, `unknown`으로
+표시합니다. 서버의 명시적인 thread-not-found만 gone이며 통신 장애는 unknown입니다.
+오류 turn, error item, capacity/rate-limit 오류는 failed입니다. 화면은 읽지 않습니다.
+작업 클라이언트가 종료됐어도 상태 조회는 새 연결의 thread/read로 확인하며 turn을 시작하지 않습니다.
+현재는 `thread/read(includeTurns=true)`를 사용하므로 긴 thread의 조회 비용이 증가합니다.
+`DV_APPSERVER_TIMEOUT`(10초)은 응답 제한, `DV_APPSERVER_POLL`(5초)은 상태 갱신 주기입니다.
+
+기존 `dv-watch`가 `DV_HOSTS`의 App Server 작업을 확인합니다. 활성 goal에서
+`DV_STALL_AFTER`(300초) 동안 새 item이나 item delta가 없으면 stalled, 오류면 failed를
+알립니다. 질문 대기 중에는 자동 복구하지 않습니다. 이슈당 한 번 같은 thread에서
+`continue` turn을 시작합니다. 멈춘 활성 turn은 먼저 interrupt가 수락되고 idle이 확인돼야
+합니다. 다시 멈추거나 복구 결과가 불명확하면 blocked로 운영자에게 전달합니다.
+`appserver/recovery`는 이 한 번의 시도를 보존합니다.
+
+서버의 `requestUserInput`은 requestId와 질문 원문을 기존 question 이벤트로 전달합니다.
+단일 질문에는 평문으로 답할 수 있고, 여러 질문이나 요청에는 다음 형식을 사용합니다.
+
+```bash
+dv send APP-42 '{"requestId":42,"answers":{"format":{"answers":["JSON"]},"scope":{"answers":["local"]}}}'
+```
+
+키 입력 대신 JSON-RPC response를 보내며 `serverRequest/resolved`를 확인해야 accepted입니다.
+이 알림은 서버에서 요청이 해제됐다는 확인이며 답변이 모델에 실제 사용됐다는 보장은 아닙니다.
+질문 이벤트의 전달 실패는 같은 이벤트 ID로 재시도합니다. `dv done`은 지원되는 goal을
+complete로 표시하고 기존 완료 기록을 남깁니다. 완료 응답이 불명확하거나 거절되면 done 기록과
+이벤트를 만들지 않습니다. 다시 done을 요청하면 먼저 서버의 goal을 읽어 이미 완료됐는지 확인합니다.
+`dv clean`은 dirty worktree나 실행 중·불명확한 thread를 보존하며, `dv land`도 병합 전에 같은
+서버 상태 조건을 확인합니다. 실제 provider를 사용하는 종단 검증은 합성 시험과 별도입니다.
+
+프로토콜은 [공식 Codex App Server 문서](https://developers.openai.com/codex/app-server/)와
+Codex가 생성하는 JSON schema를 기준으로 구현했습니다. 다른 relay의 코드는 포함하지 않습니다.
+
 ## 시험
 
 ```bash
@@ -190,6 +265,10 @@ shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fix
 ```
 
 실제 에이전트·GitHub·SSH·Hermes를 시험에서 부르지 않습니다. 임시 bare 원격과 실제 tmux를 쓰며 tmux가 없을 때만 해당 시험을 skip합니다. `DV_TEST_TMP=/scratch/...`로 임시 위치를 지정할 수 있습니다. 큐·worker 기록은 운영자가 보관 주기를 정하고, worktree는 `dv clean`으로 정리하세요.
+
+App Server 시험은 임시 Unix 소켓과 Bash JSON-RPC 스텁을 사용합니다. 시험에 OpenBSD `nc`가
+필요합니다(macOS 기본 제공, Linux 패키지 `netcat-openbsd`). 실제 Codex 데몬·모델·계정은
+사용하지 않습니다. 운영 코드에는 `nc` 의존성이 없습니다.
 
 실제 herdr 연결 시험은 `DV_HERDR=1 tests/herdr-live.sh`로 별도 실행합니다. herdr가 없으면 skip하고, 있으면 임시 저장소와 `echo SMOKE-OK; sleep 15`만 실행하여 start·status·clean을 확인합니다. 사용자 설정은 읽거나 바꾸지 않습니다. 이 스크립트의 정적 검사는 `shellcheck tests/herdr-live.sh`로 실행합니다.
 
