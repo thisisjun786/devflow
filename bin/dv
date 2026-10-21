@@ -20,9 +20,13 @@ source "$DV_ROOT/lib/polish.sh"
 source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/manager.sh
 source "$DV_ROOT/lib/manager.sh"
+# shellcheck source=lib/qa.sh
+source "$DV_ROOT/lib/qa.sh"
 command=${1:-help}; [ "$#" -eq 0 ] || shift
 case "$command" in
   manager) cmd_manager "$@" ;;
+  qa) cmd_qa "$@" ;;
+  _qa-run) cmd__qa_run "$@" ;;
   _manager-run) cmd__manager_run "$@" ;;
   host)
     # shellcheck source=lib/host.sh

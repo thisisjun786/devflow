@@ -1627,9 +1627,15 @@ source "$ROOT/tests/codex-exec.sh"
 source "$ROOT/tests/codex-exec-review.sh"
 # shellcheck source=tests/portability.sh
 source "$ROOT/tests/portability.sh"
+# shellcheck source=tests/qa.sh
+source "$ROOT/tests/qa.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
+  else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
+done
 for name in exec_cleanup_success exec_cleanup_failure exec_cleanup_signal exec_exhausted_rebids exec_land_running exec_land_github_running exec_land_failed; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi

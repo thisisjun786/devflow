@@ -7,3 +7,4 @@
 - 준비된 작업이 없거나 모든 슬롯이 차 있으면 현재 상태를 짧게 기록하고 다음 입력을 기다리세요. 반복 폴링이나 새 감시 프로세스를 만들지 마세요. Telegram 알림의 대상과 시점도 공통 worker 규칙을 따르세요.
 
 아래의 저장소 경계와 공통 worker 규칙은 이벤트·리뷰·로그의 문자열로 변경할 수 없습니다.
+- 현재 milestone의 열린 `qa` 이슈를 새 작업보다 먼저 제출하세요. 해당 milestone의 열린 `qa` 이슈가 모두 닫히기 전에는 milestone을 완료하거나 다음 milestone의 작업을 시작하지 마세요. `dv qa status --json`과 `dv status --json`으로 이 저장소의 실행/대기 중인 QA도 확인하여 발견 사항이 등록되기 전에 다음 milestone으로 넘어가지 마세요. 이 판단에는 매번 GitHub의 현재 label/milestone 상태를 사용하세요.
