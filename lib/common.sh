@@ -90,14 +90,21 @@ shell_join() { printf '%q ' "$@"; }
 # One compact JSON line is shared by SSH, the queue, and the reconciliation path.
 event_json() {
   # Transports pass the original ID verbatim, including a question's episode.
-  local id=${6:-} token=${7:-}
+  local id=${6:-} token=${7:-} episode=${8:-}
   if [ -z "$id" ]; then
+    # Reconciliation calls with its source status row in scope, including on a
+    # remote host. Read that row, never the watcher's unrelated local state.
+    if [ "$1" = 'done' ] && [ -z "$episode" ] && [ -n "${row:-}" ]; then
+      episode=$(printf '%s\n' "$row" | jq -r --arg issue "$2" --arg host "$4" --arg head "$5" \
+        'select(.issue==$issue and .host==$host and .head==$head) | .done_episode // empty') || episode=''
+    fi
     id="$4:$2:$1:$5"
     [ -z "$token" ] || id="$id:$token"
+    [ -z "$episode" ] || id="$id:revive:$episode"
     if [ "$1" = question ]; then id="$id:${DV_QUESTION_EPISODE:-$(now):$$:$RANDOM}"; fi
   fi
   jq -cn --arg kind "$1" --arg issue "$2" --arg message "$3" --arg host "$4" --arg head "$5" \
-    --arg id "$id" --arg token "$token" --argjson time "${8:-$(now)}" \
+    --arg id "$id" --arg token "$token" --argjson time "${9:-$(now)}" \
     '{id:$id,kind:$kind,issue:$issue,message:$message,host:$host,head:$head,time:$time} +
     (if $token=="" then {} else {token:$token} end)'
 }

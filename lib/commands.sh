@@ -91,7 +91,10 @@ launch_agent() {
   if [ "$BACKEND" = herdr ]; then
     if [ "${1:-}" = --revived ] && [ "${REVIVE_PANE_EXISTS:-0}" = 1 ]; then
       herdr_cmd pane run "$HERDR_PANE" "$launcher"
-    else herdr_start "$launcher"; fi
+    else
+      if [ "${1:-}" = --revived ]; then herdr_clean || return 1; fi
+      herdr_start "$launcher"
+    fi
   elif [ "${1:-}" = --revived ] && tmux_dv has-session -t "=$SESSION" 2>/dev/null; then
     # A retained dead pane needs no kill/force option.
     tmux_dv respawn-pane -t "$SESSION:0.0" -c "$WT" "$launcher"
@@ -106,7 +109,11 @@ run_agent() {
   agent=$(jq -r .agent "$S/meta"); mode=$(jq -r .mode "$S/meta")
   override="DV_AGENT_CMD_$agent"; override=${!override}
   instruction="Read $S/brief.md and complete everything it asks. Finish with dv done $ISSUE."
-  if [ "$revived" = 1 ]; then instruction=$(cat "$S/revive/prompt.md"); fi
+  unset DV_REVIVE_ID
+  if [ "$revived" = 1 ]; then
+    instruction=$(cat "$S/revive/prompt.md")
+    DV_REVIVE_ID=$(cat "$S/revive/id"); export DV_REVIVE_ID
+  fi
   export DV_AGENT_INSTRUCTION="$instruction"
   # Native herdr snapshots are collected at done/clean; tmux keeps its TTY log.
   if [ "$BACKEND" = tmux ]; then
@@ -128,8 +135,8 @@ run_agent() {
     case "$agent" in
       codex)
         if ! codex_environment || ! codex_trust_repo "$(codex_repo_root "$REPO")"; then
-          agent_start_failed 'codex provider environment or persisted folder trust is not ready' ''
           printf '1\n' > "$S/agent.exit"
+          agent_start_failed 'codex provider environment or persisted folder trust is not ready' ''
           return 1
         fi
         args=("$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\"" -s danger-full-access -a never)
@@ -173,7 +180,7 @@ run_agent() {
   if [ "$revived" = 1 ]; then
     if [ "$rc" -ne 0 ]; then revive_blocked "revived agent exited $rc"
     elif [ "$mode" = exec ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
-    elif [ ! -f "$S/revive/done" ]; then revive_blocked 'revived goal agent exited without dv done'; fi
+    elif [ "$(cat "$S/revive/done" 2>/dev/null)" != "$DV_REVIVE_ID" ]; then revive_blocked 'revived goal agent exited without dv done'; fi
   elif [ "$mode" = exec ]; then
     if [ "$rc" -eq 0 ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
     else "$DV_ROOT/bin/dv" kick failed "$ISSUE" "agent exited $rc"; fi
@@ -302,12 +309,18 @@ accept_devin_trust() {
 }
 cmd_done() {
   [ "$#" -ge 1 ] || fail 'usage: dv done ISSUE [--note TEXT]'
-  load_issue "$1"; shift; local note='' head files tmp
+  load_issue "$1"; shift; local note='' head files tmp episode own_revive=0
   if [ "$#" -gt 0 ]; then
     if [ "$#" -ne 2 ] || [ "$1" != --note ]; then fail 'expected --note TEXT'; fi
     note=$2
   fi
   require_worktree
+  episode=$(jq -r '.done_episode // ""' "$S/meta")
+  # Only the replacement's inherited run identity can satisfy its goal wrapper.
+  if [ -n "${DV_REVIVE_ID:-}" ] && [ "$DV_REVIVE_ID" = "$(cat "$S/revive/id" 2>/dev/null)" ]; then
+    episode=$DV_REVIVE_ID
+    own_revive=1
+  fi
   if [ "$BACKEND" = herdr ]; then
     herdr_snapshot || printf 'dv: warning: could not capture herdr log for %s\n' "$ISSUE" >&2
   fi
@@ -315,23 +328,33 @@ cmd_done() {
   files=$(git -C "$WT" diff --name-only "$(jq -r .start_head "$S/meta")" "$head" | wc -l | tr -d ' ')
   tmp=$(mktemp "$S/.done.XXXXXX")
   jq -n --arg head "$head" --argjson files "$files" --arg report "$S/report.md" --arg note "$note" \
-    --argjson done_at "$(now)" '{head:$head,files:$files,report:$report,note:$note,done_at:$done_at}' > "$tmp"
+    --arg episode "$episode" --argjson done_at "$(now)" \
+    '{head:$head,files:$files,report:$report,note:$note,done_at:$done_at} +
+    (if $episode=="" then {} else {episode:$episode} end)' > "$tmp"
   mv "$tmp" "$S/done.json"
   metrics_note 'done' "$head"
-  [ ! -d "$S/revive" ] || touch "$S/revive/done"
-  meta_set --arg head "$head" --argjson done_at "$(now)" '.head=$head | .done_at=$done_at | if .status=="running" or .status=="start-failed" then .status="done" | del(.failure_reason) else . end'
+  meta_set --arg head "$head" --arg episode "$episode" --argjson done_at "$(now)" '.head=$head | .done_at=$done_at |
+    (if $episode!="" then .done_episode=$episode else . end) |
+    if .status=="running" or .status=="start-failed" then .status="done" | del(.failure_reason) else . end'
   cmd_kick 'done' "$ISSUE" "$note"
+  if [ "$own_revive" = 1 ]; then
+    printf '%s\n' "$episode" > "$S/revive/done"
+  fi
 }
 cmd_kick() {
   [ "$#" -ge 2 ] || fail 'usage: dv kick kind ISSUE [message]'
-  local kind=$1 issue=$2 message=${3:-} head='' host=$DV_HOST rc=0 line remote event_id event_time token=${DV_AWARD_TOKEN:-}
+  local kind=$1 issue=$2 message=${3:-} head='' host=$DV_HOST rc=0 line remote event_id event_time token=${DV_AWARD_TOKEN:-} episode=''
   valid_issue "$issue"; mkdir -p "$DV_STATE/$issue"
   if [ -f "$DV_STATE/$issue/meta" ]; then
     head=$(jq -r '.head // .start_head' "$DV_STATE/$issue/meta")
     host=$(jq -r .host "$DV_STATE/$issue/meta")
     [ -n "$token" ] || token=$(jq -r '.award_token // ""' "$DV_STATE/$issue/meta")
+    if [ "$kind" = 'done' ]; then episode=$(jq -r '.done_episode // ""' "$DV_STATE/$issue/meta"); fi
   fi
-  line=$(event_json "$kind" "$issue" "$message" "$host" "$head" '' "$token")
+  case "$kind" in
+    failed|blocked) episode=$(cat "$DV_STATE/$issue/revive/id" 2>/dev/null) || episode='' ;;
+  esac
+  line=$(event_json "$kind" "$issue" "$message" "$host" "$head" '' "$token" "$episode")
   event_id=$(printf '%s\n' "$line" | jq -r .id)
   event_time=$(printf '%s\n' "$line" | jq -r .time)
   if [ -z "$DV_KICK" ] && [ "$DV_KICK_HOST" = "$DV_HOST" ]; then
@@ -426,6 +449,11 @@ revive_blocked() {
   if mkdir "$S/revive/blocked" 2>/dev/null; then
     cmd_kick blocked "$ISSUE" "$1; automatic revival already attempted"
   fi
+  # Startup helpers can report before the wrapper exits. Notify the scheduler
+  # only after agent.exit makes the slot available, once for this revival.
+  if [ -f "$S/agent.exit" ] && mkdir "$S/revive/failed" 2>/dev/null; then
+    cmd_kick failed "$ISSUE" "$1; automatic revival already attempted"
+  fi
   printf 'dv: %s; automatic revival already attempted\n' "$1" >&2
 }
 revive_agent() {
@@ -436,6 +464,7 @@ revive_agent() {
     return 1
   fi
   mkdir "$S/revive" || return 1
+  printf '%s\n' "$(now):$$:$RANDOM" > "$S/revive/id"
   # Keep the previous completion and review-fix.sent intact. The new wrapper
   # checks its own completion marker, including report-only fixes at the same SHA.
   local file
@@ -452,6 +481,7 @@ revive_agent() {
   rm -f "$S/agent.exit" "$S/agent.pid"
   metrics_note revive
   if ! launch_agent --revived; then
+    printf '1\n' > "$S/agent.exit"
     revive_blocked 'could not start revived agent'
     return 1
   fi
