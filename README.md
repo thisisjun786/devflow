@@ -59,7 +59,7 @@ dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야
 
 GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고 squash → merge commit → rebase 순으로 선택합니다. `DV_LAND_METHOD=squash|merge|rebase`를 환경변수 또는 작업 worktree의 `.devflow`에 지정하면 해당 방식을 사용합니다(비어 있지 않은 환경변수가 우선). 예: `DV_LAND_METHOD=merge dv land APP-42`. 잘못된 값, 저장소가 허용하지 않는 지정값, 허용 방식 없음, 조회 실패 시 병합하지 않고 worktree를 보존합니다. 현재 PR head 고정과 병합 후 MERGED 확인은 그대로 적용됩니다. 로컬 저장소는 기존 `DV_LAND_MODE`를 사용합니다.
 
-쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 순서는 dv가 관리합니다.
+쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
 
 선행 PR의 landed 이벤트를 받으면 `dv-watch`는 자신과 `DV_HOSTS`의 대기 작업을 기존 재시도 큐에 넣습니다. 각 작업은 자신의 worktree에서 `origin/<BASE>`를 fetch·merge하고 브랜치를 일반 push한 뒤 새 head의 CI가 전부 성공해야 병합합니다(`BASE=dev`이면 `origin/dev`). 선행 PR이 아직 미병합이면 다음 landed 이벤트나 상태 점검까지 큐에서 유예합니다. 연쇄·다중 의존성을 매번 확인하며, CI를 기다리는 작업이 다른 stack의 진행을 막지 않습니다. watcher 재시작은 기존 pending 큐를 이어가고, 놓친 이벤트·접속할 수 없었던 호스트는 기존 상태 안전망이 복구합니다. `DV_MAX_WORKERS`의 동시 실행 한도를 공유합니다.
 

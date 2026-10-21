@@ -4,6 +4,7 @@
 # Stacks use the normal land lock and the watcher's durable, bounded worker queue.
 stack_land_gate() {
   local pr=$1 head=$2 snapshot body local_body='' dependencies dependency state base_head current
+  local merge_commit merged_commits=''
   snapshot=$(cd "$WT" && gh pr view "$pr" --json body,headRefOid,baseRefName,state) || return 1
   body=$(printf '%s\n' "$snapshot" | jq -er '.body | select(type=="string")') || return 1
   [ ! -f "$S/pr.md" ] || local_body=$(cat "$S/pr.md") || return 1
@@ -24,15 +25,25 @@ stack_land_gate() {
     '.status="waiting-base" | .stack_head=(.stack_head // $head) | .stack_dependencies=$dependencies'
   git -C "$WT" merge-base --is-ancestor "$(jq -r .stack_head "$S/meta")" "$head" || fail 'stack head is no longer an ancestor'
   for dependency in $(printf '%s\n' "$dependencies" | jq -r '.[]'); do
-    state=$(cd "$WT" && gh pr view "${pr%/*}/$dependency" --json state) || return 1
+    state=$(cd "$WT" && gh pr view "${pr%/*}/$dependency" --json state,mergeCommit) || return 1
     if [ "$(printf '%s\n' "$state" | jq -er .state)" != MERGED ]; then
       printf 'dv: waiting-base: PR #%s is not merged\n' "$dependency" >&2
       return 75 # Wait for another landed event, not continuous dependency polls.
     fi
+    merge_commit=$(printf '%s\n' "$state" | jq -er '.mergeCommit.oid | select(type=="string" and test("^[0-9a-f]{40,64}$"))') || return 1
+    merged_commits="$merged_commits $merge_commit"
   done
   # Capture an immutable commit, not FETCH_HEAD shared by sibling worktrees.
   git -C "$WT" fetch origin "$BASE:refs/remotes/origin/$BASE" || return 1
   base_head=$(git -C "$WT" rev-parse "refs/remotes/origin/$BASE") || return 1
+  for merge_commit in $merged_commits; do
+    # GitHub records the resulting merge/squash commit or final rebased commit.
+    # MERGED into a different branch alone does not satisfy this stack's base.
+    if ! git -C "$WT" merge-base --is-ancestor "$merge_commit" "$base_head"; then
+      printf 'dv: waiting-base: dependency merge %s is absent from origin/%s\n' "$merge_commit" "$BASE" >&2
+      return 75
+    fi
+  done
   if ! git -C "$WT" merge --no-edit "$base_head"; then
     if git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null && [ ! -e "$S/stack-conflict.sent" ]; then
       printf 'Resolve the existing merge of origin/%s in this worktree, commit and push with dv pr %s, wait for green CI, and finish with dv done %s. Preserve review-fix.sent; do not request another review or force push. Stack ordering and landing remain dv responsibilities.\n' \

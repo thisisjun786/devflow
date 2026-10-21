@@ -12,10 +12,17 @@ case "$1 $2" in
     head=$(git --git-dir="$CASE_DIR/remote.git" rev-parse "refs/heads/stack-$number")
     [ "$5" = --match-head-commit ] && [ "$6" = "$head" ]
     git -C "$REPO" fetch -q origin "stack-$number"
-    git -C "$REPO" merge --no-edit --no-ff "$head"
+    case "$4" in
+      --squash) git -C "$REPO" merge --squash "$head"; git -C "$REPO" commit -qm "squash PR $number" ;;
+      --rebase) git -C "$REPO" cherry-pick "$head" ;;
+      --merge) git -C "$REPO" merge --no-edit --no-ff "$head" ;;
+      *) exit 1 ;;
+    esac
     git -C "$REPO" push -q origin dev
-    jq '.state="MERGED"' "$file" > "$file.tmp"; mv "$file.tmp" "$file"
+    jq --arg merged "$(git -C "$REPO" rev-parse HEAD)" '.state="MERGED" | .mergeCommit={oid:$merged}' "$file" > "$file.tmp"; mv "$file.tmp" "$file"
     printf '%s\n' "$number" >> "$GH_STUB_DIR/order" ;;
-  'api repos/test/repo') printf '{"allow_merge_commit":true,"allow_squash_merge":false,"allow_rebase_merge":false}\n' ;;
+  'api repos/test/repo')
+    jq -n --arg method "${STACK_TEST_METHOD:-merge}" \
+      '{allow_merge_commit:($method=="merge"),allow_squash_merge:($method=="squash"),allow_rebase_merge:($method=="rebase")}' ;;
   *) printf 'Unexpected stack gh: %s\n' "$*" >&2; exit 1 ;;
 esac

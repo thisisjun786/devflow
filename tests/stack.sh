@@ -39,8 +39,14 @@ case_stack_wait() {
   test ! -f "$GH_STUB_DIR/order"
 }
 stack_green() {
-  local file="$GH_STUB_DIR/pr-$1.json" head
-  head=$(git --git-dir="$CASE_DIR/remote.git" rev-parse "stack-$1")
+  local file="$GH_STUB_DIR/pr-$1.json" head n pushed=false
+  # Update metadata is persisted before push, so it alone cannot publish CI.
+  for n in {1..200}; do
+    head=$(git --git-dir="$CASE_DIR/remote.git" rev-parse "stack-$1")
+    if [ "$head" = "$(git -C "$DV_WORK/stack-$1" rev-parse HEAD)" ]; then pushed=true; break; fi
+    sleep 0.05
+  done
+  [ "$pushed" = true ] || return 1
   jq --arg head "$head" '.checked_head=$head' "$file" > "$file.tmp"; mv "$file.tmp" "$file"
 }
 stack_await() {
@@ -233,3 +239,28 @@ case_stack_defer() {
   stack_await 3 '.stack_update_head!=null'
   stack_green 3; stack_await 3 '.status=="landed"'; stack_stop
 }
+case_stack_missing_base() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  # GitHub says merged, but the merge result belongs to another target branch.
+  jq --arg head "$(git -C "$DV_WORK/stack-1" rev-parse HEAD)" \
+    '.state="MERGED" | .baseRefName="release" | .mergeCommit={oid:$head}' "$GH_STUB_DIR/pr-1.json" > "$CASE_DIR/merged-elsewhere"
+  mv "$CASE_DIR/merged-elsewhere" "$GH_STUB_DIR/pr-1.json"
+  stack_waiting 2
+  test ! -f "$GH_STUB_DIR/order"
+}
+stack_rewritten_base() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  printf 'advance\n' > "$REPO/advance"
+  git -C "$REPO" add advance; git -C "$REPO" commit -qm advance
+  git -C "$REPO" push -q origin dev
+  local original
+  original=$(git -C "$DV_WORK/stack-1" rev-parse HEAD)
+  STACK_TEST_METHOD=$1 dv land S-1
+  if git -C "$REPO" merge-base --is-ancestor "$original" origin/dev; then return 1; fi
+  # The original dependency head is absent, but its merge result is present.
+  if dv land S-2; then return 1; fi # New merge has no CI yet.
+  stack_green 2; dv land S-2
+  test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
+}
+case_stack_squash_base() { stack_rewritten_base squash; }
+case_stack_rebase_base() { stack_rewritten_base rebase; }
