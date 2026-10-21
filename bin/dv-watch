@@ -29,7 +29,7 @@ disk_settings
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
 [[ "$DV_METRICS_INTERVAL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_METRICS_INTERVAL must be positive seconds'
-[[ "$DV_STALL_AFTER" =~ ^[0-9]+$ ]] || fail 'DV_STALL_AFTER must be nonnegative seconds'
+[[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be a positive integer'
 # Share the existing status safety net; do not leave a ten-minute stall waiting
 # for the old thirty-minute reconciliation interval. No extra process needed.
 stall_scan_interval=60
@@ -78,7 +78,8 @@ cursor=0
 [ ! -f "$DV_HOME/cursor" ] || cursor=$(cat "$DV_HOME/cursor")
 touch "$DV_HOME/kick.q" "$DV_HOME/seen"
 last_scan=${DV_WATCH_LAST_SCAN:-0}
-unset DV_WATCH_LAST_SCAN
+last_stall_scan=${DV_WATCH_LAST_STALL_SCAN:-$last_scan}
+unset DV_WATCH_LAST_SCAN DV_WATCH_LAST_STALL_SCAN
 update_requested=0
 last_appserver_scan=0
 last_metrics=0
@@ -269,8 +270,12 @@ while [ ! -e "$DV_HOME/stop" ]; do
     metrics_start
     last_metrics=$(now)
   fi
-  if [ $(( $(now) - last_scan )) -ge "$stall_scan_interval" ]; then
-    reconcile; last_scan=$(now); update_requested=1
+  if [ $(( $(now) - last_stall_scan )) -ge "$stall_scan_interval" ]; then
+    reconcile; last_stall_scan=$(now)
+  fi
+  # Frequent stall scans must not shorten the self-update safety interval.
+  if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then
+    last_scan=$(now); update_requested=1
   fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   available=$(wc -l < "$DV_HOME/kick.q")
@@ -328,6 +333,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
     if [ "$(self_update_head)" != "$watch_commit" ]; then
       metrics_stop
       export DV_WATCH_REEXEC_PID=$$ DV_WATCH_REEXEC_PIDS=$pids DV_WATCH_LAST_SCAN=$last_scan
+      export DV_WATCH_LAST_STALL_SCAN=$last_stall_scan
       export DV_AUTO_UPDATE=$watch_auto_update
       exec "$DV_ROOT/bin/dv-watch" "$@"
     fi

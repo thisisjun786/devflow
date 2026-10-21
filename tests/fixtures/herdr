@@ -102,6 +102,11 @@ case "$1 $2" in
         source:"recent_unwrapped",tab_id:$tab,text:$text,truncated:false,workspace_id:$workspace},revision:0,type:"output_matched"}}' ;;
   'pane run')
     test "$3" = "$id:p1"; test "$#" = 4; test -f "$dir/ready"
+    # Hold a recovery after the launcher is requested but before it starts.
+    if [ -f "$stub/recovery-hold" ]; then
+      touch "$stub/recovery-entered"
+      while [ -f "$stub/recovery-hold" ]; do sleep 0.05; done
+    fi
     # Run only the configured fake agent, directly; no PTY/tmux or real agents.
     rm -f "$dir/exit"
     cwd=$(jq -r .result.root_pane.cwd "$dir/workspace")

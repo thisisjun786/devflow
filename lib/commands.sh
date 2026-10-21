@@ -488,11 +488,11 @@ cmd_status() {
       elif command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then
         alive=true; tmux_alive=true
       fi
-      if [ "$backend" != exec ] && [ "$backend" != appserver ] && [ "$agent_status" = unknown ] && jq -e '.status=="running"' "$path" >/dev/null &&
+      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$agent_status" = unknown ] && jq -e '.status=="running"' "$path" >/dev/null &&
         (load_issue "$(jq -r .issue "$path")"; agent_gone); then
         agent_dead=true
       fi
-      if [ "$backend" != exec ] && [ "$backend" != appserver ] && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" and .agent=="codex"' "$path" >/dev/null; then
+      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" and .agent=="codex"' "$path" >/dev/null; then
         screen=''
         if [ "$backend" = herdr ]; then
           screen=$(herdr_cmd pane read "$pane" --source visible 2>/dev/null) || screen=''

@@ -362,3 +362,109 @@ case_stall_latest_activity() {
   done
   test ! -f "$DV_STATE/ST-1/stall-recovery.json"
 }
+stall_recovery_teardown() {
+  rm -f "$CASE_DIR/herdr/recovery-hold"
+  touch "$CASE_DIR/recovery-release"
+  local pid tries
+  for pid in ${recovery_workers:-}; do wait "$pid" 2>/dev/null || true; done
+  if [ -f "$DV_STATE/SR-1/recovery-runs" ]; then
+    while IFS= read -r pid; do
+      for tries in {1..100}; do
+        [ ! -f "$DV_STATE/SR-1/recovery-exit-$pid" ] || break
+        sleep 0.05
+      done
+    done < "$DV_STATE/SR-1/recovery-runs"
+  fi
+  # Agent exit bookkeeping follows the fake agent's EXIT trap.
+  for tries in {1..100}; do
+    if [ -f "$DV_STATE/SR-1/agent.pid" ] && ! kill -0 "$(cat "$DV_STATE/SR-1/agent.pid")" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  teardown
+}
+stall_recover_as_documented() {
+  # Execute the two documented worker routes without an LLM. The old stalled
+  # rule used a raw launcher, bypassing dv send's lock and permanent revive claim.
+  local rule
+  rule=$(sed -n '/^- stalled:/p' "$ROOT/templates/worker-prompt.md")
+  if printf '%s\n' "$rule" | grep -Fq 'dv send <ISSUE>'; then
+    dv send SR-1 resume
+  else
+    printf '%s\n' "$rule" | grep -Fq 'devflow launcher'
+    load_issue SR-1
+    herdr_cmd pane run "$HERDR_PANE" "$(shell_join "$ROOT/bin/dv" _agent SR-1)"
+  fi
+}
+stall_recovery_worker() (
+  local kind=$1 rc=0
+  if [ "$kind" = stalled ]; then stall_recover_as_documented || rc=$?
+  else dv send SR-1 'resume after failed event' || rc=$?; fi
+  printf '%s\n' "$rc" > "$CASE_DIR/$kind.exit"
+)
+stall_recovery_race() {
+  local first=$1 second=$2 tries calls count pid
+  repo stalled-recovery; herdr_setup; bidding_functions
+  trap stall_recovery_teardown EXIT
+  export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/stalled-goal"
+  dv start "$REPO" SR-1 recovery
+  wait_file "$DV_STATE/SR-1/held.pid"
+  dv status SR-1 --json | jq -e '.[0] | .status=="running" and .goal_stalled'
+  local wt
+  wt=$(jq -r .worktree "$DV_STATE/SR-1/meta")
+  printf 'saved work\n' > "$wt/wip"
+  git -C "$wt" add wip
+  git -C "$wt" commit -qm 'SR-1: WIP before stalled recovery'
+  # Stopping the real fake goal makes the production wrapper emit failed.
+  kill -TERM "$(cat "$DV_STATE/SR-1/held.pid")"
+  wait_file "$CASE_DIR/herdr/w-SR-1/exit"
+  wait_file "$DV_STATE/SR-1/events.log"
+  jq -se 'length==1 and .[0].kind=="failed"' "$DV_STATE/SR-1/events.log"
+  test ! -e "$DV_STATE/SR-1/done.json"
+  touch "$CASE_DIR/stall-recover" "$CASE_DIR/herdr/recovery-hold"
+  stall_recovery_worker "$first" > "$CASE_DIR/$first.log" 2>&1 & recovery_workers=$!
+  wait_file "$CASE_DIR/herdr/recovery-entered"
+  stall_recovery_worker "$second" > "$CASE_DIR/$second.log" 2>&1 & recovery_workers="$recovery_workers $!"
+  # Wait for the second path either to contend on the lock or request its own
+  # launcher. Both processes are live during the initial restart's window.
+  for tries in {1..100}; do
+    calls=$(jq -s '[.[]|select(.[0:2]==["pane","run"])]|length' "$CASE_DIR/herdr/calls")
+    if [ -f "$CASE_DIR/$second.exit" ] || [ "$calls" -eq 3 ]; then break; fi
+    sleep 0.05
+  done
+  rm "$CASE_DIR/herdr/recovery-hold"
+  for pid in $recovery_workers; do wait "$pid"; done
+  recovery_workers=''
+  calls=$(jq -s '[.[]|select(.[0:2]==["pane","run"])]|length-1' "$CASE_DIR/herdr/calls")
+  count=0
+  for tries in {1..100}; do
+    if [ -f "$DV_STATE/SR-1/recovery-runs" ]; then count=$(wc -l < "$DV_STATE/SR-1/recovery-runs" | tr -d ' '); fi
+    [ "$count" -lt "$calls" ] || break
+    sleep 0.05
+  done
+  cat "$CASE_DIR/$first.log" "$CASE_DIR/$second.log"
+  printf '%s then %s: new_agents=%s expected=1\n' "$first" "$second" "$count"
+  test "$count" = 1
+  test "$calls" = 1
+  test -d "$DV_STATE/SR-1/revive"
+  # Delayed duplicate events cannot bypass the claim, even while detection is
+  # missing. The replacement remains alive and the saved work stays intact.
+  dv send SR-1 'late failed event' > "$CASE_DIR/late.log" 2>&1 || true
+  stall_recover_as_documented >> "$CASE_DIR/late.log" 2>&1 || true
+  jq -se '[.[]|select(.[0:2]==["pane","run"])]|length==2' "$CASE_DIR/herdr/calls"
+  test "$(cat "$wt/wip")" = 'saved work'
+  pid=$(cat "$DV_STATE/SR-1/recovery-runs")
+  kill -0 "$pid"
+  grep '^resume' "$DV_STATE/SR-1/recovery-input-$pid"
+  touch "$CASE_DIR/recovery-release"
+  wait_file "$DV_STATE/SR-1/recovery-exit-$pid"
+  for tries in {1..100}; do
+    if ! kill -0 "$(cat "$DV_STATE/SR-1/agent.pid")" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  # The permanent claim also prevents a new launch after the replacement exits.
+  if dv send SR-1 'replayed failed after replacement exit' >> "$CASE_DIR/late.log" 2>&1; then return 1; fi
+  jq -se '[.[]|select(.[0:2]==["pane","run"])]|length==2' "$CASE_DIR/herdr/calls"
+  test "$(wc -l < "$DV_STATE/SR-1/recovery-runs" | tr -d ' ')" = 1
+}
+case_stall_failed_race() { stall_recovery_race stalled failed; }
+case_failed_stall_race() { stall_recovery_race failed stalled; }

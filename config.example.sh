@@ -13,7 +13,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_APPSERVER_SOCKET:=}" # empty uses Codex's existing default control socket
 : "${DV_APPSERVER_TIMEOUT:=10}" # bounded JSON-RPC response wait, seconds
 : "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds
-: "${DV_STALL_AFTER:=300}" # App Server / exec / watcher idle: seconds without activity
+: "${DV_STALL_AFTER:=300}" # shared App Server / exec / idle / stalled threshold, positive seconds
 : "${DV_RECOVER_MAX:=3}" # App Server: maximum automatic recoveries per job
 : "${DV_CAPACITY_BACKOFF:=120}" # App Server: seconds before capacity/rate-limit recovery
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
