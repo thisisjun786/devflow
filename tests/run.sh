@@ -16,6 +16,7 @@ setup() {
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
+  export DV_AUTO_UPDATE=0
   export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5 DV_APPSERVER_TIMEOUT=1
   unset DV_MODE
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF
@@ -733,8 +734,13 @@ case_question_grace() {
 }
 case_question_exit() {
   question_setup
+  # The fake agent still commits and records done after release. Hold the
+  # grace response so this tests cancellation on exit, not Git's speed.
+  touch "$CASE_DIR/herdr/hold-question-grace"
   question_state blocked
+  wait_file "$CASE_DIR/herdr/question-grace-entered"
   question_finish
+  rm "$CASE_DIR/herdr/hold-question-grace"
   sleep 1.2
   test "$(question_count)" = 0
 }
@@ -1663,6 +1669,8 @@ source "$ROOT/tests/qa.sh"
 source "$ROOT/tests/metrics.sh"
 # shellcheck source=tests/pr-worker.sh
 source "$ROOT/tests/pr-worker.sh"
+# shellcheck source=tests/self-update.sh
+source "$ROOT/tests/self-update.sh"
 # shellcheck source=tests/disk.sh
 source "$ROOT/tests/disk.sh"
 # shellcheck source=tests/stack.sh
@@ -1670,6 +1678,10 @@ source "$ROOT/tests/stack.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in update_cli update_dirty update_landed update_safety update_guard update_offline update_watch_dirty update_host update_managed update_parallel update_timeout update_unrelated update_receipt; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
 for name in disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cache_guard disk_cache_alias_guard disk_cache_canonical disk_cache_newline disk_env_cache_newline disk_home_newline disk_custom_cache disk_go_env_cache disk_separate_filesystems disk_unknown disk_award disk_bsd_stat disk_worktrees disk_host disk_watch disk_start_interval disk_watch_due teardown_wait_client teardown_preserve_live_client; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
