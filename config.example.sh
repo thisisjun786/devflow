@@ -8,6 +8,11 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_KICK_HOST:=lina-os}" # host running dv-watch (lina-mac before 10-19)
 : "${DV_KICK:=}" # shell command; receives kind issue message host head as arguments
 : "${DV_CODEX_BIN:=codex}" # ~/node/bin/codex or ~/.opencodex/bin/codex
+: "${DV_CODEX_MODE:=auto}" # existing App Server, otherwise exec; appserver, exec, goal/tui
+: "${DV_APPSERVER_SOCKET:=}" # empty uses Codex's existing default control socket
+: "${DV_APPSERVER_TIMEOUT:=10}" # bounded JSON-RPC response wait, seconds
+: "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds
+: "${DV_STALL_AFTER:=300}" # App Server / exec / watcher idle: seconds without activity
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
 : "${DV_CLAUDE_BIN:=claude}"
@@ -23,9 +28,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_AGENT_QUESTIONS:=sion}" # herdr: question tools on; off (always under tmux): disable Codex/Claude question tools
 : "${DV_CODEX_SESSIONS:=${CODEX_HOME:-$HOME/.codex}/sessions}" # question transcripts, read only
 : "${DV_CLAUDE_SESSIONS:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" # question transcripts, read only
-: "${DV_CODEX_MODE:=exec}" # exec (background JSONL) or goal (interactive terminal)
 : "${DV_MODE:=}" # optional legacy override; --mode takes precedence
-: "${DV_STALL_AFTER:=600}" # exec retry/block and watcher idle threshold, seconds
 : "${DV_AGENT_CMD_codex:=}" # complete shell command, no extra CLI flags
 : "${DV_AGENT_CMD_claude:=}"
 : "${DV_AGENT_CMD_devin:=}"

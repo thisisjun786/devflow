@@ -53,6 +53,7 @@ cursor=0
 [ ! -f "$DV_HOME/cursor" ] || cursor=$(cat "$DV_HOME/cursor")
 touch "$DV_HOME/kick.q" "$DV_HOME/seen"
 last_scan=0
+last_appserver_scan=0
 last_metrics=0
 # Remote dev hosts: one dv-kick-pull stream per host, restarted with a back-off when it ends.
 pull_pids=''
@@ -213,6 +214,16 @@ while [ ! -e "$DV_HOME/stop" ]; do
   reap
   qa_recover
   pulls
+  if [ $(( $(now) - last_appserver_scan )) -ge "$DV_APPSERVER_POLL" ]; then
+    for appserver_host in $DV_HOSTS; do
+      if [ "$appserver_host" = "$DV_HOST" ]; then
+        dv _appserver-watch >> "$DV_HOME/reconcile.log" 2>&1 || true
+      else
+        bid_limit "$DV_BID_TIMEOUT" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$appserver_host" 'dv _appserver-watch' >> "$DV_HOME/reconcile.log" 2>&1 || true
+      fi
+    done
+    last_appserver_scan=$(now)
+  fi
   if [ $(( $(now) - last_metrics )) -ge "$DV_METRICS_INTERVAL" ]; then
     metrics_start
     last_metrics=$(now)
