@@ -223,7 +223,7 @@ case_metrics_concurrent() {
 }
 metrics_slow_fixture() {
   watch_fixture
-  export DV_HOSTS='slow-one slow-two' DV_BID_TIMEOUT=20 DV_METRICS_INTERVAL=1
+  export DV_HOSTS='slow-one slow-two' DV_BID_TIMEOUT=${1:-20} DV_METRICS_INTERVAL=1
   mkdir "$CASE_DIR/metrics-bin"
   ln -s "$ROOT/tests/fixtures/metrics-ssh" "$CASE_DIR/metrics-bin/ssh"
   export PATH="$CASE_DIR/metrics-bin:$PATH"
@@ -288,4 +288,32 @@ case_metrics_exec_events() {
   METRICS_NOW=220; cmd__metrics_sample >/dev/null
   printf '{"type":"item.completed"}\n' > "$DV_STATE/P-1/agent.jsonl"
   METRICS_NOW=280; cmd__metrics_sample | jq -e '.[0].idle_seconds==0'
+}
+case_metrics_manager_batch() {
+  case_manager_batch
+  dv metrics --json | jq -e 'length==3 and all(.[]; .manager_resume_count==1) and
+    (map(select(.issue=="M-1"))[0].handled_count==3) and
+    all(.[]|select(.issue!="M-1"); .handled_count==1)'
+}
+case_metrics_manager_fallback() {
+  case_manager_fallback_restart
+  dv metrics --json | jq -e 'length==1 and .[0].issue=="M-2" and .[0].handled_count==1'
+}
+case_metrics_timeout_snapshot() {
+  metrics_fixture
+  cmd__metrics_sample >/dev/null
+  local dir collector
+  dir=$(metrics_job_dir test-host P-1)
+  mkdir -p "$dir"
+  cp "$DV_STATE/P-1/metrics/activity.json" "$dir/snapshot.json"
+  cp "$dir/snapshot.json" "$CASE_DIR/before-snapshot"
+  metrics_slow_fixture 1
+  collector=$(cat "$DV_HOME/metrics.pid")
+  for _ in {1..80}; do
+    if ! ps -o args= -p "$collector" 2>/dev/null | grep -q _metrics-collect; then break; fi
+    sleep 0.1
+  done
+  if ps -o args= -p "$collector" 2>/dev/null | grep -q _metrics-collect; then return 1; fi
+  cmp "$CASE_DIR/before-snapshot" "$dir/snapshot.json"
+  metrics_stop_watch
 }

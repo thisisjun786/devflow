@@ -470,7 +470,9 @@ case_watch_capacity() {
     sleep 0.1
   done
   test "$(find "$DV_HOME/workers" -name '*.started' | wc -l | tr -d ' ')" = 4
-  test "$(cat "$DV_HOME/cursor")" = 4
+  # Reception persists all events even while the execution slots are full.
+  test "$(cat "$DV_HOME/cursor")" = 5
+  test "$(find "$DV_HOME/pending" -name '*.json' | wc -l | tr -d ' ')" = 5
   touch "$DV_HOME/release"
   for _ in {1..100}; do
     [ "$(find "$DV_HOME/workers" -name '*.finished' | wc -l | tr -d ' ')" = 5 ] && break
@@ -1630,7 +1632,7 @@ source "$ROOT/tests/metrics.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart metrics_exec metrics_exec_events; do
+for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart metrics_exec metrics_exec_events metrics_manager_batch metrics_manager_fallback metrics_timeout_snapshot; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
@@ -1650,7 +1652,7 @@ for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_serve
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
-for name in manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do
+for name in manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

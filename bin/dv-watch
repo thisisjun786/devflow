@@ -17,6 +17,7 @@ need jq
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
 [[ "$DV_METRICS_INTERVAL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_METRICS_INTERVAL must be positive seconds'
 [[ "$DV_STALL_AFTER" =~ ^[0-9]+$ ]] || fail 'DV_STALL_AFTER must be nonnegative seconds'
+[[ "$DV_MANAGER_MAX_WAIT" =~ ^[0-9]+$ ]] || fail 'DV_MANAGER_MAX_WAIT must be nonnegative seconds'
 mkdir -p "$DV_HOME/workers" "$DV_HOME/pending"
 # A single queue reader owns the cursor and its child processes.
 # A SIGKILLed watcher cannot remove its own lock (no trap runs on SIGKILL), so a lock whose recorded pid is gone is
@@ -107,10 +108,19 @@ reap() {
     if kill -0 "$pid" 2>/dev/null; then live="$live $pid"; active=$((active + 1)); else wait "$pid" || true; fi
   done
   pids=$live
+  # A manager child can outlive a killed watcher. Count that reservation too;
+  # its lock still owns the batch and must not permit excess fallback workers.
+  for record in "$DV_HOME"/managers/*/run.lock/pid; do
+    [ -f "$record" ] || continue
+    pid=$(cat "$record" 2>/dev/null) || continue
+    if [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
+      case " $live " in *" $pid "*) ;; *) active=$((active + 1)) ;; esac
+    fi
+  done
   for record in "$DV_HOME/pending/"*.json; do
     [ -f "$record" ] || continue
     slot=${record%.json}; event_id=$(jq -r .id "$record")
-    if grep -Fxq -- "$event_id" "$DV_HOME/seen"; then
+    if [ ! -f "$slot.manager" ] && grep -Fxq -- "$event_id" "$DV_HOME/seen"; then
       rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry"; continue
     fi
     pid=''; [ ! -f "$slot.pid" ] || pid=$(cat "$slot.pid")
@@ -125,8 +135,9 @@ reap() {
     else continue; fi
     if [ "$rc" = 0 ]; then
       metrics_handled "$(cat "$record")"
-      printf '%s\n' "$event_id" >> "$DV_HOME/seen"
-      rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry"
+      if [ -f "$slot.manager" ]; then manager_fallback_complete "$slot"
+      else printf '%s\n' "$event_id" >> "$DV_HOME/seen"; fi
+      rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry" "$slot.manager"
     else
       printf 'worker failed (exit %s), retrying: %s\n' "$rc" "$event_id" >> "$DV_HOME/watch.log"
       printf '%s\n' "$(( $(now) + DV_WORKER_RETRY ))" > "$slot.retry"
@@ -196,9 +207,8 @@ reconcile() {
   done
 }
 while [ ! -e "$DV_HOME/stop" ]; do
+  manager_fallback_recover
   reap
-  retry_pending
-  manager_dispatch
   pulls
   if [ $(( $(now) - last_metrics )) -ge "$DV_METRICS_INTERVAL" ]; then
     metrics_start
@@ -206,7 +216,8 @@ while [ ! -e "$DV_HOME/stop" ]; do
   fi
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
-  while [ "$active" -lt "$DV_MAX_WORKERS" ] && [ ! -e "$DV_HOME/stop" ]; do
+  available=$(wc -l < "$DV_HOME/kick.q")
+  while [ "$cursor" -lt "$available" ] && [ ! -e "$DV_HOME/stop" ]; do
     [ "$cursor" -lt "$(wc -l < "$DV_HOME/kick.q")" ] || break
     line=$(sed -n "$((cursor + 1))p" "$DV_HOME/kick.q")
     [ -n "$line" ] || break
@@ -241,9 +252,10 @@ while [ ! -e "$DV_HOME/stop" ]; do
       # a watcher restart, while in-flight duplicate IDs stay suppressed.
       slot="$DV_HOME/pending/$cursor"
       printf '%s\n' "$line" > "$slot.json.tmp"; mv "$slot.json.tmp" "$slot.json"
-      worker_start "$slot"
     fi
     cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
   done
+  retry_pending
+  manager_dispatch
   sleep "$DV_WATCH_INTERVAL"
 done

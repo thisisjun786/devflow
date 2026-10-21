@@ -37,6 +37,13 @@ metrics_event() {
     printf 'dv: could not record %s metric for %s\n' "$kind" "$issue" >&2
 }
 metrics_handled() { metrics_event "$1" handled; }
+metrics_manager_resumes() {
+  local event
+  # One manager resume serves the whole batch. Attribute one attempt per job,
+  # while successful completion below still acknowledges every original event.
+  while IFS= read -r event; do metrics_event "$event" manager_resume; done < <(
+    jq -c 'group_by([.event.host,.event.issue]) | .[] | last | .event' "$1")
+}
 metrics_records() {
   local file
   for file in "$1"/records/*.json; do [ ! -f "$file" ] || cat "$file"; done

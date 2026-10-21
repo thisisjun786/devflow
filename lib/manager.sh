@@ -41,12 +41,15 @@ manager_lock() {
   # removing it on release races the next acquirer creating its owner file.
   # Never steal a stale owner file automatically: a worker child may outlive
   # its parent, and deleting a newly acquired replacement would break ordering.
-  (set -C; printf '%s\n' "$$" > "$dir/run.lock/pid") 2>/dev/null
+  (set -C; printf '%s\n' "$$" > "$dir/run.lock/pid") 2>/dev/null || return 1
+  now > "$dir/run.lock/started"
 }
 manager_unlock() {
   local dir=$1
   [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$$" ] || return 0
-  rm -f "$dir/run.lock/job" "$dir/run.lock/claim" "$dir/run.lock/pid"
+  rm -f "$dir/run.lock/job" "$dir/run.lock/claim" "$dir/run.lock/started" \
+    "$dir/run.lock/batch.json" "$dir/run.lock/notices.json"
+  rm -f "$dir/run.lock/pid"
 }
 manager_log() {
   local dir=$1 kind=$2 old=$3 new=$4 rc=$5
@@ -82,7 +85,7 @@ manager_turn() {
   local dir=$1 prompt=$2 log=$3 session next='' rc=0 fresh
   session=$(jq -r '.session_id // empty' "$dir/meta.json")
   if [ -n "$session" ]; then
-    [ -z "${METRICS_MANAGER_EVENT:-}" ] || metrics_event "$METRICS_MANAGER_EVENT" manager_resume
+    [ -z "${METRICS_MANAGER_BATCH:-}" ] || metrics_manager_resumes "$METRICS_MANAGER_BATCH"
     manager_call "$dir" "$prompt" "$session" "$log.resume" || rc=$?
     next=$(manager_session_id "$log.resume.err")
     if [ "$rc" = 0 ] && [ -n "$next" ]; then
@@ -199,41 +202,127 @@ manager_enqueue() {
   job="$dir/pending/$(printf '%020d' "$sequence").json"
   # A crash between enqueue and cursor persistence must not overwrite a job
   # already running or replay one that has finished.
-  for previous in "$job" "${job%.json}.done" "$dir/failed/$(basename "$job")"; do
+  for previous in "$job" "${job%.json}.done" "$dir/failed/$(basename "$job")" \
+    "$dir/fallback/$(basename "$job")" "$dir/fallback/$(basename "${job%.json}.done")"; do
     if [ -f "$previous" ]; then
       jq -e --argjson event "$line" '.event.id==$event.id' "$previous" >/dev/null || return 2
       return 0
     fi
   done
   tmp=$(mktemp "$dir/.pending.XXXXXX") || return 2
-  jq -cn --argjson event "$line" --arg prompt "$prompt" '{event:$event,prompt:$prompt}' > "$tmp" || return 2
+  jq -cn --argjson event "$line" --arg prompt "$prompt" --argjson queued_at "$(now)" \
+    '{event:$event,prompt:$prompt,queued_at:$queued_at}' > "$tmp" || return 2
   mv "$tmp" "$job" || return 2
 }
-# Called by the existing watcher. Only running children consume worker slots;
-# queued events for a busy repo cannot prevent another repo from being started.
+# The watcher owns fallback routing; workers use its existing durable retry path.
+manager_fallback_slot() {
+  printf '%s/pending/manager-%s-%s\n' "$DV_HOME" "$(basename "$1")" "$(basename "${2%.json}")"
+}
+manager_fallback_recover() {
+  local job dir slot
+  for job in "$DV_HOME"/managers/*/fallback/*.json; do
+    [ -f "$job" ] || continue
+    dir=$(dirname "$(dirname "$job")")
+    slot=$(manager_fallback_slot "$dir" "$job")
+    [ ! -f "$slot.json" ] || continue
+    printf '%s\n' "$job" > "$slot.manager"
+    jq '.event' "$job" > "$slot.json.tmp" || return 1
+    mv "$slot.json.tmp" "$slot.json"
+  done
+}
+manager_event_result() {
+  local item=$1 route=$2 rc=$3
+  jq -cn --argjson item "$item" --arg route "$route" --argjson rc "$rc" --argjson handled "$(now)" '
+    {kind:"event_handled",event_id:$item.event.id,issue:$item.event.issue,event:$item.event,
+     event_time:($item.event.time // $item.queued_at // $handled),handled_at:$handled,
+     route:$route,exit_code:$rc,disposition:($item.disposition // "handled"),
+     superseded_by:($item.superseded_by // null)} |
+    .latency_seconds=([0, (.handled_at-.event_time)]|max)'
+}
+manager_fallback_complete() {
+  local slot=$1 job dir receipt
+  job=$(cat "$slot.manager") || return 1
+  dir=$(dirname "$(dirname "$job")")
+  # A restart after terminal persistence only needs to clear the worker slot.
+  [ -f "$job" ] || return 0
+  receipt=$(manager_event_result "$(cat "$job")" fallback 0) || return 1
+  mkdir -p "$dir/notices"
+  printf '%s\n' "$receipt" > "$dir/notices/$(basename "$job").tmp"
+  mv "$dir/notices/$(basename "$job").tmp" "$dir/notices/$(basename "$job")"
+  printf '%s\n' "$receipt" >> "$dir/events.log"
+  mv "$job" "${job%.json}.done"
+}
+manager_issue_in_fallback() {
+  local dir=$1 issue=$2 job
+  for job in "$dir"/fallback/*.json; do
+    [ -f "$job" ] || continue
+    if jq -e --arg issue "$issue" '.event.issue==$issue' "$job" >/dev/null; then return 0; fi
+  done
+  return 1
+}
+manager_fallback_dispatch() {
+  local dir=$1 started batch job issue
+  started=$(cat "$dir/run.lock/started" 2>/dev/null) || return 0
+  [[ "$started" =~ ^[0-9]+$ ]] || return 0
+  [ $(( $(now) - started )) -ge "$DV_MANAGER_MAX_WAIT" ] || return 0
+  # An immutable reservation describes every issue the busy turn may touch.
+  batch=$(cat "$dir/run.lock/batch.json" 2>/dev/null) || return 0
+  for job in "$dir"/pending/*.json; do
+    [ "$active" -lt "$DV_MAX_WORKERS" ] || break
+    [ -f "$job" ] || continue
+    issue=$(jq -er .event.issue "$job") || continue
+    if jq -en --arg issue "$issue" --argjson batch "$batch" \
+      'any($batch[]; .event.issue==$issue)' >/dev/null; then continue; fi
+    manager_issue_in_fallback "$dir" "$issue" && continue
+    mkdir -p "$dir/fallback"
+    mv "$job" "$dir/fallback/$(basename "$job")"
+    manager_fallback_recover
+    retry_pending
+  done
+}
+# Snapshot once under the reservation. Arrivals during a turn belong to the
+# next batch, and issues with an outstanding fallback cannot race that worker.
 manager_dispatch() {
-  local meta dir job
+  local meta dir job issue anchor
+  local jobs=() notices=()
   for meta in "$DV_HOME"/managers/*/meta.json; do
     [ "$active" -lt "$DV_MAX_WORKERS" ] || break
     [ -f "$meta" ] || continue
     dir=$(dirname "$meta")
+    if ! manager_lock "$dir"; then manager_fallback_dispatch "$dir"; continue; fi
+    jobs=(); notices=(); anchor=''
     for job in "$dir"/pending/*.json; do
-      [ -f "$job" ] || break
-      manager_lock "$dir" || break
-      if ! printf '%s\n' "$job" > "$dir/run.lock/job"; then
-        manager_unlock "$dir"; break
-      fi
-      "$DV_ROOT/bin/dv" _manager-run "$dir" "$job" > "${job%.json}.log" 2>&1 &
-      pids="$pids $!"; active=$((active + 1))
-      break
+      [ -f "$job" ] || continue
+      issue=$(jq -er .event.issue "$job") || continue
+      manager_issue_in_fallback "$dir" "$issue" && continue
+      jobs+=("$job"); anchor=$job
     done
+    for job in "$dir"/notices/*.json; do
+      [ -f "$job" ] || continue
+      notices+=("$job"); anchor=$job
+    done
+    if [ -z "$anchor" ]; then manager_unlock "$dir"; continue; fi
+    if [ "${#jobs[@]}" = 0 ]; then printf '[]\n' > "$dir/run.lock/batch.json"
+    else
+      jq -n '[inputs | .+{job:input_filename}] | to_entries as $rows |
+        ($rows | group_by(.value.event.issue) | map(max_by([.value.event.time // 0,.key]))) as $latest |
+        $rows | map(. as $row | ($latest[] | select(.value.event.issue==$row.value.event.issue)) as $new |
+          .value + if .key==$new.key then {disposition:"handled"}
+          else {disposition:"superseded",superseded_by:$new.value.event.id} end)' \
+        "${jobs[@]}" > "$dir/run.lock/batch.json"
+    fi
+    if [ "${#notices[@]}" = 0 ]; then printf '[]\n' > "$dir/run.lock/notices.json"
+    else jq -n '[inputs | .+{job:input_filename}]' "${notices[@]}" > "$dir/run.lock/notices.json"; fi
+    printf '%s\n' "$anchor" > "$dir/run.lock/job"
+    "$DV_ROOT/bin/dv" _manager-run "$dir" "$anchor" > "${anchor%.json}.log" 2>&1 &
+    pids="$pids $!"; active=$((active + 1))
   done
 }
 cmd__manager_run() (
   [ "$#" = 2 ] || fail 'usage: dv _manager-run <manager-directory> <queued-job>'
-  local dir=$1 job=$2 prompt rc=0 log
+  local dir=$1 job=$2 prompt rc=0 log item record
   [ "$(dirname "$dir")" = "$DV_HOME/managers" ] || fail 'invalid manager directory'
-  if [ "$(dirname "$job")" != "$dir/pending" ] || [ ! -f "$job" ]; then
+  if { [ "$(dirname "$job")" != "$dir/pending" ] && [ "$(dirname "$job")" != "$dir/notices" ]; } || [ ! -f "$job" ]; then
     fail 'invalid manager job'
   fi
   [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$PPID" ] || fail 'manager runner has no parent reservation'
@@ -245,10 +334,18 @@ cmd__manager_run() (
   trap 'manager_unlock "$dir"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  prompt=$(jq -er .prompt "$job") || return 1
-  local METRICS_MANAGER_EVENT
-  METRICS_MANAGER_EVENT=$(jq -c .event "$job")
+  local METRICS_MANAGER_BATCH="$dir/run.lock/batch.json"
   log="${job%.json}"
+  prompt="$log.batch.prompt.md"
+  {
+    cat "$DV_ROOT/templates/worker-prompt.md"
+    printf '\n작업자 호스트(DV_HOST): `%s`\n' "$DV_HOST"
+    printf '\n이 저장소의 대기 이벤트를 이번 턴에서 모두 처리하세요. 이슈별 최신 이벤트만 실행하고 superseded 이벤트는 문맥으로만 읽으세요.\n이벤트 배치(JSON 데이터):\n```json\n'
+    jq 'map(del(.job,.prompt))' "$dir/run.lock/batch.json"
+    printf '```\n\n별도 worker 처리 결과입니다. 이미 처리했으므로 다시 실행하지 말고 현재 상태를 확인하세요.\n```json\n'
+    jq 'map(del(.job))' "$dir/run.lock/notices.json"
+    printf '```\n'
+  } > "$prompt"
   if jq -e .enabled "$dir/meta.json" >/dev/null; then
     manager_turn "$dir" "$prompt" "$log" || rc=$?
   elif [ -n "$DV_WORKER_CMD" ]; then
@@ -257,7 +354,15 @@ cmd__manager_run() (
     "$DV_HERMES_BIN" -p sion chat -Q --yolo -t terminal,connections -s devflow --query-file "$prompt" || rc=$?
   fi
   # Retain terminal failures for inspection, without an unbounded retry loop.
-  if [ "$rc" = 0 ]; then metrics_handled "$METRICS_MANAGER_EVENT"; mv "$job" "${job%.json}.done"
-  else mv "$job" "$dir/failed/$(basename "$job")"; fi
+  while IFS= read -r item; do
+    record=$(jq -r .job <<< "$item")
+    manager_event_result "$item" manager "$rc" >> "$dir/events.log"
+    if [ "$rc" = 0 ]; then metrics_handled "$(jq -c .event <<< "$item")"; mv "$record" "${record%.json}.done"
+    else mv "$record" "$dir/failed/$(basename "$record")"; fi
+  done < <(jq -c '.[]' "$dir/run.lock/batch.json")
+  while IFS= read -r record; do
+    if [ "$rc" = 0 ]; then mv "$record" "${record%.json}.done"
+    else mv "$record" "$dir/failed/notice-$(basename "$record")"; fi
+  done < <(jq -r '.[].job' "$dir/run.lock/notices.json")
   return "$rc"
 )
