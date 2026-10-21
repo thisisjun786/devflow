@@ -14,6 +14,8 @@ source "$DV_ROOT/lib/herdr.sh"
 source "$DV_ROOT/lib/commands.sh"
 # shellcheck source=lib/delivery.sh
 source "$DV_ROOT/lib/delivery.sh"
+# shellcheck source=lib/stack.sh
+source "$DV_ROOT/lib/stack.sh"
 # shellcheck source=lib/polish.sh
 source "$DV_ROOT/lib/polish.sh"
 # shellcheck source=lib/bidding.sh
@@ -35,6 +37,7 @@ case "$command" in
   start|done|pr|polish|review|land|status|send|clean|kick|submit|bid|queue|cancel|_submit|_award|_receipt) "cmd_$command" "$@" ;;
   pr-wait) cmd_pr_wait "$@" ;;
   _pr-wait-start) cmd_pr_wait_start "$@" ;;
+  _stack-land) cmd_stack_land "$@" ;;
   metrics) cmd_metrics "$@" ;;
   _metrics-sample) cmd__metrics_sample "$@" ;;
   _metrics-collect) cmd__metrics_collect "$@" ;;
