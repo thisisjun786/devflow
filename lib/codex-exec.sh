@@ -25,7 +25,7 @@ codex_exec_launch() (
   printf '%s\n' "$$" > "$pidfile"
   mv "$pidfile" "$S/agent.pid"
   rm -f "$S/agent.exit"
-  meta_set '.exec_status="working" | (if .status=="pr" or .status=="ready" then . else .status="running" end) | del(.done_at,.failure_reason)'
+  meta_set '.exec_status="working" | (if .status=="pr" or .status=="ready" then . else .status="running" end) | del(.done_at,.cleaned_at,.failure_reason)'
   now > "$S/agent.activity"
   # exec keeps the published PID for the full wrapper lifetime. run_agent must
   # not rewrite it, even temporarily, while readers are checking liveness.
@@ -105,7 +105,7 @@ codex_exec_run() {
     run="$(now)-$$-$RANDOM"
     mkdir -p "$S/exec/$run"
     rm -f "$S/agent.exit"
-    meta_set --arg run "$run" '.exec_run=$run | .exec_status="working" | (if .status=="pr" or .status=="ready" then . else .status="running" end) | del(.done_at,.failure_reason)'
+    meta_set --arg run "$run" '.exec_run=$run | .exec_status="working" | (if .status=="pr" or .status=="ready" then . else .status="running" end) | del(.done_at,.cleaned_at,.failure_reason)'
     exec_activity=$(now); printf '%s\n' "$exec_activity" > "$S/agent.activity"
     exec_reason=''; rc=0
     if ! codex_environment; then
