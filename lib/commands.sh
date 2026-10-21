@@ -565,6 +565,9 @@ revive_agent() {
     printf 'This continues the same request; preserve %s/review-fix.sent and the one-fix-per-PR limit.\n' "$S"
     printf 'Do not create a new branch or force push. Finish with dv done %s.\n' "$ISSUE"
   } > "$S/revive/prompt.md"
+  # Cleanup belongs to the previous run. Publish this before launching so all
+  # capacity, metrics and disk readers observe the revived lifecycle.
+  meta_set 'del(.cleaned_at)'
   rm -f "$S/agent.exit" "$S/agent.pid"
   metrics_note revive
   if ! launch_agent --revived; then
