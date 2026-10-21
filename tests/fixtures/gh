@@ -10,20 +10,32 @@ case "$*" in
     else printf '{"mergeCommitAllowed":true,"squashMergeAllowed":true,"rebaseMergeAllowed":true}\n'; fi ;;
   'pr create '*)
     while [ "$#" -gt 0 ]; do
-      if [ "$1" = --body-file ]; then cp "$2" "$GH_STUB_DIR/live-body"; break; fi
-      shift
+      case "$1" in
+        --body-file) cp "$2" "$GH_STUB_DIR/live-body"; shift 2 ;;
+        --title) printf '%s\n' "$2" > "$GH_STUB_DIR/live-title"; shift 2 ;;
+        *) shift ;;
+      esac
     done
     echo https://github.com/test/repo/pull/1 ;;
   'pr edit '*)
+    [ ! -f "$GH_STUB_DIR/projectcards-error" ] || { echo 'GraphQL: deprecated projectCards' >&2; exit 1; }
     [ ! -f "$GH_STUB_DIR/edit-fail" ] || exit 1
     test "$4" = --body-file
     cp "$5" "$GH_STUB_DIR/live-body" ;;
-  'api --method PATCH repos/'*)
+  'api --method PATCH repos/'*|'api -X PATCH repos/'*)
     [ ! -f "$GH_STUB_DIR/edit-fail" ] || exit 1
-    test "$#" = 6 && test "$4" = "${GH_STUB_PR_ENDPOINT:-repos/test/repo/pulls/1}" && test "$5" = -F
-    [[ "$6" = body=@* ]]
-    cp "${6#body=@}" "$GH_STUB_DIR/edited-body"
-    cp "${6#body=@}" "$GH_STUB_DIR/live-body" ;;
+    test "$4" = "${GH_STUB_PR_ENDPOINT:-repos/test/repo/pulls/1}"
+    shift 4
+    while [ "$#" -gt 0 ]; do
+      case "$1:$2" in
+        -F:body=@*)
+          cp "${2#body=@}" "$GH_STUB_DIR/edited-body"
+          cp "${2#body=@}" "$GH_STUB_DIR/live-body" ;;
+        -f:title=*) printf '%s\n' "${2#title=}" > "$GH_STUB_DIR/live-title" ;;
+        *) echo "Unexpected PATCH field: $*" >&2; exit 1 ;;
+      esac
+      shift 2
+    done ;;
   'api repos/'*)
     if [ "$#" = 2 ] && [ "$2" = "repos/${GH_STUB_LAND_REPO:-test/repo}" ]; then
       [ ! -f "$GH_STUB_DIR/repo-fail" ] || exit 1

@@ -1031,7 +1031,7 @@ case_polish_success() {
   cmp "$CASE_DIR/expected" "$GH_STUB_DIR/edited-body"
   cmp "$CASE_DIR/expected" "$DV_STATE/POL-1/pr-body.md"
   grep -Fx 'api repos/test/repo/pulls/1' "$GH_STUB_DIR/calls"
-  grep -F 'api --method PATCH repos/test/repo/pulls/1 -F body=@' "$GH_STUB_DIR/calls"
+  grep -F 'api -X PATCH repos/test/repo/pulls/1 -F body=@' "$GH_STUB_DIR/calls"
   cmp "$CASE_DIR/expected" "$GH_STUB_DIR/live-body"
   grep -F '사실·숫자·경로·명령·코드 블록·링크·제목 구조' "$CASE_DIR/polish-prompt"
   dv polish POL-1
@@ -1085,7 +1085,7 @@ case_polish_remote_edit() {
   cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
   cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.orig.md"
   test ! -f "$GH_STUB_DIR/edited-body"
-  if grep -F 'api --method PATCH ' "$GH_STUB_DIR/calls"; then return 1; fi
+  if grep -F 'api -X PATCH ' "$GH_STUB_DIR/calls"; then return 1; fi
   grep -F 'live PR body changed; edit skipped' "$DV_STATE/POL-1/polish.log"
 }
 case_polish_read_failure() {
@@ -1095,7 +1095,7 @@ case_polish_read_failure() {
   cmp "$CASE_DIR/original" "$DV_STATE/POL-1/pr-body.md"
   cmp "$CASE_DIR/original" "$GH_STUB_DIR/live-body"
   test ! -f "$GH_STUB_DIR/edited-body"
-  if grep -F 'api --method PATCH ' "$GH_STUB_DIR/calls"; then return 1; fi
+  if grep -F 'api -X PATCH ' "$GH_STUB_DIR/calls"; then return 1; fi
   grep -F 'gh api read failed; edit skipped' "$DV_STATE/POL-1/polish.log"
 }
 case_polish_pr_url() {
@@ -1105,7 +1105,7 @@ case_polish_pr_url() {
   dv polish POL-1
   test -f "$GH_STUB_DIR/edited-body"
   grep -Fx 'api repos/another-owner/another.repo/pulls/37' "$GH_STUB_DIR/calls"
-  grep -F 'api --method PATCH repos/another-owner/another.repo/pulls/37 -F body=@' "$GH_STUB_DIR/calls"
+  grep -F 'api -X PATCH repos/another-owner/another.repo/pulls/37 -F body=@' "$GH_STUB_DIR/calls"
 }
 case_polish_default() {
   polish_setup
@@ -1139,6 +1139,8 @@ AGY
 }
 case_polish_parallel() {
   polish_setup
+  cp "$CASE_DIR/original" "$DV_STATE/POL-1/report.md"
+  rm "$DV_STATE/POL-1/pr-body.md"
   rm "$DV_STATE/POL-1/pr.json"
   export POLISH_MODE=hold DV_POLISH_TIMEOUT=30
   dv pr POL-1
@@ -1596,6 +1598,8 @@ case_bid_rejections_no_tmux() { bid_without_tmux bid_rejections; }
 source "$ROOT/tests/host.sh"
 # shellcheck source=tests/delivery.sh
 source "$ROOT/tests/delivery.sh"
+# shellcheck source=tests/pr-body.sh
+source "$ROOT/tests/pr-body.sh"
 # shellcheck source=tests/claude.sh
 source "$ROOT/tests/claude.sh"
 # shellcheck source=tests/followups.sh
@@ -1613,6 +1617,10 @@ source "$ROOT/tests/revive.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in pr_fallback_body pr_fallback_summary pr_fallback_missing pr_fallback_bounded pr_fallback_private_only pr_head_title pr_prepared_body pr_legacy_body pr_patch_title pr_patch_body polish_unreachable polish_unreachable_timeout; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
 for name in revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
