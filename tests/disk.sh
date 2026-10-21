@@ -11,6 +11,7 @@ test "$*" = 'clean -cache'
 printf '%s\n' "$GOCACHE" > "$CASE_DIR/go.cache"
 printf '%s\n' "$*" >> "$CASE_DIR/go.calls"
 find "$GOCACHE" -type f -exec rm -f '{}' +
+[ -z "${DISK_END_AT:-}" ] || printf '%s\n' "$DISK_END_AT" > "$CASE_DIR/disk-clock"
 STUB
   chmod +x "$CASE_DIR/disk-bin/go"
   export PATH="$CASE_DIR/disk-bin:$PATH" DV_MIN_DISK_GB=15 DV_CACHE_TRIM_DAYS=2 DV_DISK_INTERVAL=1800
@@ -258,5 +259,44 @@ case_disk_watch() {
   wait_file "$DV_STATE/.disk/last-run"
   wait_file "$CASE_DIR/remote-state/.disk/last-run"
   test "$(grep -c 'remote-box dv _disk-maintain' "$CASE_DIR/ssh.calls")" = 1
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+}
+disk_clock_fixture() {
+  printf '10000\n' > "$CASE_DIR/disk-clock"
+  cat > "$CASE_DIR/disk-bin/date" <<'STUB'
+#!/usr/bin/env bash
+if [ "$*" = +%s ]; then cat "$CASE_DIR/disk-clock"; else exec /bin/date "$@"; fi
+STUB
+  chmod +x "$CASE_DIR/disk-bin/date"
+}
+case_disk_start_interval() {
+  disk_fixture; disk_clock_fixture
+  export DV_DISK_INTERVAL=60 DF_STUB_KB=1048576
+  DISK_END_AT=10030 dv _disk-maintain
+  printf '10060\n' > "$CASE_DIR/disk-clock"
+  dv _disk-maintain
+  test "$(wc -l < "$CASE_DIR/go.calls" | tr -d ' ')" = 2
+}
+case_disk_watch_due() {
+  disk_fixture; disk_clock_fixture; watch_fixture
+  dv _disk-maintain
+  # A watcher restart reaches this host just before its next pass is due.
+  printf '11799\n' > "$CASE_DIR/disk-clock"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_file "$DV_HOME/disk.pid"
+  local collector n
+  collector=$(cat "$DV_HOME/disk.pid")
+  for n in {1..100}; do
+    if ! kill -0 "$collector" 2>/dev/null; then break; fi
+    sleep 0.1
+  done
+  ! kill -0 "$collector" 2>/dev/null
+  test "$(cat "$DV_STATE/.disk/last-run")" = 10000
+  printf '11859\n' > "$CASE_DIR/disk-clock"
+  for n in {1..100}; do
+    if [ "$(cat "$DV_STATE/.disk/last-run")" = 11859 ]; then break; fi
+    sleep 0.1
+  done
+  test "$(cat "$DV_STATE/.disk/last-run")" = 11859
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
 }

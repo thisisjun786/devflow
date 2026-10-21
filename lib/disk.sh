@@ -154,15 +154,16 @@ disk_maintain() {
 cmd__disk_maintain() (
   [ "$#" = 0 ] || fail 'usage: dv _disk-maintain'
   disk_settings
-  local dir="$DV_STATE/.disk" last=0
+  local dir="$DV_STATE/.disk" last=0 started
   mkdir -p "$dir"
   owned_lock "$dir/lock" "$$" || return 1
   trap 'owned_unlock "$dir/lock" "$$"' EXIT
   if [ -f "$dir/last-run" ]; then last=$(cat "$dir/last-run"); fi
   [[ "$last" =~ ^[0-9]+$ ]] || fail 'invalid disk maintenance timestamp'
-  [ $(( $(now) - last )) -ge "$DV_DISK_INTERVAL" ] || return 0
+  started=$(now)
+  [ $(( started - last )) -ge "$DV_DISK_INTERVAL" ] || return 0
   disk_maintain >> "$dir/cleanup.log" 2>&1
-  now > "$dir/last-run"
+  printf '%s\n' "$started" > "$dir/last-run"
 )
 cmd__disk_collect() {
   local host seen=' '

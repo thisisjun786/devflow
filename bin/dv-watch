@@ -58,6 +58,10 @@ last_scan=0
 last_appserver_scan=0
 last_metrics=0
 last_disk=0
+# Host-local clocks own the 30-minute cadence. Check due hosts more often so
+# a restart or slow pass cannot postpone maintenance for another full period.
+disk_tick=$DV_DISK_INTERVAL
+[ "$disk_tick" -le 60 ] || disk_tick=60
 # Remote dev hosts: one dv-kick-pull stream per host, restarted with a back-off when it ends.
 pull_pids=''
 # A pid counts as our stream only if it is still alive AND still runs dv-kick-pull (pids are reused).
@@ -217,7 +221,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   reap
   qa_recover
   pulls
-  if [ $(( $(now) - last_disk )) -ge "$DV_DISK_INTERVAL" ]; then
+  if [ $(( $(now) - last_disk )) -ge "$disk_tick" ]; then
     disk_start
     last_disk=$(now)
   fi
