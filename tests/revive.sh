@@ -228,3 +228,190 @@ case_revive_codex_goal() {
   test ! -d "$RV_STATE/revive/blocked"
   revive_preserved
 }
+
+revive_hold() {
+  export DV_REVIVE_TEST_HOLD=1
+  dv send RV-1 'held follow-up'
+  wait_file "$RV_STATE/held.pid"
+}
+revive_release() {
+  touch "$RV_STATE/revive-release"
+  wait_file "$CASE_DIR/herdr/w-RV-1/exit"
+}
+revive_orphan() {
+  revive_setup; revive_dead
+  mv "$CASE_DIR/herdr/w-RV-1" "$CASE_DIR/herdr/w-old"
+  jq '.result.workspace.workspace_id="w-old"' "$CASE_DIR/herdr/w-old/workspace" > "$CASE_DIR/workspace"
+  mv "$CASE_DIR/workspace" "$CASE_DIR/herdr/w-old/workspace"
+  touch "$CASE_DIR/herdr/w-old/missing-pane"
+  jq '.herdr_workspace="w-old" | .herdr_pane="w-old:p1"' "$RV_STATE/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$RV_STATE/meta"
+}
+case_revive_report_event() {
+  revive_setup; revive_dead
+  watch_fixture
+  local original current
+  original=$(jq -sr 'first.id' "$RV_STATE/events.log")
+  printf '%s\n' "$original" > "$DV_HOME/seen"
+  export DV_KICK=false DV_REVIVE_TEST_REPORT=1 # Recover even without a delivered kick.
+  dv send RV-1 'report-only correction'
+  wait_file "$CASE_DIR/herdr/w-RV-1/exit"
+  current=$(jq -sr 'map(select(.kind=="done"))|last.id' "$RV_STATE/events.log")
+  printf 'original=%s\nfollow-up=%s\n' "$original" "$current"
+  test "$original" != "$current"
+  grep -Fx 'Corrected report' "$RV_STATE/report.md"
+  jq -e --slurpfile before "$CASE_DIR/original-done" '.head==$before[0].head' "$RV_STATE/done.json"
+  dv kick done RV-1 'delivery retry'
+  test "$(jq -sr 'last.id' "$RV_STATE/events.log")" = "$current"
+  # A different watcher host has no access to the source issue's files.
+  dv status --json > "$CASE_DIR/remote-status"
+  export DV_STATE="$CASE_DIR/watcher-state" DV_HOST=watcher-host DV_HOSTS=source-alias DV_RECONCILE_INTERVAL=1
+  mkdir "$DV_STATE"
+  dv-watch > "$CASE_DIR/watcher.log" 2>&1 & watcher=$!
+  wait_seen 2
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  jq -se --arg id "$current" '[.[]|select(.id==$id and .kind=="done")]|length==1' "$DV_HOME/kick.q"
+  test "$(wc -l < "$DV_HOME/seen" | tr -d ' ')" = 2
+}
+case_revive_orphan_workspace() {
+  revive_orphan
+  dv send RV-1 'recover missing pane with surviving workspace'
+  wait_file "$CASE_DIR/herdr/w-RV-1/exit"
+  test ! -f "$CASE_DIR/herdr/w-old/workspace"
+  jq -se 'map(select(.[0:2]==["workspace","create"] or .[0:2]==["workspace","close"])) |
+    .[-2]==["workspace","close","w-old"] and .[-1][0:2]==["workspace","create"]' "$CASE_DIR/herdr/calls"
+  rm "$RV_WT/dirty"
+  dv clean RV-1
+  test ! -f "$CASE_DIR/herdr/w-RV-1/workspace"
+}
+case_revive_manual_done() {
+  revive_setup; revive_dead
+  jq '.agent="claude" | .mode="goal"' "$RV_STATE/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$RV_STATE/meta"
+  export DV_CLAUDE_BIN="$ROOT/tests/fixtures/revived-agent" DV_REVIVE_TEST_NO_DONE=1
+  revive_hold
+  dv done RV-1 --note 'manual completion'
+  DV_REVIVE_ID=stale dv done RV-1 --note 'completion from another run'
+  revive_release
+  jq -se 'any(.[]; .kind=="blocked" and (.message|contains("without dv done")))' "$RV_STATE/events.log"
+  test ! -f "$RV_STATE/revive/done"
+}
+case_revive_capacity() {
+  revive_setup; revive_dead
+  export DV_MAX_JOBS=1
+  revive_hold
+  dv bid --json | tee "$CASE_DIR/bid.json"
+  jq -e '.active==1 and .free_slots==0 and .reason=="full"' "$CASE_DIR/bid.json"
+  jq -e --slurpfile before "$CASE_DIR/original-meta" '.done_at==$before[0].done_at and .status==$before[0].status' "$RV_STATE/meta"
+  local status
+  for status in pr ready input-required; do
+    jq --arg status "$status" '.status=$status' "$RV_STATE/meta" > "$CASE_DIR/meta"
+    mv "$CASE_DIR/meta" "$RV_STATE/meta"
+    dv bid --json | jq -e '.active==1 and .free_slots==0'
+  done
+  revive_release
+  dv bid --json | jq -e '.active==0 and .free_slots==1'
+}
+case_revive_release_event() {
+  revive_setup; revive_dead
+  jq 'del(.done_at,.head) | .status="running"' "$RV_STATE/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$RV_STATE/meta"
+  export DV_REVIVE_TEST_FAIL=1 DV_MAX_JOBS=1
+  revive_hold
+  dv bid --json | jq -e '.active==1 and .free_slots==0'
+  revive_release
+  bidding_functions
+  DV_MANAGER_HOST=$DV_HOST
+  mkdir -p "$DV_HOME/submissions/WAIT-1"
+  printf '{"submitted_at":1}\n' > "$DV_HOME/submissions/WAIT-1/task.json"
+  # Observe the real scheduler's terminal-event path without starting an agent.
+  bid_schedule_one() { printf '%s\n' "$1" >> "$CASE_DIR/scheduled"; }
+  local event
+  while IFS= read -r event; do bid_event "$event"; done < <(jq -c 'select(.kind!="done")' "$RV_STATE/events.log")
+  test -s "$CASE_DIR/scheduled"
+  jq -se '[.[]|select(.kind=="blocked")]|length==1' "$RV_STATE/events.log"
+  jq -se '[.[]|select(.kind=="failed")]|length==1' "$RV_STATE/events.log"
+  dv bid --json | jq -e '.active==0 and .free_slots==1'
+}
+case_revive_orphan_owner() {
+  revive_orphan
+  jq '.result.workspace.label="another-issue"' "$CASE_DIR/herdr/w-old/workspace" > "$CASE_DIR/workspace"
+  mv "$CASE_DIR/workspace" "$CASE_DIR/herdr/w-old/workspace"
+  if dv send RV-1 'do not close foreign workspace'; then return 1; fi
+  test -f "$CASE_DIR/herdr/w-old/workspace"
+  jq -e '.herdr_workspace=="w-old"' "$RV_STATE/meta"
+  jq -se 'all(.[]; .[0:2]!=["workspace","close"]) and
+    ([.[]|select(.[0:2]==["workspace","create"])]|length==1)' "$CASE_DIR/herdr/calls"
+  test ! -f "$RV_STATE/revived-runs"
+  test "$(cat "$RV_WT/dirty")" = 'unfinished work'
+  dv bid --json | jq -e '.active==0'
+  jq -se '[.[]|select(.kind=="failed")]|length==1' "$RV_STATE/events.log"
+}
+case_revive_orphan_close_failure() {
+  revive_orphan
+  printf 'workspace close\n' > "$CASE_DIR/herdr/fail"
+  if dv send RV-1 'retain workspace identity on close failure'; then return 1; fi
+  test -f "$CASE_DIR/herdr/w-old/workspace"
+  jq -e '.herdr_workspace=="w-old"' "$RV_STATE/meta"
+  test ! -f "$RV_STATE/revived-runs"
+  dv bid --json | jq -e '.active==0'
+}
+case_revive_stale_marker() {
+  revive_setup; revive_dead
+  jq '.agent="claude" | .mode="goal"' "$RV_STATE/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$RV_STATE/meta"
+  export DV_CLAUDE_BIN="$ROOT/tests/fixtures/revived-agent" DV_REVIVE_TEST_NO_DONE=1
+  revive_hold
+  printf 'stale-run\n' > "$RV_STATE/revive/done"
+  revive_release
+  jq -se 'any(.[]; .kind=="blocked" and (.message|contains("without dv done"))) and
+    ([.[]|select(.kind=="failed")]|length==1)' "$RV_STATE/events.log"
+}
+case_revive_goal_owned_done() {
+  revive_setup; revive_dead
+  jq '.agent="claude" | .mode="goal" | .award_token="award-round"' "$RV_STATE/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$RV_STATE/meta"
+  export DV_CLAUDE_BIN="$ROOT/tests/fixtures/revived-agent"
+  revive_hold
+  dv done RV-1 --note 'manual before actual completion'
+  local manual current
+  manual=$(jq -sr 'last.id' "$RV_STATE/events.log")
+  revive_release
+  current=$(jq -sr 'last.id' "$RV_STATE/events.log")
+  test "$manual" != "$current"
+  cmp "$RV_STATE/revive/id" "$RV_STATE/revive/done"
+  jq -se 'all(.[]; .kind!="blocked" and .kind!="failed") and
+    (last.token=="award-round")' "$RV_STATE/events.log"
+  dv done RV-1 --note 'repeat after actual completion'
+  test "$(jq -sr 'last.id' "$RV_STATE/events.log")" = "$current"
+  # Reconciliation must retain both award identity and revival identity.
+  bidding_functions
+  local row
+  row=$(dv status --json | jq -c '.[0]')
+  test "$(event_json done RV-1 '' test-host "$(jq -r .head "$RV_STATE/meta")" '' award-round | jq -r .id)" = "$current"
+}
+case_revive_done_capacity() {
+  revive_setup; revive_dead
+  jq '.agent="claude" | .mode="goal"' "$RV_STATE/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$RV_STATE/meta"
+  export DV_CLAUDE_BIN="$ROOT/tests/fixtures/revived-agent" DV_REVIVE_TEST_HOLD_DONE=1 DV_MAX_JOBS=1
+  revive_hold
+  dv done RV-1 --note 'manual completion while the replacement is working'
+  dv bid --json | jq -e '.active==1 and .free_slots==0'
+  touch "$RV_STATE/revive-release"
+  wait_file "$RV_STATE/revive-done-held"
+  test ! -f "$RV_STATE/agent.exit"
+  kill -0 "$(cat "$RV_STATE/held.pid")"
+  bidding_functions
+  DV_MANAGER_HOST=$DV_HOST
+  mkdir -p "$DV_HOME/submissions/WAIT-1"
+  printf '{"submitted_at":1}\n' > "$DV_HOME/submissions/WAIT-1/task.json"
+  # The watcher may schedule immediately, while the completed agent still lives.
+  bid_schedule_one() { dv bid --json > "$CASE_DIR/released-bid.json"; }
+  bid_event "$(jq -sc 'map(select(.kind=="done"))|last' "$RV_STATE/events.log")"
+  cat "$CASE_DIR/released-bid.json"
+  jq -e '.active==0 and .free_slots==1' "$CASE_DIR/released-bid.json"
+  touch "$RV_STATE/revive-exit-release"
+  wait_file "$CASE_DIR/herdr/w-RV-1/exit"
+  jq -se 'all(.[]; .kind!="blocked" and .kind!="failed")' "$RV_STATE/events.log"
+}

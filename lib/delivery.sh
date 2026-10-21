@@ -104,7 +104,9 @@ pr_wait_unlock() {
 pr_wait_start() {
   pr_wait_alive && return 0
   if command -v setsid >/dev/null; then
-    nohup setsid "$DV_ROOT/bin/dv" pr-wait "$ISSUE" >> "$S/pr-wait.log" 2>&1 < /dev/null &
+    # Job control assigns a separate group before this subshell returns. It
+    # protects even a delayed setsid from cleanup of the caller's group.
+    (set -m; nohup setsid "$DV_ROOT/bin/dv" pr-wait "$ISSUE" >> "$S/pr-wait.log" 2>&1 < /dev/null &)
   else
     # macOS has no setsid by default. Job control gives the waiter its own
     # process group, and nohup protects it when the launching shell exits.
