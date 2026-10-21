@@ -221,10 +221,12 @@ case_manager_moved_checkout() {
   mv "$REPO" "$CASE_DIR/moved repo"
   REPO="$CASE_DIR/moved repo"
   dv manager start "$REPO"
-  jq -e --arg repo "$REPO" '.repo==$repo and .session_id=="session-1"' "$(manager_meta)"
+  local root
+  root=$(cd "$REPO" && pwd -P)
+  jq -e --arg repo "$root" '.repo==$repo and .session_id=="session-1"' "$(manager_meta)"
   manager_event M-1 "$REPO"
   manager_watch_until 2
-  jq -se --arg repo "$REPO" '.[1].resume=="session-1" and .[1].cwd==$repo and (.[1].args|index("--no-restore-cwd")!=null)' "$CASE_DIR/hermes/calls"
+  jq -se --arg repo "$root" '.[1].resume=="session-1" and .[1].cwd==$repo and (.[1].args|index("--no-restore-cwd")!=null)' "$CASE_DIR/hermes/calls"
 }
 case_manager_runner_ownership() {
   manager_setup

@@ -22,7 +22,7 @@ revive_setup() {
   printf 'unfinished work\n' > "$RV_WT/dirty"
 }
 revive_dead() {
-  rm "$CASE_DIR/herdr/w-RV-1/detected"
+  rm "$CASE_DIR/herdr/w-RV-1/detected" "$CASE_DIR/herdr/w-RV-1/exit"
   export DV_CODEX_BIN="$ROOT/tests/fixtures/revived-agent"
 }
 revive_wait() {
@@ -30,7 +30,11 @@ revive_wait() {
   wait_file "$RV_STATE/agent.exit"
   # The wrapper emits completion/failure after agent.exit.
   for _ in {1..100}; do
-    if [ -f "$RV_STATE/revive/done" ] || [ -d "$RV_STATE/revive/blocked" ]; then return; fi
+    if [ -f "$RV_STATE/revive/done" ] || [ -d "$RV_STATE/revive/blocked" ]; then
+      # done/blocked precedes the wrapper's final event and log writes.
+      wait_file "$CASE_DIR/herdr/w-RV-1/exit"
+      return
+    fi
     sleep 0.05
   done
   return 1
@@ -52,7 +56,7 @@ case_revive_dead() {
 then verify and finish.'
   dv send RV-1 "$message"
   revive_wait
-  jq -e --arg wt "$RV_WT" '.cwd==$wt' "$RV_STATE/revived-input.json"
+  jq -e --arg wt "$(cd "$RV_WT" && pwd -P)" '.cwd==$wt' "$RV_STATE/revived-input.json"
   jq -e --arg message "$message" --arg s "$RV_STATE" '.args[-1] | startswith($message) and contains($s+"/brief.md") and contains($s+"/report.md")' "$RV_STATE/revived-input.json"
   test ! -e "$RV_WT/SHOULD_NOT_EXIST"
   revive_preserved
@@ -106,7 +110,9 @@ case_revive_tmux() {
   export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/revived-agent"
   dv send RT-1 'fix in existing tmux worktree'
   wait_done RT-1
-  jq -e --arg wt "$(jq -r .worktree "$DV_STATE/RT-1/meta")" '.cwd==$wt and (.args[-1]|startswith("fix in existing tmux worktree"))' "$DV_STATE/RT-1/revived-input.json"
+  local wt
+  wt=$(jq -r .worktree "$DV_STATE/RT-1/meta")
+  jq -e --arg wt "$(cd "$wt" && pwd -P)" '.cwd==$wt and (.args[-1]|startswith("fix in existing tmux worktree"))' "$DV_STATE/RT-1/revived-input.json"
   test "$(wc -l < "$DV_STATE/RT-1/revived-runs" | tr -d ' ')" = 1
 }
 case_revive_missing_pane() {
