@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-} ${2:-}" = 'login status' ]; then exit 0; fi
+if [ "${1:-} ${2:-}" = 'app-server proxy' ]; then exit 1; fi
 s="$DV_STATE/$DV_ISSUE"
 scenario=${DV_EXEC_SCENARIO:-success}
 n=1

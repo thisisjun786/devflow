@@ -108,6 +108,7 @@ case_task_invalid() {
 }
 case_task_native() {
   task_setup; herdr_setup
+  export DV_CODEX_MODE=exec
   export DV_CODEX_BIN="$ROOT/tests/fixtures/task-agent" DV_CLAUDE_BIN="$ROOT/tests/fixtures/task-agent"
   export DV_AGENT_CMD_claude='' DV_TRUSTED_REPOS="$CASE_DIR/Desk project"
   task_start; task_exec_wait TK-1
@@ -135,6 +136,7 @@ task_exec_wait() {
 }
 case_task_exec_stall() {
   task_setup
+  export DV_CODEX_MODE=exec
   export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/task-agent"
   export DV_TRUSTED_REPOS="$CASE_DIR/Desk project" DV_STALL_AFTER=2 DV_TASK_TEST_HOLD=1
   task_start; task_exec_wait TK-1
@@ -284,4 +286,83 @@ ENV
       for path in "$wt/out/TK-1" "$wt/out/subdir/TK-1"; do test ! -e "$path"; done
     done
   done
+}
+task_appserver_setup() {
+  task_setup
+  export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=2 DV_APPSERVER_POLL=1
+  export DV_TRUSTED_REPOS="$CASE_DIR/Desk project"
+  mkdir -p "$CASE_DIR/server" "$HOME/.codex"
+  printf 'idle\n' > "$CASE_DIR/server/status"
+  printf '# retained operator config\n' > "$HOME/.codex/config.toml"
+  cp "$HOME/.codex/config.toml" "$CASE_DIR/original-config"
+}
+case_task_appserver() {
+  task_appserver_setup
+  export DV_CODEX_MODE=auto DV_TASK_APP_TEST_WORK=1
+  task_start
+  jq -e '.kind=="task" and .backend=="appserver" and .mode=="goal" and .thread_id=="thread-1"' "$DV_STATE/TK-1/meta"
+  wait_file "$CASE_DIR/server/work.done"
+  local wt head
+  wt=$(jq -r .worktree "$DV_STATE/TK-1/meta")
+  head=$(jq -r .head "$DV_STATE/TK-1/done.json")
+  test ! -e "$wt/.git"
+  test ! -e "$CASE_DIR/Desk project/.git"
+  cmp "$HOME/.codex/config.toml" "$CASE_DIR/original-config"
+  jq -se --arg wt "$wt" 'any(.[]; .method=="thread/start" and .params.cwd==$wt) and any(.[]; .method=="thread/goal/set" and .params.status=="complete")' "$CASE_DIR/server/requests"
+  dv status TK-1 --json | jq -e '.[0] | .agent_status=="goal-complete" and .status=="done" and .done_head==.head'
+  dv land TK-1 --checked "$head"
+  cmp "$wt/out/summary.txt" "$CASE_DIR/destination/TK-1/summary.txt"
+  dv clean TK-1
+  test -f "$wt/out/summary.txt"
+  test ! -e "$CASE_DIR/herdr/calls"
+  test ! -f "$GH_STUB_DIR/calls"
+}
+case_task_appserver_guards() {
+  task_appserver_setup; task_start
+  jq -e '.backend=="appserver"' "$DV_STATE/TK-1/meta"
+  local wt head state
+  wt=$(jq -r .worktree "$DV_STATE/TK-1/meta")
+  if dv 'done' TK-1; then return 1; fi
+  test ! -f "$DV_STATE/TK-1/done.json"
+  test "$(cat "$CASE_DIR/server/goal")" = active
+  printf 'result\n' > "$wt/out/result"
+  printf 'sources and open points\n' > "$DV_STATE/TK-1/report.md"
+  printf 'refused\n' > "$CASE_DIR/server/finish-outcome"
+  if dv 'done' TK-1; then return 1; fi
+  test ! -f "$DV_STATE/TK-1/done.json"
+  rm "$CASE_DIR/server/finish-outcome"
+  dv 'done' TK-1
+  head=$(jq -r .head "$DV_STATE/TK-1/done.json")
+  for state in active systemError unknown gone; do
+    printf '%s\n' "$state" > "$CASE_DIR/server/status"
+    if dv land TK-1 --checked "$head"; then return 1; fi
+    test ! -e "$CASE_DIR/destination/TK-1"
+  done
+  printf 'idle\n' > "$CASE_DIR/server/status"
+  printf 'late mutation\n' >> "$wt/out/result"
+  if dv land TK-1 --checked "$head"; then return 1; fi
+  dv 'done' TK-1
+  dv land TK-1 --checked "$(jq -r .head "$DV_STATE/TK-1/done.json")"
+}
+case_task_appserver_fallback() {
+  task_setup
+  export DV_AGENT_CMD_codex='' DV_CODEX_MODE=auto DV_CODEX_BIN="$ROOT/tests/fixtures/task-agent"
+  export DV_TRUSTED_REPOS="$CASE_DIR/Desk project"
+  task_start; task_exec_wait TK-1
+  jq -e '.backend=="exec" and .mode=="exec" and .status=="done"' "$DV_STATE/TK-1/meta"
+  jq -e '.args | index("--skip-git-repo-check")!=null' "$DV_STATE/TK-1/task-agent.json"
+}
+case_task_codex_goal() {
+  task_setup; herdr_setup
+  export DV_CODEX_MODE=goal DV_CODEX_BIN="$ROOT/tests/fixtures/task-agent"
+  export DV_TRUSTED_REPOS="$CASE_DIR/Desk project"
+  task_start; wait_native TK-1
+  jq -e '.backend=="herdr" and .mode=="goal" and .status=="done"' "$DV_STATE/TK-1/meta"
+  test -f "$DV_STATE/TK-1/goal-input"
+  local wt
+  wt=$(jq -r .worktree "$DV_STATE/TK-1/meta")
+  test ! -e "$wt/.git"
+  grep -F "$wt" "$HOME/.codex/config.toml"
+  dv land TK-1 --checked "$(jq -r .head "$DV_STATE/TK-1/done.json")"
 }

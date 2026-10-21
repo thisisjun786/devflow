@@ -29,6 +29,8 @@ task_submit() {
     shift 2
   done
   case "$agent" in codex) mode='exec' ;; claude) mode=goal ;; *) fail 'task agent must be codex or claude' ;; esac
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then mode=$(codex_default_mode "$agent"); fi
+  case "$mode" in auto|exec|goal) ;; *) fail 'task mode must be auto, exec or goal' ;; esac
   [ -f "$brief" ] || fail 'brief file not found'
   # A literal, single absolute destination is data, never evaluated shell text.
   destination=$(sed -n 's/^Destination: //p' "$brief")
@@ -39,10 +41,15 @@ task_submit() {
     if ! codex_repo_allowed "$REPO" || ! codex_environment; then fail 'Codex workspace trust or provider environment is not ready'; fi
   fi
   BACKEND=tmux
-  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then
-    BACKEND='exec'
-    [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be a positive integer'
-  elif [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
+  if appserver_selected "$agent" "$mode"; then
+    BACKEND=appserver; mode=goal
+  else
+    [ "$mode" != auto ] || mode='exec'
+    if [ "$agent:$mode" = codex:exec ] && [ -z "$DV_AGENT_CMD_codex" ]; then
+      BACKEND='exec'
+      [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be a positive integer'
+    elif [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
+  fi
   mkdir -p "$DV_STATE" "$DV_WORK"
   S="$DV_STATE/$ISSUE"; SESSION="dv-$ISSUE"; BRANCH=''; BASE=''; KIND=task
   if [ -e "$S" ] || [ -L "$S" ]; then fail 'issue state already exists'; fi
@@ -72,9 +79,11 @@ task_submit() {
     '{kind:"task",issue:$issue,repo:$repo,worktree:$worktree,branch:"",base:"",start_head:$start_head,
       agent:$agent,mode:$mode,slug:$slug,destination:$destination,host:$host,backend:$backend,started:$started,status:"running"}' > "$S/meta"
   : > "$S/log"
-  if [ "$BACKEND" = exec ] && ! task_codex_trust; then
-    meta_set '.status="start-failed"'
-    fail 'Codex persisted task folder trust is not ready'
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ "$BACKEND" != appserver ]; then
+    if ! task_codex_trust; then
+      meta_set '.status="start-failed"'
+      fail 'Codex persisted task folder trust is not ready'
+    fi
   fi
   if ! launch_agent; then
     meta_set '.status="start-failed"'
@@ -126,7 +135,7 @@ task_land() {
     fail 'usage: dv land TASK --checked HEAD (after checking the brief, out/ and report.md)'
   fi
   load_issue "$1"; issue_lock; require_worktree
-  local checked=$3 head destination target suffix=1 manifest copied pid
+  local checked=$3 head destination target suffix=1 manifest copied pid server
   # Old metadata and aliases can name the same directory through a symlink.
   # Compare physical paths on both sides of the recursive-copy guard.
   WT=$(cd "$WT" && pwd -P)
@@ -137,7 +146,15 @@ task_land() {
     jq -r .landed_path "$S/meta"; return
   fi
   [ "$(jq -r .status "$S/meta")" = 'done' ] || fail 'task is not ready to land'
-  if [ "$BACKEND" = exec ]; then
+  if [ "$BACKEND" = appserver ]; then
+    # The client remains alive after a turn. Require a fresh successful idle
+    # thread, not a stopped local wrapper or a disappeared/unknown thread.
+    server=$(appserver_status "$ISSUE")
+    printf '%s\n' "$server" | jq -e '
+      (.agent_status=="goal-complete" or .agent_status=="idle") and
+      .thread.status.type=="idle" and .turn_id==null and .question_pending==false and
+      all(.thread.turns[]?; .status=="completed")' >/dev/null || fail 'task App Server thread has not finished successfully'
+  elif [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'task exec is still running'
     [ "$(jq -r .exec_status "$S/meta")" = 'done' ] || fail 'task exec did not finish successfully'
   else
@@ -175,7 +192,10 @@ task_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean TASK'
   load_issue "$1"; issue_lock
   # Without Git there is no safe dirty check. Close the terminal, retain files.
-  if [ "$BACKEND" = exec ]; then
+  if [ "$BACKEND" = appserver ]; then
+    appserver_require_idle
+    if appserver_alive; then kill "$(cat "$S/appserver/client.pid")"; fi
+  elif [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'task exec is still running; files retained'
   elif [ "$BACKEND" = herdr ]; then herdr_clean || fail 'task terminal was not closed'
   else tmux_dv kill-session -t "=$SESSION" 2>/dev/null || true; fi

@@ -5,6 +5,14 @@ jq -n --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" > "$sta
 if [ "$(jq -r .backend "$state/meta")" = exec ]; then
   printf '{"type":"thread.started","thread_id":"task-fixture"}\n'
 fi
+if [ "$(jq -r '.agent+":"+.mode+":"+.backend' "$state/meta")" = codex:goal:herdr ]; then
+  printf 'dv-ready>\n'
+  for _ in {1..100}; do
+    [ ! -f "$state/goal-input" ] || break
+    sleep 0.05
+  done
+  test -f "$state/goal-input"
+fi
 if [ "${DV_TASK_TEST_HOLD:-0}" = 1 ]; then
   printf '%s\n' "$$" > "$state/held.pid"
   while :; do sleep 0.1; done
