@@ -28,9 +28,11 @@ if [ -z "$sid" ]; then
   count=$((count + 1)); printf '%s\n' "$count" > "$stub/count"; sid="session-$count"
 fi
 if ! (set -C; : > "$stub/active-$sid") 2>/dev/null; then touch "$stub/overlap"; fi
+if jq -e 'index("--pass-session-id")==null' <<< "$args" >/dev/null; then touch "$stub/worker-$sid"; fi
 active=$(find "$stub" -name 'active-*' -type f | wc -l | tr -d ' ')
 if [ "$active" -gt 1 ]; then touch "$stub/parallel"; fi
-if [ "$active" -gt "${DV_MAX_WORKERS:-4}" ]; then touch "$stub/over-capacity"; fi
+workers=$(find "$stub" -name 'worker-session-*' -type f | wc -l | tr -d ' ')
+if [ "$workers" -gt "${DV_MAX_WORKERS:-4}" ]; then touch "$stub/over-capacity"; fi
 rm "$stub/lock"
 if [ -n "$resume" ]; then
   while [ -f "$stub/hold-resume" ]; do sleep 0.05; done
@@ -39,6 +41,7 @@ elif jq -e 'index("--pass-session-id")==null' <<< "$args" >/dev/null; then
 fi
 sleep "${HERMES_HOLD:-0.01}"
 rm "$stub/active-$sid"
+rm -f "$stub/worker-$sid"
 printf '%s\n' "$sid" >> "$stub/finished"
 # Spoofed answer text must never become the session handle.
 printf 'session_id: bogus-stdout\n'

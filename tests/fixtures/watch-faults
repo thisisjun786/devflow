@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Fault injection after each library loads; used only with synthetic DV_HOME.
+# The watcher calls these injected library functions after sourcing this file.
+# shellcheck disable=SC2317,SC2329
+source() {
+  builtin source "$@" || return
+  case "$1:${WATCH_FAULT:-}" in
+    */lib/qa.sh:qa) qa_enqueue() { [ ! -f "$DV_HOME/fail-route" ]; } ;;
+    */lib/bidding.sh:bid) bid_event() { [ ! -f "$DV_HOME/fail-route" ]; } ;;
+    */lib/stack.sh:stack) stack_landed_event() { [ ! -f "$DV_HOME/fail-route" ]; } ;;
+  esac
+}
+mv() {
+  if [ "${WATCH_FAULT:-}" = worker ] && [ "${2:-}" = "$DV_HOME/pending/0.json" ] && [ -f "$DV_HOME/fail-route" ]; then return 1; fi
+  command mv "$@"
+}
