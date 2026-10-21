@@ -48,8 +48,9 @@ case "$*" in
     [ ! -f "$GH_STUB_DIR/merge-unconfirmed" ] || state=OPEN
     [ ! -f "$GH_STUB_DIR/head-mismatch" ] || head=wrong-head
     body=''; [ ! -f "$GH_STUB_DIR/live-body" ] || body=$(cat "$GH_STUB_DIR/live-body")
-    jq -n --arg body "$body" --arg head "$head" --arg state "$state" --slurpfile checks "$GH_STUB_DIR/checks" --slurpfile reviews "$GH_STUB_DIR/reviews" \
-      '{body:$body,number:1,url:"https://github.com/test/repo/pull/1",state:$state,headRefOid:$head,baseRefName:"main",statusCheckRollup:$checks[0],reviews:$reviews[0]}' ;;
+    merged_at=''; [ ! -f "$GH_STUB_DIR/merged-at" ] || merged_at=$(cat "$GH_STUB_DIR/merged-at")
+    jq -n --arg body "$body" --arg head "$head" --arg state "$state" --arg merged_at "$merged_at" --slurpfile checks "$GH_STUB_DIR/checks" --slurpfile reviews "$GH_STUB_DIR/reviews" \
+      '{body:$body,number:1,url:"https://github.com/test/repo/pull/1",state:$state,headRefOid:$head,mergedAt:(if $merged_at=="" then null else $merged_at end),baseRefName:"main",statusCheckRollup:$checks[0],reviews:$reviews[0]}' ;;
   'pr merge '*) touch "$GH_STUB_DIR/merged" ;;
   *) echo "Unexpected gh call: $*" >&2; exit 1 ;;
 esac

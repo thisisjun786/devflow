@@ -17,6 +17,8 @@ source "$DV_ROOT/lib/stack.sh"
 need jq
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
+[[ "$DV_METRICS_INTERVAL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_METRICS_INTERVAL must be positive seconds'
+[[ "$DV_STALL_AFTER" =~ ^[0-9]+$ ]] || fail 'DV_STALL_AFTER must be nonnegative seconds'
 [[ "$DV_MANAGER_MAX_WAIT" =~ ^[0-9]+$ ]] || fail 'DV_MANAGER_MAX_WAIT must be nonnegative seconds'
 mkdir -p "$DV_HOME/workers" "$DV_HOME/pending"
 # A single queue reader owns the cursor and its child processes.
@@ -38,6 +40,7 @@ printf '%s\n' "$$" > "$DV_HOME/watch.pid"
 pids=''; active=0
 finish() {
   local pid
+  metrics_stop
   for pid in $pull_pids; do if is_pull "$pid"; then kill "$pid" 2>/dev/null || true; fi; done
   for pid in $pids; do wait "$pid" || true; done
   reap
@@ -50,6 +53,7 @@ cursor=0
 [ ! -f "$DV_HOME/cursor" ] || cursor=$(cat "$DV_HOME/cursor")
 touch "$DV_HOME/kick.q" "$DV_HOME/seen"
 last_scan=0
+last_metrics=0
 # Remote dev hosts: one dv-kick-pull stream per host, restarted with a back-off when it ends.
 pull_pids=''
 # A pid counts as our stream only if it is still alive AND still runs dv-kick-pull (pids are reused).
@@ -95,6 +99,7 @@ worker_start() {
     else
       "$DV_HERMES_BIN" -p sion chat -Q --yolo -t terminal,connections -s devflow --query-file "$prompt" || rc=$?
     fi
+    [ "$rc" != 0 ] || metrics_handled "$event"
     printf '%s\n' "$rc" > "$slot.exit.tmp"; mv "$slot.exit.tmp" "$slot.exit"
   ) > "${prompt%.prompt.md}.log" 2>&1 &
   pid=$!; printf '%s\n' "$pid" > "$slot.pid"
@@ -134,6 +139,7 @@ reap() {
     else continue; fi
     if stack_deferred "$record" "$rc"; then continue; fi
     if [ "$rc" = 0 ]; then
+      metrics_handled "$(cat "$record")"
       if [ -f "$slot.manager" ]; then manager_fallback_complete "$slot"
       else printf '%s\n' "$event_id" >> "$DV_HOME/seen"; fi
       rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry" "$slot.manager"
@@ -210,6 +216,10 @@ while [ ! -e "$DV_HOME/stop" ]; do
   manager_fallback_recover
   reap
   pulls
+  if [ $(( $(now) - last_metrics )) -ge "$DV_METRICS_INTERVAL" ]; then
+    metrics_start
+    last_metrics=$(now)
+  fi
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   available=$(wc -l < "$DV_HOME/kick.q")
@@ -224,6 +234,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then break; fi
       if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then break; fi
       if [ "$(printf '%s\n' "$line" | jq -r .kind)" = submitted ]; then
+        metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
         continue

@@ -1624,6 +1624,8 @@ source "$ROOT/tests/codex-exec.sh"
 source "$ROOT/tests/codex-exec-review.sh"
 # shellcheck source=tests/portability.sh
 source "$ROOT/tests/portability.sh"
+# shellcheck source=tests/metrics.sh
+source "$ROOT/tests/metrics.sh"
 # shellcheck source=tests/pr-worker.sh
 source "$ROOT/tests/pr-worker.sh"
 # shellcheck source=tests/stack.sh
@@ -1632,6 +1634,10 @@ main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
 for name in stack_wait stack_chain stack_diamond stack_parallel stack_local_body stack_closed_base stack_api_failure stack_dirty stack_remote stack_reconcile stack_checks stack_push_retry stack_defer stack_missing_base stack_squash_base stack_rebase_base; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart metrics_exec metrics_exec_events metrics_manager_batch metrics_manager_fallback metrics_timeout_snapshot; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
