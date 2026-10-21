@@ -653,8 +653,18 @@ cmd_clean() {
 clean_worktree() {
   if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; fi
   if [ "$BACKEND" = appserver ]; then
-    appserver_require_idle
+    [ "${1:-}" = merged-pr ] || appserver_require_idle
     if appserver_alive; then kill "$(cat "$S/appserver/client.pid")"; fi
+    if [ "${1:-}" = merged-pr ]; then
+      local deadline
+      deadline=$(( $(now) + DV_APPSERVER_TIMEOUT ))
+      while appserver_alive; do
+        [ "$(now)" -lt "$deadline" ] || fail 'App Server client did not stop; worktree retained'
+        sleep 0.1
+      done
+      # The client may have written files after the initial clean check.
+      if [ -d "$WT" ]; then require_clean "$WT"; fi
+    fi
   elif [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'exec is still running; worktree retained'
   elif [ "$BACKEND" = herdr ]; then
