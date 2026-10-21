@@ -61,7 +61,9 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 `dv start`가 포커스를 바꾸지 않고 `dv-<ISSUE>` workspace에서 에이전트를 직접 실행합니다(Codex hooks 유지). send·status·clean/land는 기록된 backend를 따르며 herdr 로그는 done/clean 시 화면을 저장합니다. 미설치 또는 `DV_HERDR=0`이면 tmux를 사용하고, 기존 backend 없는 이슈도 tmux로 처리합니다. herdr 시작 오류는 상태를 보존하고 실패를 알립니다.
 
-herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있으며, 이때 `dv send`는 `agent_not_found`를 반환합니다.
+herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있습니다. `dv send`는 전달 실패 후 에이전트 종료가 확인되면 같은 worktree·브랜치·에이전트 종류·실행 모드로 한 번 자동 재시작합니다. 요청 문장을 첫 입력에 넣고 기존 brief·보고서 경로를 함께 전달합니다. 미커밋 변경과 PR, `review-fix.sent`는 보존하며 같은 수정 요청을 이어가므로 두 번째 리뷰 수정으로 세지 않습니다.
+
+tmux는 사라진 세션이나 종료된 pane을 확인하고, herdr는 `agent_not_found`와 래퍼 종료를 함께 확인합니다. pane이 사라졌어도 살아 있는 래퍼는 재시작하지 않으며 통신 오류, 감지 지연에도 재시작하지 않습니다. 기존 herdr pane이 있으면 재사용하고 없으면 같은 작업 폴더에 새 workspace를 만듭니다. `$DV_STATE/ISSUE/revive/`에 최초 요청과 이전 실행·완료 기록을 보존하며 이슈당 자동 재시작은 한 번입니다. 새 에이전트의 시작·실행이 실패하거나 goal이 새 `dv done` 없이 끝나면 `blocked` 이벤트를 한 번 보냅니다. 강제 종료로 래퍼까지 사라져 종료 처리가 실행되지 않았다면 다음 `dv send`가 종료를 확인해 차단을 알립니다. 이전 버전의 herdr 이슈에서 래퍼 PID도 종료 기록도 없다면 자동으로 종료를 단정하지 않습니다.
 
 Claude 기본 실행은 먼저 `~/.claude.json`의 `projects[worktree 경로].hasTrustDialogAccepted=true`를 기록합니다. `CLAUDE_CONFIG_DIR`가 비어 있지 않으면 Claude Code와 같이 `$CLAUDE_CONFIG_DIR/.claude.json`에 기록하고 `$CLAUDE_CONFIG_DIR/settings.json`에서 설정을 읽습니다. `CLAUDE_CONFIG_DIR`를 명시적으로 `~/.claude`로 지정해도 신뢰·온보딩 파일은 그 디렉터리 **안의** `.claude.json`입니다. `dv host check`도 같은 프로필을 읽으며, 선택한 프로필에 파일이 없거나 손상되어도 기본 프로필로 돌아가지 않습니다.
 
@@ -90,7 +92,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv review ISSUE` | 로컬 리뷰 출력과 횟수 저장 |
 | `dv land ISSUE` | PR 허용 방식 선택 / 로컬 시험 후 병합, worktree 정리 |
 | `dv status [ISSUE] [--json]` | 상태, 에이전트, 호스트, 경과, backend·생존·에이전트 상태, 마지막 로그 |
-| `dv send ISSUE 'text'` | herdr agent prompt(차단 시 대기 후 한 번 재시도) / tmux 붙여넣기 후 Enter |
+| `dv send ISSUE 'text'` | 실행 중이면 입력 전달; 종료가 확인되면 같은 작업을 한 번 자동 재시작 |
 | `dv clean ISSUE` | 깨끗한 worktree·herdr/tmux 정리; 병합된 로컬 브랜치만 삭제 |
 | `dv kick KIND ISSUE [msg]` | 완료 알림 전송, 실패 로그 보관 |
 | `dv-kick KIND ISSUE [msg [host [head]]]` | 감시 호스트 로컬 큐와 로그에 이벤트 추가 |
@@ -153,7 +155,7 @@ Codex 0.163의 폴더 온보딩은 CLI 신뢰 덮어쓰기만으로 생략되지
 
 비로그인 SSH와 오래된 터미널 서버에서도 인증을 준비하도록, Codex 입찰·시작·실제 에이전트 실행 때 호스트의 `DV_CODEX_ENV_FILE`을 읽습니다. 기본값은 `~/.opencodex/codex-auth-env.sh`이며 다른 인증을 쓰면 운영자가 경로를 지정하거나 빈 값으로 끌 수 있습니다. 이 파일은 신뢰할 수 있는 셸 코드여야 합니다. 활성 `model_provider`의 `env_key`가 비어 있으면 `login status`가 성공해도 입찰과 시작을 거절합니다. 파일에서 내보낸 인증 값은 에이전트에 상속하며 pane 명령이나 상태 파일에 넣지 않습니다. 터미널 서버 환경에만 의존하지 않도록 인증 변수는 이 파일에서 준비하세요.
 
-exec는 한 번 실행 후 성공할 때 래퍼가 done을 호출합니다. goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. 시작에 성공했던 에이전트의 재시작은 자동화하지 않습니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리를 받습니다.
+exec는 한 번 실행 후 성공할 때 래퍼가 done을 호출합니다. goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. `dv send`로 재시작한 goal은 이전 완료 기록과 별개로 새 `dv done`이 필요합니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리와 첫 입력인 `DV_AGENT_INSTRUCTION`을 받습니다.
 
 ## 시험
 
