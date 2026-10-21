@@ -4,7 +4,7 @@ go	1.27.3	archive	all
 node	24.20.0	archive	all
 npm	bundled	node	all
 uv	0.11.32	archive	all
-gh	2.46.0	archive	all
+gh	2.102.1	archive	all
 gitleaks	8.30.1	archive	all
 herdr	0.9.1	binary	all
 codex-cli	0.163.0	check	all
