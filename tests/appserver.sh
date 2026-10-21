@@ -264,3 +264,10 @@ case_appserver_websocket() {
   if printf '\201\177\177\377\377\377\377\377\377\377' | appserver_ws_receive 0; then return 1; fi
   test "$(appserver_ws_accept dGhlIHNhbXBsZSBub25jZQ==)" = s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 }
+case_appserver_active_error_send() {
+  appserver_setup
+  printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"active"},"turns":[{"id":"turn-1","status":"inProgress","items":[],"error":{"message":"transient capacity error"}}]}}' > "$CASE_DIR/server/thread.json"
+  dv send AS-1 'steer while server retries' | jq -e '.outcome=="accepted"'
+  jq -se '[.[]|select(.method=="turn/steer")]|length==1 and .[0].params.expectedTurnId=="turn-1"' "$CASE_DIR/server/requests"
+  jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
+}

@@ -186,16 +186,17 @@ appserver_snapshot() {
   printf '%s\n' "$AS_SNAPSHOT" | appserver_atomic "$S/appserver/snapshot.json"
 }
 appserver_deliver() {
-  local id=$1 text=$2 recovery=${3:-0} state turn params method
+  local id=$1 text=$2 recovery=${3:-0} state turn params method active
   appserver_snapshot
   state=$(printf '%s\n' "$AS_SNAPSHOT" | jq -r .agent_status)
   turn=$(printf '%s\n' "$AS_SNAPSHOT" | jq -r '.turn_id // ""')
+  active=$(printf '%s\n' "$AS_SNAPSHOT" | jq -r '.thread.status.type=="active" or .turn_id!=null')
   AS_CLASS=refused; AS_REPLY='{"error":{"message":"thread state does not permit delivery"}}'
   case "$state" in unknown|gone) return ;; esac
-  if [ "$recovery" = 1 ] && [ "$state" = working ]; then return; fi
+  if [ "$recovery" = 1 ] && [ "$active" = true ]; then return; fi
   method=turn/start
   params=$(jq -cn --arg thread "$AS_THREAD" --arg text "$text" --arg effort "$DV_CODEX_EFFORT" '{threadId:$thread,input:[{type:"text",text:$text,text_elements:[]}],effort:$effort}')
-  if [ "$state" = working ]; then
+  if [ "$active" = true ]; then
     [ -n "$turn" ] || return 0
     method=turn/steer
     params=$(printf '%s\n' "$params" | jq -c --arg turn "$turn" 'del(.effort) | .expectedTurnId=$turn')
@@ -409,7 +410,7 @@ appserver_recover() {
   fi
   # Persist the one-shot decision before attempting any new turn.
   touch "$S/appserver/recovery"
-  if [ "$state" = working ]; then
+  if printf '%s\n' "$AS_SNAPSHOT" | jq -e '.thread.status.type=="active" or .turn_id!=null' >/dev/null; then
     # The job runner's AS_THREAD is independent of appserver_status's subshell.
     # shellcheck disable=SC2031
     params=$(printf '%s\n' "$AS_SNAPSHOT" | jq -ce --arg thread "$AS_THREAD" 'select(.turn_id!=null) | {threadId:$thread,turnId:.turn_id}') || return 0

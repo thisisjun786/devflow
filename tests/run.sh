@@ -1618,7 +1618,7 @@ source "$ROOT/tests/portability.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in appserver_start appserver_accepted appserver_refused appserver_unknown appserver_idle_send appserver_states appserver_failed appserver_stall appserver_question appserver_auto appserver_no_goal appserver_clean_guard appserver_reconnect appserver_active_stall appserver_unknown_restart appserver_question_multiple appserver_question_retry appserver_malformed appserver_watch appserver_fallback appserver_exec appserver_pipeline appserver_preserve_config appserver_detached appserver_detached_fallback appserver_websocket; do
+for name in appserver_start appserver_accepted appserver_refused appserver_unknown appserver_idle_send appserver_states appserver_failed appserver_stall appserver_question appserver_auto appserver_no_goal appserver_clean_guard appserver_reconnect appserver_active_stall appserver_unknown_restart appserver_question_multiple appserver_question_retry appserver_malformed appserver_watch appserver_fallback appserver_exec appserver_pipeline appserver_preserve_config appserver_detached appserver_detached_fallback appserver_websocket appserver_active_error_send; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
