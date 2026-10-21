@@ -244,6 +244,19 @@ case_stack_push_retry() {
   test "$(git -C "$DV_WORK/stack-2" rev-parse HEAD)" = "$(git --git-dir="$CASE_DIR/remote.git" rev-parse stack-2)"
   stack_green 2; dv land S-2
 }
+case_stack_dependencies_present() {
+  # A PR that already contains its merged dependencies lands as is. Merging a
+  # busy base on every attempt resets CI and the PR never lands.
+  stack_fixture; stack_pr 1 dev; dv land S-1
+  stack_pr 2 dev 'Depends on #1'
+  local before; before=$(git --git-dir="$CASE_DIR/remote.git" rev-parse stack-2)
+  printf 'unrelated\n' > "$REPO/unrelated"
+  git -C "$REPO" add unrelated; git -C "$REPO" commit -qm 'advance base'
+  git -C "$REPO" push -q origin dev
+  dv land S-2
+  test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
+  test "$(git --git-dir="$CASE_DIR/remote.git" rev-parse stack-2)" = "$before"
+}
 case_stack_defer() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 dev; stack_pr 3 stack-1 $'Depends on #1\nDepends on #2'
   stack_waiting 3; dv land S-1; stack_watch
