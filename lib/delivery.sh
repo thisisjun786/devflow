@@ -235,9 +235,9 @@ cmd_pr_wait() {
   # then start a successor. If its wrapper already observed our lock, agent.exit
   # was published first; wait for that wrapper to finish its handoff instead.
   pr_wait_unlock; trap - EXIT
-  # Native exec supervision already retries locally once and reports exhaustion.
-  # It must not also enter the terminal revival path.
-  [ "$BACKEND" != exec ] || return 0
+  # Native exec and App Server clients own their recovery. Neither backend
+  # should enter the terminal revival path after a PR wait.
+  case "$BACKEND" in exec|appserver) return 0 ;; esac
   local pid
   pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
@@ -312,6 +312,7 @@ github_land_method() (
 cmd_land() {
   [ "$#" -eq 1 ] || fail 'usage: dv land ISSUE'
   load_issue "$1"; issue_lock; require_worktree; require_clean "$WT"
+  [ "$BACKEND" != appserver ] || appserver_require_idle
   if [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'exec is still running; cannot land'
     # dv done can precede a later CLI error or retry. Only the supervisor's
