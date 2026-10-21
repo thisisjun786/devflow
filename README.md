@@ -252,12 +252,27 @@ resume하며, 이전 전송 결과가 불명확한 메시지는 재전송하지 
 현재는 `thread/read(includeTurns=true)`를 사용하므로 긴 thread의 조회 비용이 증가합니다.
 `DV_APPSERVER_TIMEOUT`(10초)은 응답 제한, `DV_APPSERVER_POLL`(5초)은 상태 갱신 주기입니다.
 
-기존 `dv-watch`가 `DV_HOSTS`의 App Server 작업을 확인합니다. 활성 goal에서
-`DV_STALL_AFTER`(300초) 동안 새 item이나 item delta가 없으면 stalled, 오류면 failed를
-알립니다. 질문 대기 중에는 자동 복구하지 않습니다. 이슈당 한 번 같은 thread에서
-`continue` turn을 시작합니다. 멈춘 활성 turn은 먼저 interrupt가 수락되고 idle이 확인돼야
-합니다. 다시 멈추거나 복구 결과가 불명확하면 blocked로 운영자에게 전달합니다.
-`appserver/recovery`는 이 한 번의 시도를 보존합니다.
+기존 `dv-watch`가 `DV_HOSTS`의 App Server 작업을 확인합니다.
+`DV_STALL_AFTER`(300초) 동안 새 item이나 item delta가 없으면 stalled를 알립니다.
+`idle`, `goal-complete`, 활성 goal의 idle도 `dv done` 기록이 없으면 브리프와
+push·PR·CI·리뷰 처리를 마치고 `dv done ISSUE`를 실행하라는 continuation을 한 번 보냅니다.
+이후 다시 idle인데 done이 없으면 마지막 에이전트 메시지를 포함해 blocked를 알립니다.
+질문 대기 중이거나 현재 커밋의 done이 기록된 작업은 자동 복구하지 않습니다.
+
+멈춘 활성 turn은 interrupt가 수락되고 idle이 확인돼야 같은 thread에 `continue`를
+보냅니다. 복구 turn에서 새 item이나 delta가 오면 해당 복구 episode를 끝내고 다음
+정체를 복구할 수 있습니다. turn 시작 알림이나 이전 turn의 이벤트만으로 초기화하지
+않습니다. `DV_RECOVER_MAX`(기본 3)는 재시작을 포함한 작업 전체의 복구 시도 상한입니다.
+진행 없는 재정체, 예산 소진, 거부되거나 불명확한 복구는 blocked로 전달하며 자동 재전송하지
+않습니다. 기존 `appserver/recovery` 표시도 보존해 미확정 작업을 반복하지 않습니다.
+
+capacity·usage limit·rate limit·HTTP 429 오류는 즉시 failed를 알리지 않고
+`DV_CAPACITY_BACKOFF`(기본 120초) 뒤 다음 watcher 확인에서 한 번 continuation을 보냅니다.
+같은 복구 예산을 사용하며 대기 중에도 상태 조회와 질문 응답을 처리합니다. 일반 오류는
+기존처럼 failed를 알리고 복구합니다. `dv status`와 JSON의 `recoveries`,
+`last_recovery_reason`에 누적 횟수와 마지막 이유(`stalled`, `idle-without-done`, `capacity`,
+`failed`)를 표시합니다. JSON의 `appserver.capacity_retry_at`은 대기 중인 재시도 시각입니다.
+복구 예산과 이유는 `appserver/recoveries.json`에 저장합니다. 새 설정은 양의 정수입니다.
 
 서버의 `requestUserInput`은 requestId와 질문 원문을 기존 question 이벤트로 전달합니다.
 단일 질문에는 평문으로 답할 수 있고, 여러 질문이나 요청에는 다음 형식을 사용합니다.
