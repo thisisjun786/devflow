@@ -1,42 +1,96 @@
 #!/usr/bin/env bash
 # jq filters and Markdown are literal strings, not shell substitutions.
 # shellcheck disable=SC2016
+pr_report_summary() {
+  # Use the first prose paragraph, bounded in size. Never copy the brief or
+  # publish local paths or configured hosts. Pass configuration explicitly:
+  # shell config values need not be exported, and awk -v interprets backslashes.
+  if [ -f "$S/report.md" ]; then
+    DV_PR_HOME="$HOME" DV_PR_WT="$WT" DV_PR_REPO="$REPO" DV_PR_STATE="$DV_STATE" \
+      DV_PR_HOSTS="$DV_HOSTS $DV_PULL_HOSTS $DV_HOST" awk '
+      BEGIN {
+        paths[1]=ENVIRON["DV_PR_HOME"]; paths[2]=ENVIRON["DV_PR_WT"]
+        paths[3]=ENVIRON["DV_PR_REPO"]; paths[4]=ENVIRON["DV_PR_STATE"]
+        host_count=split(ENVIRON["DV_PR_HOSTS"],hosts,/[[:space:]]+/)
+      }
+      function private_line(line, i, count, tokens, token) {
+        for (i in paths) if (paths[i]!="" && index(line,paths[i])) return 1
+        for (i=1;i<=host_count;i++) if (hosts[i]!="" && index(line,hosts[i])) return 1
+        if (line ~ /\$\{?(HOME|WT|REPO|DV_STATE|S)([^[:alnum:]_]|$)/) return 1
+        if (line ~ /\.local\/state\/devflow/) return 1
+        # Markdown, shell quotes and assignments can delimit path tokens too.
+        gsub(/[][{}()<>=,;\047"`]/," ",line)
+        count=split(line,tokens,/[[:space:]]+/)
+        for (i=1;i<=count;i++) {
+          token=tokens[i]
+          # Keep public URL paths; file:/// still leaves an absolute path.
+          sub(/^[[:alpha:]][[:alnum:]+.-]*:\/\//,"",token)
+          if (token ~ /^[\/~]/ || token ~ /:[\/~]/) return 1
+        }
+        return 0
+      }
+      private_line($0) { next }
+      /^[[:space:]]*#/ { if (lines) exit; next }
+      /^[[:space:]]*$/ { if (lines) exit; next }
+      {
+        remaining=999-chars
+        if (remaining<=0 || lines>=10) exit
+        line=substr($0,1,remaining)
+        print line; chars+=length(line)+1; lines++
+      }
+      END { if (!lines) print "Implementation report is not available." }
+    ' "$S/report.md"
+  else
+    printf 'Implementation report is not available.\n'
+  fi
+}
 cmd_pr() {
   [ "$#" -eq 1 ] || fail 'usage: dv pr ISSUE'
   load_issue "$1"; issue_lock; require_worktree; require_clean "$WT"
   is_github || fail 'dv pr requires a GitHub origin'
   cd "$WT" || exit
   [ "$BRANCH" != "$BASE" ] || fail 'cannot push the base branch'
-  local head pr title public_body=''
+  local head pr title endpoint body_file public_source='' public_body='' edit_args
   if [ -f "$S/pr.md" ]; then
+    public_source="$S/pr.md"
+  elif [ ! -f "$S/pr.json" ] && [ -f "$S/pr-body.md" ]; then
+    # Older workers prepared this filename before the first publication.
+    public_source="$S/pr-body.md"
+  fi
+  if [ -n "$public_source" ]; then
     # Coordinate with an older in-flight polish before publishing exact prose.
     mkdir "$S/.polish" 2>/dev/null || fail 'PR polish is still running; retry dv pr when it finishes'
     trap 'rm -f "$S/.polish/public-body"; rmdir "$S/.polish" "$S/.operation" 2>/dev/null || true' EXIT
     public_body="$S/.polish/public-body"
-    cp "$S/pr.md" "$public_body"
+    cp "$public_source" "$public_body"
   fi
   head=$(git rev-parse HEAD)
+  title=$(git log -1 --format=%s)
   git push -u origin "$BRANCH:refs/heads/$BRANCH"
   if [ -f "$S/pr.json" ]; then
     pr=$(jq -er .url "$S/pr.json")
+    if [[ "$pr" =~ ^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$ ]]; then
+      endpoint="repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/pulls/${BASH_REMATCH[3]}"
+    else fail 'invalid PR URL'; fi
+    edit_args=(-f "title=$title")
     if [ -n "$public_body" ] && ! cmp -s "$public_body" "$S/pr-body.md"; then
-      gh pr edit "$pr" --body-file "$public_body"
+      edit_args+=(-F "body=@$public_body")
+    fi
+    gh api -X PATCH "$endpoint" "${edit_args[@]}" > /dev/null
+    if [ -n "$public_body" ]; then
       mv "$public_body" "$S/pr-body.md"
     fi
   else
-    title="$ISSUE: $(jq -r .slug "$S/meta")"
     if [ -n "$public_body" ]; then
       # Worker-written public body: no brief, internal report or state paths.
-      cp "$public_body" "$S/pr-body.md"
-    else {
-      printf '## 브리프\n\n'
-      cat "$S/brief.md"
-      printf '\n## 보고서\n\n경로: `%s/report.md`\n\n' "$S"
-      if [ -f "$S/report.md" ]; then cat "$S/report.md"; else printf '보고서가 아직 없습니다.\n'; fi
-    } > "$S/pr-body.md"
+      body_file=$public_body
+    else
+      body_file="$S/pr-body.generated.md"
+      pr_report_summary > "$body_file"
     fi
-    pr=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$S/pr-body.md")
+    pr=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$body_file")
     jq -n --arg url "$pr" '{url:$url}' > "$S/pr.json"
+    cp "$body_file" "$S/pr-body.md"
     if [ -z "$public_body" ]; then
       nohup "$DV_ROOT/bin/dv" polish "$ISSUE" >> "$S/polish.log" 2>&1 < /dev/null &
     fi
@@ -309,9 +363,46 @@ github_land_method() (
     else .allow_rebase_merge==true end' >/dev/null || fail "repository does not allow $method"
   printf '%s\n' "$method"
 )
+github_land_reconcile() {
+  local head=$1 recorded done_head='' tmp
+  recorded=$(jq -r '.head // empty' "$S/meta")
+  if [ -f "$S/done.json" ]; then done_head=$(jq -r '.head // empty' "$S/done.json"); fi
+  jq -e --arg head "$head" --arg recorded "$recorded" --arg done_head "$done_head" --arg base "$BASE" '
+    .state=="MERGED" and .baseRefName==$base and
+    (.headRefOid | type=="string" and test("^[0-9a-f]{40,64}$")) and
+    (.headRefOid==$head or .headRefOid==$recorded or .headRefOid==$done_head)
+  ' "$S/land-checks.json" >/dev/null || fail 'PR head/base/state mismatch'
+  checks_green "$S/land-checks.json" || fail 'all PR checks must be successful (empty, skipped, pending and failed checks refuse land)'
+  head=$(jq -r .headRefOid "$S/land-checks.json")
+  tmp=$(mktemp "$S/.land-result.XXXXXX")
+  cp "$S/land-checks.json" "$tmp"; mv "$tmp" "$S/land-result.json"
+  if [ "$(jq -r .status "$S/meta")" != landed ]; then metrics_note merged "$head"; fi
+  meta_set --arg head "$head" --argjson time "$(now)" \
+    '.status="landed" | .head=$head | .landed_at=(.landed_at // $time)'
+  # Only a verified merge may bypass the App Server idle guard. Cleanup can
+  # be retried after interruption, including after the worktree was removed.
+  clean_worktree merged-pr
+  if ! jq -se --arg head "$head" 'any(.[]; .kind=="landed" and .head==$head)' "$S/events.log" >/dev/null 2>&1; then
+    cmd_kick landed "$ISSUE" 'Landed'
+  fi
+}
 cmd_land() {
   [ "$#" -eq 1 ] || fail 'usage: dv land ISSUE'
-  load_issue "$1"; issue_lock; require_worktree; require_clean "$WT"
+  load_issue "$1"; issue_lock
+  local pr head='' method rc context=$WT
+  if [ -d "$WT" ] || [ "$(jq -r .status "$S/meta")" != landed ]; then
+    require_worktree; require_clean "$WT"
+    head=$(git -C "$WT" rev-parse HEAD)
+  else context=$REPO; fi
+  if is_github; then
+    pr=$(jq -er .url "$S/pr.json")
+    (cd "$context" && gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,state) > "$S/land-checks.json"
+    if [ "$(jq -r .state "$S/land-checks.json")" = MERGED ]; then
+      github_land_reconcile "$head"
+      return
+    fi
+  fi
+  require_worktree
   [ "$BACKEND" != appserver ] || appserver_require_idle
   if [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'exec is still running; cannot land'
@@ -323,7 +414,6 @@ cmd_land() {
     fi
   fi
   if is_github; then
-    local pr head method rc
     pr=$(jq -er .url "$S/pr.json"); head=$(git -C "$WT" rev-parse HEAD)
     stack_land_gate "$pr" "$head" || { rc=$?; stack_conflict_send; return "$rc"; }
     head=$(git -C "$WT" rev-parse HEAD)

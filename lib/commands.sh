@@ -101,8 +101,7 @@ launch_agent() {
   done < <(compgen -e)
   launcher=$(shell_join env "PATH=$PATH" "${env_args[@]}" "$DV_ROOT/bin/dv" _agent "$ISSUE" "$@")
   if [ "$BACKEND" = exec ]; then
-    nohup bash -c "$launcher" >> "$S/log" 2>&1 < /dev/null &
-    printf '%s\n' "$!" > "$S/agent.pid"
+    codex_exec_launch "$launcher"
   elif [ "$BACKEND" = herdr ]; then
     if [ "${1:-}" = --revived ] && [ "${REVIVE_PANE_EXISTS:-0}" = 1 ]; then
       herdr_cmd pane run "$HERDR_PANE" "$launcher"
@@ -110,17 +109,34 @@ launch_agent() {
       if [ "${1:-}" = --revived ]; then herdr_clean || return 1; fi
       herdr_start "$launcher"
     fi
-  elif [ "${1:-}" = --revived ] && tmux_dv has-session -t "=$SESSION" 2>/dev/null; then
-    # A retained dead pane needs no kill/force option.
-    tmux_dv respawn-pane -t "$SESSION:0.0" -c "$WT" "$launcher"
-  else tmux_dv new-session -d -s "$SESSION" -c "$WT" "$launcher"; fi
+  else
+    if [ "${1:-}" = --revived ] && tmux_dv has-session -t "=$SESSION" 2>/dev/null; then
+      # A retained dead pane needs no kill/force option.
+      tmux_dv respawn-pane -t "$SESSION:0.0" -c "$WT" "$launcher" || return 1
+    else
+      tmux_dv new-session -d -s "$SESSION" -c "$WT" "$launcher" || return 1
+    fi
+    # tmux can return zero even when its server could not create the socket.
+    tmux_dv has-session -t "=$SESSION" 2>/dev/null || {
+      # A fast wrapper may already have completed and closed its session.
+      # Revivals retain old done.json, so require this revival's completion.
+      if [ "$(cat "$S/agent.exit" 2>/dev/null)" = 0 ] && [ -s "$S/done.json" ]; then
+        if [ "${1:-}" != --revived ] ||
+          { [ -s "$S/revive/id" ] && cmp -s "$S/revive/id" "$S/revive/done"; }; then
+          return 0
+        fi
+      fi
+      printf 'dv: tmux session %s is missing after startup\n' "$SESSION" >&2
+      return 1
+    }
+  fi
 }
 run_agent() {
   load_issue "$1"; require_worktree; cd "$WT" || exit
   export DV_ISSUE="$ISSUE"
   local agent mode override instruction rc=0 sentinel='' helper='' revived=0
   [ "${2:-}" != --revived ] || revived=1
-  printf '%s\n' "$$" > "$S/agent.pid"
+  [ "$BACKEND" = exec ] || printf '%s\n' "$$" > "$S/agent.pid"
   agent=$(jq -r .agent "$S/meta"); mode=$(jq -r .mode "$S/meta")
   override="DV_AGENT_CMD_$agent"; override=${!override}
   instruction="Read $S/brief.md and complete everything it asks. Finish with dv done $ISSUE."
@@ -154,7 +170,15 @@ run_agent() {
     local args=()
     case "$agent" in
       codex)
-        if ! codex_environment || ! codex_trust_repo "$(codex_repo_root "$REPO")"; then
+        local trust_root trust_ready=0
+        if [ "$KIND" = task ]; then
+          trust_root=$WT
+          if task_codex_trust; then trust_ready=1; fi
+        else
+          trust_root=$(codex_repo_root "$REPO")
+          if codex_environment && codex_trust_repo "$trust_root"; then trust_ready=1; fi
+        fi
+        if [ "$trust_ready" = 0 ]; then
           printf '1\n' > "$S/agent.exit"
           agent_start_failed 'codex provider environment or persisted folder trust is not ready' ''
           return 1
@@ -163,12 +187,14 @@ run_agent() {
         [ "$DV_AGENT_QUESTIONS" != off ] || args+=(-c tools.experimental_request_user_input.enabled=false)
         args+=(-c "projects.$(jq -Rn --arg path "$(pwd -P)" '$path').trust_level=\"trusted\"")
         # Codex resolves a linked worktree's trust against the original repo.
-        args+=(-c "projects.$(jq -Rn --arg path "$(codex_repo_root "$REPO")" '$path').trust_level=\"trusted\"")
+        args+=(-c "projects.$(jq -Rn --arg path "$trust_root" '$path').trust_level=\"trusted\"")
         if [ "$BACKEND" = tmux ] && [ "$DV_CODEX_DISABLE_HOOKS" = 1 ]; then args+=(--disable hooks); fi
         [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
         if [ "$mode" = exec ]; then
           [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
-          "${args[@]}" exec "$instruction" || rc=$?
+          args+=(exec)
+          [ "$KIND" != task ] || args+=(--skip-git-repo-check)
+          "${args[@]}" "$instruction" || rc=$?
         else
           inject_goal "$instruction" & helper=$!
           "${args[@]}" || rc=$?
@@ -197,6 +223,9 @@ run_agent() {
   stop_question_sentinel
   trap - EXIT INT TERM
   printf '%s\n' "$rc" > "$S/agent.exit"
+  if [ "$KIND" = task ] && [ "$mode" = exec ] && [ "$rc" = 0 ]; then
+    task_exec_done "$revived"; return
+  fi
   if [ "$revived" = 1 ]; then
     if [ "$rc" -ne 0 ]; then revive_blocked "revived agent exited $rc"
     elif [ "$mode" = exec ]; then agent_exec_done 1 || rc=1
@@ -281,7 +310,7 @@ wait_codex_goal() {
           retried=1
           session_enter || true
         fi
-      elif printf '%s\n' "$screen" | grep -Eq '(^|[•*][[:space:]]+)Pursuing goal([[:space:]]|$)'; then
+      elif printf '%s\n' "$screen" | grep -Eq '(^|(•|[*])[[:space:]]+)Pursuing goal([[:space:]]|$)'; then
         [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
         return 0
       elif [ "$BACKEND" = herdr ] && agent=$(herdr_cmd agent get "$HERDR_PANE" 2>/dev/null) &&
@@ -359,16 +388,21 @@ cmd_done() {
   if [ "$BACKEND" = herdr ]; then
     herdr_snapshot || printf 'dv: warning: could not capture herdr log for %s\n' "$ISSUE" >&2
   fi
-  head=$(git -C "$WT" rev-parse HEAD)
-  if is_github; then
-    pr_done_check "$head"
-    pr_complete=true
-    note="checks=green review=handled${note:+; $note}"
+  if [ "$KIND" = task ]; then
+    issue_lock
+    task_completion
+  else
+    head=$(git -C "$WT" rev-parse HEAD)
+    if is_github; then
+      pr_done_check "$head"
+      pr_complete=true
+      note="checks=green review=handled${note:+; $note}"
+    fi
+    files=$(git -C "$WT" diff --name-only "$(jq -r .start_head "$S/meta")" "$head" | wc -l | tr -d ' ')
   fi
   if [ "$BACKEND" = appserver ]; then
     appserver_request finish >/dev/null || fail 'App Server goal completion is unconfirmed; completion was not recorded (inspect receipts before retrying)'
   fi
-  files=$(git -C "$WT" diff --name-only "$(jq -r .start_head "$S/meta")" "$head" | wc -l | tr -d ' ')
   tmp=$(mktemp "$S/.done.XXXXXX")
   jq -n --arg head "$head" --argjson files "$files" --arg report "$S/report.md" --arg note "$note" \
     --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" \
@@ -422,6 +456,7 @@ cmd_kick() {
 }
 cmd_status() {
   local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
+  local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   {
@@ -429,6 +464,8 @@ cmd_status() {
       [ -f "$path" ] || continue
       [ -z "$selected" ] || [ "$(basename "$(dirname "$path")")" = "$selected" ] || continue
       alive=false; tmux_alive=false; agent_status=unknown; question_pending=false
+      agent_dead=false
+      goal_stalled=false; goal_active=false; agent_state_seq=null; agent_session=null
       backend=$(jq -r '.backend // "tmux"' "$path")
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
@@ -449,6 +486,8 @@ cmd_status() {
         if [ -n "$pane" ]; then
           info=$(herdr_info "$pane" 2>/dev/null) || info='{}'
           agent_status=$(printf '%s\n' "$info" | jq -r '.agent_status // "unknown"')
+          agent_state_seq=$(printf '%s\n' "$info" | jq -c '.state_change_seq // null')
+          agent_session=$(printf '%s\n' "$info" | jq -c '.agent_session // null')
           # A live pane may be running a custom command with no detected agent.
           alive=$(printf '%s\n' "$info" | jq -r '.pane_id!=null')
           pending="$(dirname "$path")/question.pending"
@@ -466,11 +505,34 @@ cmd_status() {
       elif command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then
         alive=true; tmux_alive=true
       fi
+      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$agent_status" = unknown ] && jq -e '.status=="running"' "$path" >/dev/null &&
+        (load_issue "$(jq -r .issue "$path")"; agent_gone); then
+        agent_dead=true
+      fi
+      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" and .agent=="codex"' "$path" >/dev/null; then
+        screen=''
+        if [ "$backend" = herdr ]; then
+          screen=$(herdr_cmd pane read "$pane" --source visible 2>/dev/null) || screen=''
+        else
+          screen=$(tmux_dv capture-pane -p -t "dv-$(jq -r .issue "$path"):0.0" 2>/dev/null) || screen=''
+        fi
+        # The most recent visible goal banner wins if the old one is still on
+        # screen. Explicit activity also resets a tmux stall (no herdr hooks).
+        # Keep multibyte markers outside bracket expressions for LC_ALL=C.
+        goal_state=$(printf '%s\n' "$screen" | awk '
+          /[Mm]odel is at capacity/ { state="stalled" }
+          /^([[:space:]]|│|┃)*((•|[*])[[:space:]]+)?Goal stalled([[:space:]:]|$)/ { state="stalled" }
+          /^([[:space:]]|│|┃)*((•|[*])[[:space:]]+)?(Pursuing goal|Working)([[:space:]:.]|$)/ { state="active" }
+          END { print state }')
+        case "$goal_state" in stalled) goal_stalled=true ;; active) goal_active=true ;; esac
+      fi
       elapsed=$(( $(now) - $(jq -r .started "$path") ))
       # done_at can describe an earlier PR revision. Read the completion head
       # without changing metadata or the bidding code's historical done_at.
       done_head=$(jq -r '.head | select(type=="string")' "$(dirname "$path")/done.json" 2>/dev/null) || done_head=''
-      row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending}' "$path")
+      row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" \
+        --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" --argjson agent_dead "$agent_dead" \
+        '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session}' "$path")
       if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
       if [ "$backend" = exec ] && [ "$alive" = false ] && [ "$agent_status" = failed ]; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
@@ -481,7 +543,7 @@ cmd_status() {
   } | if [ "$json" = 1 ]; then jq -s .; else cat; fi
 }
 agent_gone() {
-  local reply pane pid
+  local reply pane pid unknown=0
   REVIVE_PANE_EXISTS=0
   if [ "$BACKEND" = tmux ]; then
     if pane=$(tmux_dv list-panes -t "$SESSION:0" -F '#{pane_index} #{pane_dead}' 2>/dev/null); then
@@ -494,13 +556,21 @@ agent_gone() {
   fi
   # Absence must be confirmed by a structured server reply, not a timeout or
   # transport error. An undetected custom command can still be running.
-  if reply=$(herdr_cmd agent get "$HERDR_PANE" 2>&1); then return 1; fi
-  printf '%s\n' "$reply" | jq -e '.error.code=="agent_not_found"' >/dev/null 2>&1 || return 1
+  if reply=$(herdr_cmd agent get "$HERDR_PANE" 2>&1); then
+    # A cached identity in unknown state is not evidence of a live process.
+    printf '%s\n' "$reply" | jq -e '.result.agent.agent_status=="unknown"' >/dev/null 2>&1 || return 1
+    unknown=1
+  else
+    printf '%s\n' "$reply" | jq -e '.error.code=="agent_not_found"' >/dev/null 2>&1 || return 1
+  fi
   if pane=$(herdr_cmd pane get "$HERDR_PANE" 2>&1); then
     printf '%s\n' "$pane" | jq -e '.result.pane.pane_id!=null' >/dev/null 2>&1 || return 1
     REVIVE_PANE_EXISTS=1
   else
     printf '%s\n' "$pane" | jq -e '.error.code=="pane_not_found"' >/dev/null 2>&1 || return 1
+  fi
+  if [ "$unknown" = 1 ]; then
+    [ "$REVIVE_PANE_EXISTS" = 1 ] && herdr_shell_only "$HERDR_PANE" || return 1
   fi
   # A removed pane can leave its wrapper alive. Require process evidence for
   # both pane paths; terminal disappearance alone cannot authorize a duplicate.
@@ -508,7 +578,12 @@ agent_gone() {
     pid=$(cat "$S/agent.pid")
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
     ! kill -0 "$pid" 2>/dev/null
-  else [ -f "$S/agent.exit" ]; fi
+  elif [ -f "$S/agent.exit" ]; then return 0
+  elif [ "$REVIVE_PANE_EXISTS" = 1 ]; then
+    # Legacy jobs have no wrapper records. Detection alone is insufficient:
+    # require an authoritative shell-only foreground process snapshot.
+    herdr_shell_only "$HERDR_PANE"
+  else return 1; fi
 }
 revive_blocked() {
   # Both the startup helper and the wrapper can observe the same failure.
@@ -539,11 +614,18 @@ revive_agent() {
   done
   {
     printf '%s\n\n' "$1"
-    printf 'Continue in the existing worktree %s on branch %s.\n' "$WT" "$BRANCH"
+    if [ "$KIND" = task ]; then
+      printf 'Continue the task in %s; preserve partial work and write deliverables to out/. No Git or PR.\n' "$WT"
+    else
+      printf 'Continue in the existing worktree %s on branch %s.\n' "$WT" "$BRANCH"
+    fi
     printf 'Read %s/brief.md and, if present, %s/report.md for context.\n' "$S" "$S"
     printf 'This continues the same request; preserve %s/review-fix.sent and the one-fix-per-PR limit.\n' "$S"
     printf 'Do not create a new branch or force push. Finish with dv done %s.\n' "$ISSUE"
   } > "$S/revive/prompt.md"
+  # Cleanup belongs to the previous run. Publish this before launching so all
+  # capacity, metrics and disk readers observe the revived lifecycle.
+  meta_set 'del(.cleaned_at)'
   rm -f "$S/agent.exit" "$S/agent.pid"
   metrics_note revive
   if ! launch_agent --revived; then
@@ -565,14 +647,25 @@ cmd_send() {
 }
 cmd_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean ISSUE'; load_issue "$1"; issue_lock
-  clean_worktree
+  clean_worktree idle
   meta_set --argjson time "$(now)" '.cleaned_at=$time'
 }
 clean_worktree() {
   if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; fi
   if [ "$BACKEND" = appserver ]; then
-    appserver_require_idle
+    if [ "${1:-}" = merged-pr ]; then appserver_require_stopped
+    else appserver_require_idle; fi
     if appserver_alive; then kill "$(cat "$S/appserver/client.pid")"; fi
+    if [ "${1:-}" = merged-pr ]; then
+      local deadline
+      deadline=$(( $(now) + DV_APPSERVER_TIMEOUT ))
+      while appserver_alive; do
+        [ "$(now)" -lt "$deadline" ] || fail 'App Server client did not stop; worktree retained'
+        sleep 0.1
+      done
+      # The client may have written files after the initial clean check.
+      if [ -d "$WT" ]; then require_clean "$WT"; fi
+    fi
   elif [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'exec is still running; worktree retained'
   elif [ "$BACKEND" = herdr ]; then

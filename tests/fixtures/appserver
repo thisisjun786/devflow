@@ -3,7 +3,7 @@ set -euo pipefail
 if [ "${1:-}" = --peer ]; then
   # shellcheck source=lib/appserver-transport.sh
   source "$ROOT/lib/appserver-transport.sh"
-  AS_IO=$(mktemp -d /tmp/dv-ws-peer.XXXXXX)
+  AS_IO=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-ws-peer.XXXXXX")
   trap 'rm -rf "$AS_IO"' EXIT
   ws_key=''
   while IFS= read -r line; do
@@ -21,11 +21,12 @@ if [ "${1:-}" != --json ]; then
 command -v nc >/dev/null || { echo 'App Server socket tests require OpenBSD nc' >&2; exit 1; }
 # Two shell processes exchange JSON-RPC through a real Unix socket, using
 # the same stdio-to-socket boundary as `codex app-server proxy`.
-socket_dir=$(mktemp -d /tmp/dv-as.XXXXXX)
+socket_dir=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-as.XXXXXX")
 mkfifo "$socket_dir/in" "$socket_dir/out"
 exec 6<> "$socket_dir/in" 7<> "$socket_dir/out"
 bash "$0" --peer < "$socket_dir/in" > "$socket_dir/out" 6>&- 7>&- & peer=$!
-nc -lU "$socket_dir/socket" < "$socket_dir/out" > "$socket_dir/in" 6>&- 7>&- & listener=$!
+# Relative socket names avoid sun_path limits even under a long scratch root.
+(cd "$socket_dir" && exec nc -lU socket) < "$socket_dir/out" > "$socket_dir/in" 6>&- 7>&- & listener=$!
 client=''
 # EXIT invokes this callback; older ShellCheck reports SC2317, newer SC2329.
 # shellcheck disable=SC2317,SC2329
@@ -40,7 +41,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM
 for _ in {1..100}; do [ ! -S "$socket_dir/socket" ] || break; sleep 0.01; done
-nc -U "$socket_dir/socket" <&0 6>&- 7>&- & client=$!
+(cd "$socket_dir" && exec nc -U socket) <&0 6>&- 7>&- & client=$!
 touch "$CASE_DIR/server/socket-used"
 exec 6>&- 7>&-
 wait "$client"
@@ -121,6 +122,14 @@ while IFS= read -r line; do
     (
       cd "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
       DV_ISSUE=AS-1 "$ROOT/tests/fixtures/agent"
+      printf 'idle\n' > "$CASE_DIR/server/status"
+      touch "$CASE_DIR/server/work.done"
+    ) > "$CASE_DIR/server/work.log" 2>&1 &
+  fi
+  if [ "${DV_TASK_APP_TEST_WORK:-0}" = 1 ] && [ "$method" = turn/start ] && [ "$id" = '"initial-turn"' ]; then
+    (
+      cd "$(jq -r .worktree "$DV_STATE/TK-1/meta")"
+      DV_ISSUE=TK-1 "$ROOT/tests/fixtures/task-agent"
       printf 'idle\n' > "$CASE_DIR/server/status"
       touch "$CASE_DIR/server/work.done"
     ) > "$CASE_DIR/server/work.log" 2>&1 &

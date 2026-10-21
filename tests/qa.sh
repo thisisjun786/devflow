@@ -250,3 +250,128 @@ case_qa_bound_event() {
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","token":"issued"}'
   test ! -f "$DV_HOME"/qa/*/pending.json
 }
+
+# Exercise the runner synchronously; all remotes, agents and GitHub calls are
+# synthetic, including failures before a per-head job can be allocated.
+qa_direct_fixture() {
+  qa_fixture
+  qa_dir="$DV_HOME/qa/direct"
+  mkdir -p "$qa_dir"
+  printf '%s\n' "$$" > "$qa_dir/pid"
+  jq -n --arg remote "$CASE_DIR/remote.git" --arg head "$(git -C "$REPO" rev-parse HEAD)" \
+    '{repository:"test/repo",remote:$remote,base:"main",event:{head:$head}}' > "$qa_dir/running.json"
+  printf '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":8,"milestone":{"number":1,"title":"M1"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}\n' > "$GH_STUB_DIR/qa-graphql"
+  touch "$CASE_DIR/qa-release"
+  # Keep production retry delays out of these deterministic fixture tests.
+  mkdir "$CASE_DIR/qa-bin"
+  cat > "$CASE_DIR/qa-bin/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+[ "$*" != 5 ] || exit 0
+exec /bin/sleep "$@"
+SLEEP
+  chmod +x "$CASE_DIR/qa-bin/sleep"
+  export PATH="$CASE_DIR/qa-bin:$PATH"
+}
+qa_direct_run() {
+  qa_rc=0
+  dv _qa-run "$qa_dir" > "$qa_dir/log" 2>&1 || qa_rc=$?
+  cat "$qa_dir/log"
+  printf 'QA runner exit: %s\n' "$qa_rc"
+}
+qa_without_pr_milestone() {
+  jq '.milestone=null' "$GH_STUB_DIR/qa-pr" > "$CASE_DIR/pr.tmp"
+  mv "$CASE_DIR/pr.tmp" "$GH_STUB_DIR/qa-pr"
+}
+case_qa_pr_lookup_retry() {
+  qa_direct_fixture
+  printf '1\n' > "$GH_STUB_DIR/qa-empty-pulls"
+  qa_direct_run
+  test "$qa_rc" = 0
+  test "$(cat "$GH_STUB_DIR/qa-pull-count")" = 2
+  jq -e '.pr==7 and .status=="done"' "$DV_STATE"/QA-*/meta
+}
+case_qa_base_lookup_retry() {
+  qa_direct_fixture
+  jq '.base=""' "$qa_dir/running.json" > "$CASE_DIR/request.tmp"
+  mv "$CASE_DIR/request.tmp" "$qa_dir/running.json"
+  printf '1\n' > "$GH_STUB_DIR/qa-empty-pulls"
+  qa_direct_run
+  test "$qa_rc" = 0
+  jq -e '.base=="main" and .status=="done"' "$DV_STATE"/QA-*/meta
+}
+case_qa_pr_lookup_blocked() {
+  qa_direct_fixture
+  printf '99\n' > "$GH_STUB_DIR/qa-empty-pulls"
+  qa_direct_run
+  test "$qa_rc" = 1
+  test "$(cat "$GH_STUB_DIR/qa-pull-count")" = 6
+  test ! -f "$CASE_DIR/qa-runs"
+  jq -e '.status=="blocked" and (.failure_reason|contains("pr lookup"))' "$DV_STATE"/QA-*/meta
+  grep 'QA failed at pr lookup' "$qa_dir/log"
+}
+case_qa_base_lookup_blocked() {
+  qa_direct_fixture
+  jq '.base=""' "$qa_dir/running.json" > "$CASE_DIR/request.tmp"
+  mv "$CASE_DIR/request.tmp" "$qa_dir/running.json"
+  printf '99\n' > "$GH_STUB_DIR/qa-empty-pulls"
+  qa_direct_run
+  test "$qa_rc" = 1
+  test ! -f "$CASE_DIR/qa-runs"
+  jq -e '.status=="blocked" and (.failure_reason|contains("pr lookup"))' "$qa_dir/meta"
+  grep 'QA failed at pr lookup' "$qa_dir/log"
+}
+case_qa_milestone_graphql() {
+  qa_direct_fixture; qa_without_pr_milestone
+  qa_direct_run
+  test "$qa_rc" = 0
+  jq -e '.milestone=={number:1,title:"M1"} and .status=="done"' "$DV_STATE"/QA-*/meta
+  grep 'api graphql' "$GH_STUB_DIR/calls"
+  if grep 'pr view.*closingIssuesReferences' "$GH_STUB_DIR/calls"; then return 1; fi
+}
+qa_no_milestone_fixture() {
+  qa_direct_fixture; qa_without_pr_milestone
+  # Allow the old CLI path here to isolate absence of milestones from gh 2.46.
+  touch "$GH_STUB_DIR/qa-legacy-field"
+  jq '.data.repository.pullRequest.closingIssuesReferences.nodes[0].milestone=null' \
+    "$GH_STUB_DIR/qa-graphql" > "$CASE_DIR/graphql.tmp"
+  mv "$CASE_DIR/graphql.tmp" "$GH_STUB_DIR/qa-graphql"
+  export DV_QA_FINDING=1
+}
+case_qa_no_milestone() {
+  qa_no_milestone_fixture
+  qa_direct_run
+  test "$qa_rc" = 0
+  jq -e '.milestone==null and .status=="done"' "$DV_STATE"/QA-*/meta
+  grep '^Milestone: none$' "$DV_STATE"/QA-*/brief.md
+  jq -e '(has("milestone")|not) and (.labels|index("qa")) and (.body|contains("milestone **none**"))' "$GH_STUB_DIR/qa-created"
+}
+case_qa_no_milestone_match() {
+  qa_no_milestone_fixture
+  printf '[{"number":19,"title":"Cannot start a conversation","milestone":{"number":2,"title":"Existing"}}]\n' > "$GH_STUB_DIR/qa-issues"
+  qa_direct_run
+  test "$qa_rc" = 0
+  grep 'issue edit 19.*--add-label qa,bug' "$GH_STUB_DIR/calls"
+  if grep 'issue edit.*--milestone' "$GH_STUB_DIR/calls"; then return 1; fi
+  grep 'issue-comment 19' "$GH_STUB_DIR/qa-actions"
+}
+case_qa_milestone_blocked() {
+  qa_direct_fixture; qa_without_pr_milestone
+  touch "$GH_STUB_DIR/qa-graphql-fail"
+  qa_direct_run
+  test "$qa_rc" = 1
+  test ! -f "$CASE_DIR/qa-runs"
+  jq -e '.status=="blocked" and (.failure_reason|contains("milestone"))' "$DV_STATE"/QA-*/meta
+  grep 'QA failed at milestone' "$qa_dir/log"
+}
+case_qa_milestone_ambiguous() {
+  qa_direct_fixture; qa_without_pr_milestone
+  # A second GraphQL page must participate in ambiguity detection.
+  jq '.data.repository.pullRequest.closingIssuesReferences.nodes[0].milestone={number:2,title:"M2"}' \
+    "$GH_STUB_DIR/qa-graphql" > "$CASE_DIR/page2"
+  cat "$CASE_DIR/page2" >> "$GH_STUB_DIR/qa-graphql"
+  qa_direct_run
+  test "$qa_rc" = 1
+  test ! -f "$CASE_DIR/qa-runs"
+  grep 'multiple distinct milestones' "$qa_dir/log"
+  jq -e '.status=="blocked" and (.failure_reason|contains("milestone"))' "$DV_STATE"/QA-*/meta
+}

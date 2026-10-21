@@ -50,6 +50,45 @@ appserver_setup() {
   printf 'idle\n' > "$CASE_DIR/server/status"
   dv start "$REPO" AS-1 change --brief "$CASE_DIR/brief"
 }
+appserver_scratch_root() {
+  local mode=$1 scratch="$CASE_DIR/scratch" rc=0
+  if [ "$mode" = long ]; then
+    scratch="$CASE_DIR/scratch with spaces/$(printf '%0120d' 0)"
+  fi
+  mkdir -p "$scratch" "$CASE_DIR/tmpdir" "$CASE_DIR/guard-bin"
+  export DV_MKTEMP_REAL DV_MKTEMP_ROOT="$CASE_DIR" DV_MKTEMP_LOG="$CASE_DIR/mktemp.log"
+  DV_MKTEMP_REAL=$(command -v mktemp)
+  cat > "$CASE_DIR/guard-bin/mktemp" <<'GUARD'
+#!/usr/bin/env bash
+set -euo pipefail
+for arg in "$@"; do
+  case "$arg" in
+    "$DV_MKTEMP_ROOT"/*) printf 'allowed: %s\n' "$arg" >> "$DV_MKTEMP_LOG" ;;
+    /*) printf 'refused external template: %s\n' "$arg" >> "$DV_MKTEMP_LOG"; exit 1 ;;
+  esac
+done
+exec "$DV_MKTEMP_REAL" "$@"
+GUARD
+  chmod +x "$CASE_DIR/guard-bin/mktemp"
+  export PATH="$CASE_DIR/guard-bin:$PATH" TMPDIR="$CASE_DIR/tmpdir"
+  if [ "$mode" = tmpdir ]; then
+    unset DV_TEST_TMP
+    export TMPDIR="$scratch"
+  else
+    # Distinct roots prove DV_TEST_TMP takes precedence; include a trailing slash.
+    export DV_TEST_TMP="$scratch/"
+    scratch="$scratch/"
+  fi
+  bash "$ROOT/tests/run.sh" --case appserver_start > "$CASE_DIR/scratch.log" 2>&1 || rc=$?
+  cat "$CASE_DIR/scratch.log" "$DV_MKTEMP_LOG"
+  test "$rc" = 0
+  if grep -q 'refused external template:' "$DV_MKTEMP_LOG"; then return 1; fi
+  grep -Fx "allowed: $scratch/dv-as.XXXXXX" "$DV_MKTEMP_LOG"
+  grep -Fx "allowed: $scratch/dv-ws-peer.XXXXXX" "$DV_MKTEMP_LOG"
+}
+case_appserver_scratch_root() { appserver_scratch_root override; }
+case_appserver_scratch_tmpdir() { appserver_scratch_root tmpdir; }
+case_appserver_scratch_long() { appserver_scratch_root long; }
 case_appserver_start() {
   appserver_setup
   jq -e '.backend=="appserver" and .thread_id=="thread-1"' "$DV_STATE/AS-1/meta"
@@ -338,6 +377,43 @@ case_appserver_websocket() {
   if printf '\201\177\177\377\377\377\377\377\377\377' | appserver_ws_receive 0; then return 1; fi
   test "$(appserver_ws_accept dGhlIHNhbXBsZSBub25jZQ==)" = s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 }
+case_appserver_sender_idle() {
+  # Bash 3.2 returns 1 on read timeout, just as it does at EOF. A quiet
+  # connection must still answer pings and send the next complete record.
+  # shellcheck source=lib/appserver-transport.sh
+  source "$ROOT/lib/appserver-transport.sh"
+  AS_IO="$CASE_DIR/frames"; mkdir "$AS_IO"
+  printf p > "$AS_IO/pong.test.ready"
+  { sleep 2; printf 'hello\n'; } | appserver_ws_send 0 > "$CASE_DIR/frames.out"
+  printf '\212\001p\201\005hello' > "$CASE_DIR/expected"
+  cmp "$CASE_DIR/expected" "$CASE_DIR/frames.out"
+  test ! -f "$AS_IO/pong.test.ready"
+}
+case_appserver_sender_partial() {
+  # A record split across the idle deadline must retain its leading bytes.
+  # shellcheck source=lib/appserver-transport.sh
+  source "$ROOT/lib/appserver-transport.sh"
+  AS_IO="$CASE_DIR/frames"; mkdir "$AS_IO"
+  { printf h; sleep 2; printf 'ello\n\nlast\n'; } | appserver_ws_send 0 > "$CASE_DIR/frames.out"
+  printf '\201\005hello\201\000\201\004last' > "$CASE_DIR/expected"
+  cmp "$CASE_DIR/expected" "$CASE_DIR/frames.out"
+}
+appserver_sender_legacy() (
+  # Exercise Bash 3.2's timeout contract on Linux CI's newer Bash too.
+  read() {
+    local read_name=${!#} read_before read_rc=0
+    read_before=${!read_name-}
+    builtin read "$@" || read_rc=$?
+    if [ "$read_rc" -gt 128 ]; then
+      printf -v "$read_name" '%s' "$read_before"
+      return 1
+    fi
+    return "$read_rc"
+  }
+  "case_appserver_sender_$1"
+)
+case_appserver_sender_legacy_idle() { appserver_sender_legacy idle; }
+case_appserver_sender_legacy_partial() { appserver_sender_legacy partial; }
 case_appserver_active_error_send() {
   appserver_setup
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"active"},"turns":[{"id":"turn-1","status":"inProgress","items":[],"error":{"message":"transient capacity error"}}]}}' > "$CASE_DIR/server/thread.json"
@@ -397,6 +473,63 @@ case_appserver_land_active() {
   test -f "$REPO/change"
   test ! -d "$wt"
 }
+
+appserver_merged_land() {
+  local status=$1 wt head
+  appserver_setup remote
+  wt=$(jq -r .worktree "$DV_STATE/AS-1/meta")
+  git -C "$wt" commit --allow-empty -qm 'AS-1: delivered change'
+  head=$(git -C "$wt" rev-parse HEAD)
+  printf '%s\n' "$head" > "$GH_STUB_DIR/head"
+  printf '{"url":"https://github.com/test/repo/pull/1"}\n' > "$DV_STATE/AS-1/pr.json"
+  jq --arg head "$head" '.status="pr" | .head=$head' "$DV_STATE/AS-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/AS-1/meta"
+  jq -cn --arg status "$status" '{thread:{id:"thread-1",status:{type:$status},turns:[{id:"turn-1",status:"failed",items:[],error:{message:"model error"}}]}}' > "$CASE_DIR/server/thread.json"
+  # OPEN PRs and ordinary clean still require an idle, confirmed thread.
+  if dv land AS-1; then return 1; fi
+  if dv clean AS-1; then return 1; fi
+  test -d "$wt"
+  test -f "$DV_STATE/AS-1/appserver/client.pid"
+  jq -e '.status=="pr"' "$DV_STATE/AS-1/meta"
+  touch "$GH_STUB_DIR/merged"
+  dv land AS-1
+  test ! -d "$wt"
+  test ! -f "$DV_STATE/AS-1/appserver/client.pid"
+  test -f "$DV_STATE/AS-1/appserver/exited"
+  jq -e --arg head "$head" '.status=="landed" and .head==$head' "$DV_STATE/AS-1/meta"
+  jq -e --arg head "$head" '.state=="MERGED" and .headRefOid==$head' "$DV_STATE/AS-1/land-result.json"
+  dv land AS-1
+  jq -se --arg head "$head" '[.[]|select(.kind=="landed")]|length==1 and .[0].head==$head' "$DV_STATE/AS-1/events.log"
+  if grep '^pr merge ' "$GH_STUB_DIR/calls"; then return 1; fi
+}
+case_appserver_land_merged_failed() { appserver_merged_land idle; }
+case_appserver_land_merged_system_error() { appserver_merged_land systemError; }
+
+appserver_merged_active() {
+  local outcome=$1 wt
+  appserver_setup remote
+  wt=$(jq -r .worktree "$DV_STATE/AS-1/meta")
+  git -C "$wt" rev-parse HEAD > "$GH_STUB_DIR/head"
+  printf '{"url":"https://github.com/test/repo/pull/1"}\n' > "$DV_STATE/AS-1/pr.json"
+  touch "$GH_STUB_DIR/merged"
+  if [ "$outcome" = timeout ]; then
+    printf '100\n' > "$CASE_DIR/server/interrupt-polls"
+    if dv land AS-1; then return 1; fi
+    test -d "$wt"
+    test -f "$DV_STATE/AS-1/appserver/client.pid"
+    test ! -f "$DV_STATE/AS-1/events.log"
+    rm "$CASE_DIR/server/interrupt-polls" "$CASE_DIR/server/interrupt-remaining"
+    printf 'idle\n' > "$CASE_DIR/server/status"
+  fi
+  dv land AS-1
+  jq -se '[.[]|select(.method=="turn/interrupt")]|length==1 and .[0].params.turnId=="turn-1"' "$CASE_DIR/server/requests"
+  test "$(cat "$CASE_DIR/server/status")" = idle
+  test ! -d "$wt"
+  test ! -f "$DV_STATE/AS-1/appserver/client.pid"
+  jq -se '[.[]|select(.kind=="landed")]|length==1' "$DV_STATE/AS-1/events.log"
+}
+case_appserver_land_merged_active() { appserver_merged_active success; }
+case_appserver_land_merged_timeout() { appserver_merged_active timeout; }
 
 # Recovery tests drive time through synthetic state, never the host clock.
 appserver_age() { printf '0\n' > "$DV_STATE/AS-1/appserver/activity"; }

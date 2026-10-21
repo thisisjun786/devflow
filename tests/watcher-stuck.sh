@@ -116,7 +116,7 @@ case_watch_capacity_eight() {
 }
 case_watch_stuck() {
   manager_setup
-  export DV_STALL_AFTER=0
+  export DV_STALL_AFTER=1
   dv manager start "$REPO"
   # Fail only fixture queue publication, leaving the watcher running to retry.
   cat > "$DV_CONFIG" <<'CONFIG'
@@ -214,7 +214,7 @@ case_manager_note_busy() {
 }
 case_watch_stuck_route() {
   watch_fixture
-  export DV_STALL_AFTER=0 WATCH_FAULT=${1:-qa}
+  export DV_STALL_AFTER=1 WATCH_FAULT=${1:-qa}
   touch "$DV_HOME/fail-route"
   if [ "$WATCH_FAULT" = empty ]; then printf '\n' > "$DV_HOME/kick.q"
   else dv-kick landed W-1 test unknown h; fi
@@ -296,4 +296,38 @@ case_manager_conflict_restart() {
   for marker in "$dir"/conflict/*/requeued; do mv "$marker" "${marker%/requeued}/requeue"; done
   manager_conflict_recover
   test "$(find "$dir/pending" "$dir/fallback" -name '*.json' | wc -l | tr -d ' ')" = 0
+}
+case_manager_reexec() {
+  manager_setup
+  update_fixture
+  export DV_WORKER_CMD='' DV_MAX_WORKERS=1
+  trap 'rm -f "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/hold-worker"; watcher_teardown' EXIT
+  dv manager start "$REPO"
+  touch "$CASE_DIR/hermes/hold-resume"
+  manager_event M-1 "$REPO"
+  "$UPDATE_ROOT/bin/dv-watch" > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  manager_wait_calls 2
+  update_wait_idle
+  local dir manager_pid rc=0
+  dir=$(dirname "$(manager_meta)")
+  manager_pid=$(cat "$dir/run.lock/pid")
+  update_publish
+  git -C "$UPDATE_ROOT" fetch -q origin
+  git -C "$UPDATE_ROOT" merge --ff-only origin/main > /dev/null
+  update_wait_watcher "$UPDATE_NEW"
+  test "$(cat "$dir/run.lock/pid")" = "$manager_pid"
+  test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 2
+  touch "$DV_HOME/stop"
+  sleep 1
+  # Shutdown after exec must still wait for its existing manager child.
+  if ! kill -0 "$watcher" 2>/dev/null; then
+    printf 'watcher exited before its reserved manager finished\n' >&2
+    rc=1
+  fi
+  rm "$CASE_DIR/hermes/hold-resume"
+  wait "$watcher"; watcher=''
+  wait_file "$dir/pending/$(manager_job_name 0 worker:M-1:pr-ready:abc).done"
+  test ! -f "$CASE_DIR/hermes/overlap"
+  test ! -f "$dir/run.lock/pid"
+  return "$rc"
 }

@@ -1,30 +1,38 @@
 #!/usr/bin/env bash
 # Sourced only by the lock regression cases through BASH_ENV.
+# Use env to bypass these functions: Bash 3.2's command builtin can trigger
+# errexit even when the caller handles the external command's failure.
 sleep() {
   # Exercise all lock retries without adding ten seconds to the suite.
   if [ "${DV_TEST_RACE:-}" = timeout ] && [ "$*" = 0.1 ]; then return 0; fi
-  command sleep "$@"
+  env sleep "$@"
 }
 mkdir() {
   if [ "${DV_TEST_RACE:-}" = admission ] && [ "$*" = "$DV_STATE/.admission-lock" ]; then
     # uutils 0.8.0 can report success to both concurrent mkdir callers.
-    command mkdir "$@" 2>/dev/null || true
+    env mkdir "$@" 2>/dev/null || true
     touch "$CASE_DIR/attempt-$DV_TEST_ACTOR"
     return 0
   fi
-  command mkdir "$@"
+  env mkdir "$@"
 }
 ln() {
   local rc=0
-  command ln "$@" || rc=$?
+  env ln "$@" || rc=$?
   if [ "$rc" != 0 ]; then touch "$CASE_DIR/contended-$DV_TEST_ACTOR"; fi
+  if [ "${DV_TEST_RACE:-}" = admission_cancel ] && [ "$rc" != 0 ] &&
+    [ "${2:-}" = "$DV_STATE/.admission-lock/owner" ]; then
+    # Force cancellation after publishing our candidate, before removing it.
+    # SIGKILL intentionally leaves that non-owner PID file behind.
+    command sleep 30
+  fi
   return "$rc"
 }
 rmdir() {
   if [ "${DV_TEST_RACE:-}" = admission ] && [ "$*" = "$DV_STATE/.admission-lock" ]; then
     printf '%s %s\n' "$DV_TEST_ACTOR" "$$" >> "$CASE_DIR/removers"
   fi
-  command rmdir "$@"
+  env rmdir "$@"
 }
 git() {
   if [ "${DV_TEST_RACE:-}" = worktree ] && [ "${3:-} ${4:-}" = 'worktree add' ]; then
@@ -40,5 +48,5 @@ git() {
       return 1
     fi
   fi
-  command git "$@"
+  env git "$@"
 }

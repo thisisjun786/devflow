@@ -1,0 +1,470 @@
+#!/usr/bin/env bash
+# Sourced by run.sh: synthetic status, herdr/Codex fixtures, no live agents.
+# ROOT and DV_HOST come from the driver.
+# shellcheck disable=SC2153,SC2154,SC2016
+stall_fixture() {
+  repo stall; herdr_setup; watch_fixture
+  export DV_HOSTS="$DV_HOST" DV_STALL_AFTER=1 DV_RECONCILE_INTERVAL=1
+  mkdir "$DV_STATE/ST-1"
+  jq -n --arg repo "$REPO" --arg head "$(git -C "$REPO" rev-parse HEAD)" \
+    '{issue:"ST-1",repo:$repo,worktree:$repo,branch:"main",base:"main",agent:"codex",mode:"goal",
+      host:"test-host",started:1,status:"running",start_head:$head,backend:"herdr",herdr_pane:"w-ST-1:p1",award_token:"round-1"}' > "$DV_STATE/ST-1/meta"
+  herdr workspace create --label dv-ST-1 --cwd "$REPO" --no-focus >/dev/null
+  touch "$CASE_DIR/herdr/w-ST-1/detected"
+  printf 'idle\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  printf 'Goal stalled\n› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+}
+case_stall_watch() {
+  stall_fixture
+  # Ordinary idle exercises persisted event deduplication without an automatic
+  # goal resume changing the agent to working (covered by stall_watch_resume).
+  printf '› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  if ! wait_seen 1; then
+    printf 'Expected one stalled event for running+idle past DV_STALL_AFTER; queue:\n'
+    cat "$DV_HOME/kick.q"; return 1
+  fi
+  sleep 1.2
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  jq -se 'length==1 and .[0].kind=="stalled" and .[0].issue=="ST-1" and .[0].token=="round-1"' "$DV_HOME/kick.q"
+  rm "$DV_HOME/stop"
+  dv-watch >> "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  sleep 1.5
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  jq -se 'length==1' "$DV_HOME/kick.q"
+  grep -l 'stalled:' "$DV_HOME/workers/"*.prompt.md
+}
+case_stall_status() {
+  stall_fixture
+  printf 'working\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  printf '7\n' > "$CASE_DIR/herdr/w-ST-1/seq"
+  dv status ST-1 --json | jq -e '.[0] | .goal_stalled and .agent_state_seq==7'
+  printf 'Goal stalled\n• Pursuing goal\n› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  printf 'Goal stalled\n' > "$DV_STATE/ST-1/log"
+  dv status ST-1 --json | jq -e '.[0] | .goal_stalled==false and .goal_active'
+  printf 'Pursuing goal\n• Goal stalled\n› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  dv status ST-1 --json | jq -e '.[0] | .goal_stalled and .goal_active==false'
+  jq -se 'any(.[]; .==["pane","read","w-ST-1:p1","--source","visible"])' "$CASE_DIR/herdr/calls"
+}
+stall_functions() {
+  bidding_functions
+  # shellcheck source=lib/stall.sh
+  source "$ROOT/lib/stall.sh"
+  # Episode timing tests do not dispatch remote commands or launch agents.
+  stall_recover() { :; }
+  DV_STALL_AFTER=600
+  STALL_TIME=1000
+  now() { printf '%s\n' "$STALL_TIME"; }
+  STALL_ROW='{"issue":"ST-1","host":"canonical-host","status":"running","alive":true,"agent_status":"idle","started":1,"start_head":"h","award_token":"token","agent_state_seq":1}'
+  touch "$DV_HOME/kick.q"
+}
+stall_scan() { stall_reconcile alias "[$STALL_ROW]" 60; }
+stall_tick() {
+  local count=0
+  while [ "$count" -lt "${1:-10}" ]; do
+    STALL_TIME=$((STALL_TIME + 60)); stall_scan; count=$((count + 1))
+  done
+}
+stall_count() {
+  jq -se --argjson count "$1" '[.[]|select(.kind=="stalled")]|length==$count' "$DV_HOME/kick.q"
+}
+case_stall_episodes() {
+  stall_functions
+  stall_scan; stall_count 0
+  STALL_TIME=1059; stall_scan; stall_count 0
+  stall_tick 9; stall_count 0 # 599 seconds is below the configured threshold.
+  STALL_TIME=1600; stall_scan; stall_count 1
+  stall_tick; stall_count 1
+  # Activity resets both the clock and deduplication, even at the same head.
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_status="working" | .goal_stalled=false | .goal_active=true')
+  stall_scan; stall_tick; stall_count 1
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_status="idle" | .goal_active=false')
+  stall_scan; stall_count 1; stall_tick; stall_count 2
+  # Work can start and finish between polls: the herdr sequence exposes it.
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_state_seq=3')
+  stall_scan; stall_count 2; stall_tick; stall_count 3
+  jq -se '[.[].id]|length==(unique|length)' "$DV_HOME/kick.q"
+  jq -se 'all(.[]; .host=="canonical-host" and .token=="token" and .head=="h")' "$DV_HOME/kick.q"
+}
+case_stall_inactive() {
+  stall_functions
+  local status
+  for status in 'done' landed ready pr start-failed; do
+    STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.status="running"')
+    stall_scan; stall_tick 9
+    STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq --arg status "$status" '.status=$status')
+    stall_scan; stall_tick
+  done
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.status="running" | .done_at=1')
+  stall_scan; stall_tick
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq 'del(.done_at) | .cleaned_at=1')
+  stall_scan; stall_tick
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq 'del(.cleaned_at) | .alive=false')
+  stall_scan; stall_tick
+  stall_count 0
+}
+case_stall_observation() {
+  stall_functions
+  stall_scan
+  # A missed host scan / long watcher outage does not prove continuous idle.
+  STALL_TIME=3000; stall_scan; stall_count 0
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_status="unknown"')
+  STALL_TIME=3060; stall_scan; stall_tick; stall_count 0
+  # The visible Codex banner also works without herdr agent detection.
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.goal_stalled=true')
+  stall_scan; stall_tick; stall_count 1
+  # agent get can fail while pane get/read still succeed. Losing optional
+  # herdr telemetry must not turn the same banner into a new episode.
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_state_seq=null')
+  stall_scan; stall_tick; stall_count 1
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_state_seq=1')
+  stall_scan; stall_tick; stall_count 1
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.alive=false')
+  stall_scan; stall_tick
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.alive=true')
+  stall_scan; stall_tick; stall_count 1
+  # Crash after queue append, before recording its acknowledgement.
+  jq 'map_values(.emitted=false)' "$DV_HOME/stalls.json" > "$CASE_DIR/stalls.tmp"
+  mv "$CASE_DIR/stalls.tmp" "$DV_HOME/stalls.json"
+  stall_scan; stall_count 1
+  # A new award of the same issue is a distinct episode.
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.award_token="round-2"')
+  stall_scan; stall_tick; stall_count 2
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.goal_stalled=false | .goal_active=true')
+  stall_scan
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.goal_stalled=true | .goal_active=false')
+  stall_scan; stall_tick; stall_count 3
+}
+case_stall_remote() {
+  watch_fixture
+  export DV_HOSTS=ssh-alias DV_RECONCILE_INTERVAL=1 DV_STALL_AFTER=1
+  printf '[{"issue":"ST-1","host":"canonical-host","status":"running","alive":true,"agent_status":"idle","head":"h","award_token":"t"}]\n' > "$CASE_DIR/remote-status"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_seen 1
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  jq -se 'length==1 and .[0].kind=="stalled" and .[0].host=="canonical-host" and .[0].token=="t"' "$DV_HOME/kick.q"
+}
+case_stall_tmux() {
+  needs_tmux; stall_fixture
+  jq '.backend="tmux" | del(.herdr_pane)' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta.tmp"
+  mv "$CASE_DIR/meta.tmp" "$DV_STATE/ST-1/meta"
+  tmux -L "$DV_TMUX_SOCKET" new-session -d -s dv-ST-1 "printf 'Goal stalled\\n› \\n'; sleep 30"
+  local _
+  for _ in {1..50}; do
+    if dv status ST-1 --json | jq -e '.[0].goal_stalled==true' >/dev/null; then break; fi
+    sleep 0.1
+  done
+  dv status ST-1 --json | jq -e '.[0] | .goal_stalled and .alive and .agent_status=="unknown"'
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_seen 1
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  stall_count 1
+  tmux -L "$DV_TMUX_SOCKET" respawn-pane -k -t dv-ST-1:0.0 "printf 'Pursuing goal\\n› \\n'; sleep 30"
+  for _ in {1..50}; do
+    if dv status ST-1 --json | jq -e '.[0].goal_active==true' >/dev/null; then break; fi
+    sleep 0.1
+  done
+  dv status ST-1 --json | jq -e '.[0] | .goal_active and .goal_stalled==false'
+}
+# DF-83: legacy process loss and paused/capacity goals share the existing episodes.
+case_stall_dead() {
+  stall_fixture
+  rm "$CASE_DIR/herdr/w-ST-1/detected"
+  printf 'shell$ \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  dv status ST-1 --json | jq -e '.[0] | .agent_status=="unknown" and .agent_dead==true'
+  stall_functions
+  STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
+  stall_scan; stall_tick 9; stall_count 0
+  stall_tick 1; stall_count 1
+  stall_tick; stall_count 1
+}
+case_stall_capacity() {
+  stall_fixture
+  printf 'Pursuing goal\nSelected model is at capacity\n› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  dv status ST-1 --json | jq -e '.[0] | .goal_stalled and (.goal_active|not)'
+  stall_functions
+  STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
+  stall_scan; stall_tick; stall_count 1
+}
+case_stall_resume() {
+  stall_fixture; stall_functions
+  stall_recovery_functions
+  stall_recover_call
+  stall_resume_count 1
+  STALL_TIME=1299; stall_recover_call; stall_resume_count 1
+  STALL_TIME=1300; stall_recover_call; stall_resume_count 2
+  STALL_TIME=1600; stall_recover_call; stall_resume_count 3
+  STALL_TIME=1900; stall_recover_call; stall_resume_count 3
+  # State survives loading the functions again (a watcher/CLI restart).
+  stall_recovery_functions
+  STALL_TIME=2200; stall_recover_call; stall_resume_count 3
+  jq -se '[.[]|select(.kind=="blocked")]|length==1' "$DV_STATE/ST-1/events.log"
+}
+stall_recovery_functions() {
+  # shellcheck source=lib/herdr.sh
+  source "$ROOT/lib/herdr.sh"
+  # shellcheck source=lib/commands.sh
+  source "$ROOT/lib/commands.sh"
+}
+stall_recover_call() {
+  printf 'idle\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  printf 'Goal stalled\n› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  cmd__stall_recover ST-1 episode-1 round-1
+}
+stall_resume_count() {
+  jq -se --argjson n "$1" '[.[]|select(.[0:2]==["agent","prompt"] and .[3]=="/goal resume")]|length==$n' "$CASE_DIR/herdr/calls"
+}
+case_stall_resume_reset() {
+  stall_fixture; stall_functions; stall_recovery_functions
+  stall_recover_call; stall_resume_count 1
+  # A fresh observation of activity clears the episode; the next episode gets
+  # its own budget, even if the commit and award token did not change.
+  STALL_TIME=1001
+  printf 'idle\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  cmd__stall_recover ST-1 episode-2 round-1
+  stall_resume_count 2
+  test "$(jq -r .episode "$DV_STATE/ST-1/stall-recovery.json")" = episode-2
+}
+case_stall_resume_guards() {
+  stall_fixture; stall_functions; stall_recovery_functions
+  cmd__stall_recover ST-1 episode-1 stale-token
+  printf 'working\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  printf '› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  cmd__stall_recover ST-1 episode-1 round-1
+  printf 'blocked\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  printf 'Goal stalled\n› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  cmd__stall_recover ST-1 episode-1 round-1
+  printf 'idle\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  printf 'Goal stalled\nPursuing goal\n' > "$CASE_DIR/herdr/w-ST-1/output"
+  cmd__stall_recover ST-1 episode-1 round-1
+  local status
+  for status in 'done' landed pr cancelled; do
+    jq --arg status "$status" '.status=$status' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta.tmp"
+    mv "$CASE_DIR/meta.tmp" "$DV_STATE/ST-1/meta"
+    cmd__stall_recover ST-1 episode-1 round-1
+  done
+  stall_resume_count 0
+  test ! -f "$DV_STATE/ST-1/stall-recovery.json"
+}
+case_stall_resume_transport() {
+  stall_fixture; stall_functions; stall_recovery_functions
+  printf 'agent prompt\n' > "$CASE_DIR/herdr/fail"
+  if stall_recover_call; then return 1; fi
+  stall_resume_count 1
+  STALL_TIME=1299; stall_recover_call; stall_resume_count 1
+  rm "$CASE_DIR/herdr/fail"
+  STALL_TIME=1300; stall_recover_call; stall_resume_count 2
+}
+case_stall_banner_sequence() {
+  stall_functions
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.goal_stalled=true')
+  stall_scan; stall_tick; stall_count 1
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_state_seq=3')
+  stall_scan; stall_tick; stall_count 1
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.goal_active=true')
+  stall_scan
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.goal_active=false')
+  stall_scan; stall_tick; stall_count 2
+}
+case_stall_watch_resume() {
+  stall_fixture
+  printf 'Selected model is at capacity\n› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_file "$DV_STATE/ST-1/goal-input"
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  stall_count 1; stall_resume_count 1
+  grep -Fx '/goal resume' "$DV_STATE/ST-1/goal-input"
+  test ! -d "$DV_STATE/ST-1/revive"
+}
+case_stall_watch_revive() {
+  revive_setup; revive_dead; watch_fixture
+  rm "$RV_STATE/agent.pid" "$RV_STATE/agent.exit"
+  jq '.status="running" | del(.done_at)' "$RV_STATE/meta" > "$CASE_DIR/meta.tmp"
+  mv "$CASE_DIR/meta.tmp" "$RV_STATE/meta"
+  export DV_HOSTS="$DV_HOST" DV_STALL_AFTER=1 DV_RECONCILE_INTERVAL=1
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  revive_wait
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  stall_count 1
+  revive_preserved
+}
+case_stall_remote_resume() {
+  stall_fixture
+  mkdir "$CASE_DIR/remote-home"
+  printf 'DV_HOME=%q\nDV_HOST=canonical-host\n' "$CASE_DIR/remote-home" > "$CASE_DIR/remote-home/config.sh"
+  export SSH_FIXTURE_EXEC=1 DV_HOSTS=ssh-alias
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_file "$DV_STATE/ST-1/goal-input"
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  stall_resume_count 1
+}
+case_stall_dead_old_banner() {
+  stall_fixture
+  rm "$CASE_DIR/herdr/w-ST-1/detected"
+  printf 'Pursuing goal\nshell$ \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  dv status ST-1 --json | jq -e '.[0] | .agent_dead and (.goal_active|not)'
+}
+case_stall_recovery_host() {
+  stall_functions
+  stall_recover() { printf '%s\n' "$1" >> "$CASE_DIR/recovery-hosts"; }
+  DV_STALL_AFTER=1
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.goal_stalled=true')
+  stall_reconcile alias-a "[$STALL_ROW]" 60
+  STALL_TIME=1001
+  stall_reconcile alias-a "[$STALL_ROW]" 60
+  # A second host can be scanned in the same second. Never dispatch host A's
+  # pending episode to host B just because their observation times match.
+  stall_reconcile alias-b '[]' 60
+  test "$(cat "$CASE_DIR/recovery-hosts")" = alias-a
+}
+case_stall_working_banner_detection() {
+  stall_fixture; stall_functions
+  printf 'working\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  local banner count=0
+  for banner in 'Selected model is at capacity' 'Goal stalled'; do
+    printf '• Working\n%s\n› \n' "$banner" > "$CASE_DIR/herdr/w-ST-1/output"
+    STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
+    stall_scan; stall_tick 9; stall_count "$count"
+    stall_tick 1; count=$((count + 1)); stall_count "$count"
+    stall_tick; stall_count "$count"
+    # A newer activity banner ends this episode despite old stalled text.
+    printf '%s\n• Pursuing goal\n› \n' "$banner" > "$CASE_DIR/herdr/w-ST-1/output"
+    STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
+    stall_scan; stall_tick; stall_count "$count"
+  done
+}
+case_stall_working_banner_resume() {
+  stall_fixture; stall_functions; stall_recovery_functions
+  local banner count=0
+  for banner in 'Selected model is at capacity' 'Goal stalled'; do
+    printf 'working\n' > "$CASE_DIR/herdr/w-ST-1/status"
+    printf '• Pursuing goal\n%s\n› \n' "$banner" > "$CASE_DIR/herdr/w-ST-1/output"
+    count=$((count + 1))
+    cmd__stall_recover ST-1 "working-banner-$count" round-1
+    stall_resume_count "$count"
+    cmd__stall_recover ST-1 "working-banner-$count" round-1
+    stall_resume_count "$count"
+  done
+}
+case_stall_latest_activity() {
+  stall_fixture; stall_functions; stall_recovery_functions
+  local activity status
+  for status in working idle; do
+    printf '%s\n' "$status" > "$CASE_DIR/herdr/w-ST-1/status"
+    for activity in 'Pursuing goal' 'Working' 'Working (2s • esc to interrupt)' 'Working...'; do
+      printf 'Goal stalled\nSelected model is at capacity\n• %s\n› \n' "$activity" > "$CASE_DIR/herdr/w-ST-1/output"
+      STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
+      printf '%s\n' "$STALL_ROW" | jq -e '.goal_active and (.goal_stalled|not)'
+      stall_scan; stall_tick; stall_count 0
+      cmd__stall_recover ST-1 working-banner round-1
+      stall_resume_count 0
+    done
+  done
+  test ! -f "$DV_STATE/ST-1/stall-recovery.json"
+}
+stall_recovery_teardown() {
+  rm -f "$CASE_DIR/herdr/recovery-hold"
+  touch "$CASE_DIR/recovery-release"
+  local pid tries
+  for pid in ${recovery_workers:-}; do wait "$pid" 2>/dev/null || true; done
+  if [ -f "$DV_STATE/SR-1/recovery-runs" ]; then
+    while IFS= read -r pid; do
+      for tries in {1..100}; do
+        [ ! -f "$DV_STATE/SR-1/recovery-exit-$pid" ] || break
+        sleep 0.05
+      done
+    done < "$DV_STATE/SR-1/recovery-runs"
+  fi
+  # Agent exit bookkeeping follows the fake agent's EXIT trap.
+  for tries in {1..100}; do
+    if [ -f "$DV_STATE/SR-1/agent.pid" ] && ! kill -0 "$(cat "$DV_STATE/SR-1/agent.pid")" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  teardown
+}
+stall_recover_as_documented() {
+  # Execute the two documented worker routes without an LLM. The old stalled
+  # rule used a raw launcher, bypassing dv send's lock and permanent revive claim.
+  local rule
+  rule=$(sed -n '/^- stalled:/p' "$ROOT/templates/worker-prompt.md")
+  if printf '%s\n' "$rule" | grep -Fq 'dv send <ISSUE>'; then
+    dv send SR-1 resume
+  else
+    printf '%s\n' "$rule" | grep -Fq 'devflow launcher'
+    load_issue SR-1
+    herdr_cmd pane run "$HERDR_PANE" "$(shell_join "$ROOT/bin/dv" _agent SR-1)"
+  fi
+}
+stall_recovery_worker() (
+  local kind=$1 rc=0
+  if [ "$kind" = stalled ]; then stall_recover_as_documented || rc=$?
+  else dv send SR-1 'resume after failed event' || rc=$?; fi
+  printf '%s\n' "$rc" > "$CASE_DIR/$kind.exit"
+)
+stall_recovery_race() {
+  local first=$1 second=$2 tries calls count pid
+  repo stalled-recovery; herdr_setup; bidding_functions
+  trap stall_recovery_teardown EXIT
+  export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/stalled-goal"
+  dv start "$REPO" SR-1 recovery
+  wait_file "$DV_STATE/SR-1/held.pid"
+  dv status SR-1 --json | jq -e '.[0] | .status=="running" and .goal_stalled'
+  local wt
+  wt=$(jq -r .worktree "$DV_STATE/SR-1/meta")
+  printf 'saved work\n' > "$wt/wip"
+  git -C "$wt" add wip
+  git -C "$wt" commit -qm 'SR-1: WIP before stalled recovery'
+  # Stopping the real fake goal makes the production wrapper emit failed.
+  kill -TERM "$(cat "$DV_STATE/SR-1/held.pid")"
+  wait_file "$CASE_DIR/herdr/w-SR-1/exit"
+  wait_file "$DV_STATE/SR-1/events.log"
+  jq -se 'length==1 and .[0].kind=="failed"' "$DV_STATE/SR-1/events.log"
+  test ! -e "$DV_STATE/SR-1/done.json"
+  touch "$CASE_DIR/stall-recover" "$CASE_DIR/herdr/recovery-hold"
+  stall_recovery_worker "$first" > "$CASE_DIR/$first.log" 2>&1 & recovery_workers=$!
+  wait_file "$CASE_DIR/herdr/recovery-entered"
+  stall_recovery_worker "$second" > "$CASE_DIR/$second.log" 2>&1 & recovery_workers="$recovery_workers $!"
+  # Wait for the second path either to contend on the lock or request its own
+  # launcher. Both processes are live during the initial restart's window.
+  for tries in {1..100}; do
+    calls=$(jq -s '[.[]|select(.[0:2]==["pane","run"])]|length' "$CASE_DIR/herdr/calls")
+    if [ -f "$CASE_DIR/$second.exit" ] || [ "$calls" -eq 3 ]; then break; fi
+    sleep 0.05
+  done
+  rm "$CASE_DIR/herdr/recovery-hold"
+  for pid in $recovery_workers; do wait "$pid"; done
+  recovery_workers=''
+  calls=$(jq -s '[.[]|select(.[0:2]==["pane","run"])]|length-1' "$CASE_DIR/herdr/calls")
+  count=0
+  for tries in {1..100}; do
+    if [ -f "$DV_STATE/SR-1/recovery-runs" ]; then count=$(wc -l < "$DV_STATE/SR-1/recovery-runs" | tr -d ' '); fi
+    [ "$count" -lt "$calls" ] || break
+    sleep 0.05
+  done
+  cat "$CASE_DIR/$first.log" "$CASE_DIR/$second.log"
+  printf '%s then %s: new_agents=%s expected=1\n' "$first" "$second" "$count"
+  test "$count" = 1
+  test "$calls" = 1
+  test -d "$DV_STATE/SR-1/revive"
+  # Delayed duplicate events cannot bypass the claim, even while detection is
+  # missing. The replacement remains alive and the saved work stays intact.
+  dv send SR-1 'late failed event' > "$CASE_DIR/late.log" 2>&1 || true
+  stall_recover_as_documented >> "$CASE_DIR/late.log" 2>&1 || true
+  jq -se '[.[]|select(.[0:2]==["pane","run"])]|length==2' "$CASE_DIR/herdr/calls"
+  test "$(cat "$wt/wip")" = 'saved work'
+  pid=$(cat "$DV_STATE/SR-1/recovery-runs")
+  kill -0 "$pid"
+  grep '^resume' "$DV_STATE/SR-1/recovery-input-$pid"
+  touch "$CASE_DIR/recovery-release"
+  wait_file "$DV_STATE/SR-1/recovery-exit-$pid"
+  for tries in {1..100}; do
+    if ! kill -0 "$(cat "$DV_STATE/SR-1/agent.pid")" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  # The permanent claim also prevents a new launch after the replacement exits.
+  if dv send SR-1 'replayed failed after replacement exit' >> "$CASE_DIR/late.log" 2>&1; then return 1; fi
+  jq -se '[.[]|select(.[0:2]==["pane","run"])]|length==2' "$CASE_DIR/herdr/calls"
+  test "$(wc -l < "$DV_STATE/SR-1/recovery-runs" | tr -d ' ')" = 1
+}
+case_stall_failed_race() { stall_recovery_race stalled failed; }
+case_failed_stall_race() { stall_recovery_race failed stalled; }

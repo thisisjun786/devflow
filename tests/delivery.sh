@@ -130,3 +130,86 @@ case_land_unconfirmed() {
   land_failure 'merge not confirmed; worktree retained'
   test -f "$GH_STUB_DIR/merged"
 }
+
+land_merged_setup() {
+  land_setup false false false
+  git -C "$LAND_WT" commit --allow-empty -qm 'LAND-1: delivered change'
+  git -C "$LAND_WT" rev-parse HEAD > "$GH_STUB_DIR/head"
+  touch "$GH_STUB_DIR/merged"
+  # A merged stack must not try to update or push its branch again.
+  printf 'Depends on #42\n' > "$GH_STUB_DIR/live-body"
+}
+land_merged_success() {
+  local head
+  head=$(cat "$GH_STUB_DIR/head")
+  dv land LAND-1
+  jq -e --arg head "$head" '.state=="MERGED" and .headRefOid==$head' "$DV_STATE/LAND-1/land-result.json"
+  jq -e --arg head "$head" '.status=="landed" and .head==$head and .landed_at!=null' "$DV_STATE/LAND-1/meta"
+  test ! -d "$LAND_WT"
+  dv land LAND-1
+  jq -se --arg head "$head" '[.[]|select(.kind=="landed")]|length==1 and .[0].head==$head' "$DV_STATE/LAND-1/events.log"
+  if grep -E '^pr merge |^api repos/|^pr view .*/42 ' "$GH_STUB_DIR/calls"; then return 1; fi
+}
+case_land_merged() { land_merged_setup; land_merged_success; }
+case_land_merged_recorded_pr() {
+  land_merged_setup
+  jq --arg head "$(cat "$GH_STUB_DIR/head")" '.head=$head | .status="pr"' "$DV_STATE/LAND-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/LAND-1/meta"
+  git -C "$LAND_WT" commit --allow-empty -qm 'LAND-1: merge commit'
+  land_merged_success
+}
+case_land_merged_recorded_done() {
+  land_merged_setup
+  jq -n --arg head "$(cat "$GH_STUB_DIR/head")" '{head:$head,checks:"green",review:"handled"}' > "$DV_STATE/LAND-1/done.json"
+  git -C "$LAND_WT" commit --allow-empty -qm 'LAND-1: merge commit'
+  land_merged_success
+}
+case_land_merged_mismatch() {
+  land_merged_setup
+  touch "$GH_STUB_DIR/head-mismatch"
+  land_failure 'PR head/base/state mismatch'
+  test ! -f "$DV_STATE/LAND-1/land-result.json"
+  test ! -f "$DV_STATE/LAND-1/events.log"
+}
+case_land_merged_base_mismatch() {
+  land_merged_setup
+  jq '.base="other"' "$DV_STATE/LAND-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/LAND-1/meta"
+  land_failure 'PR head/base/state mismatch'
+  test ! -f "$DV_STATE/LAND-1/land-result.json"
+}
+case_land_merged_cleanup_retry() {
+  land_merged_setup
+  cat > "$CASE_DIR/cleanup-failure" <<'ENV'
+git() {
+  if [ "${1:-} ${2:-}" = 'worktree remove' ]; then return 1; fi
+  command git "$@"
+}
+ENV
+  if BASH_ENV="$CASE_DIR/cleanup-failure" dv land LAND-1; then return 1; fi
+  test -d "$LAND_WT"
+  jq -e '.status=="landed"' "$DV_STATE/LAND-1/meta"
+  test -f "$DV_STATE/LAND-1/land-result.json"
+  test ! -f "$DV_STATE/LAND-1/events.log"
+  land_merged_success
+}
+case_land_merged_dirty() {
+  land_merged_setup
+  printf 'keep me\n' > "$LAND_WT/uncommitted"
+  land_failure 'uncommitted files'
+  test -f "$LAND_WT/uncommitted"
+  test ! -f "$DV_STATE/LAND-1/land-result.json"
+}
+case_land_merged_checks() {
+  land_merged_setup
+  local checks
+  for checks in '[]' '[{"__typename":"CheckRun","status":"IN_PROGRESS"}]' \
+    '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]'; do
+    printf '%s\n' "$checks" > "$GH_STUB_DIR/checks"
+    land_failure 'all PR checks must be successful'
+    test ! -f "$DV_STATE/LAND-1/land-result.json"
+  done
+}
+case_land_worker_rule() {
+  grep -F '작업자는 자신의 PR을 병합하지 않습니다. 관리자가 `dv land`로 병합합니다.' "$ROOT/templates/rules.md"
+}

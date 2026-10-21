@@ -85,8 +85,14 @@ PROMPT
   elif command -v agy >/dev/null 2>&1; then
     command='exec agy --model gemini-4-argon-high -p "$@"'
   else
+    # Check connectivity without sending the PR or starting a remote agent.
+    # The process-group timeout also bounds unusual SSH proxy configurations.
+    if ! polish_run ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 lina-os true > /dev/null 2>&1; then
+      echo 'polish skipped: remote host unavailable; original retained'
+      return 0
+    fi
     # SSH passes a shell command, so quote the entire prompt for the remote shell.
-    command=$(shell_join ssh -o BatchMode=yes lina-os "$(shell_join agy --model gemini-4-argon-high -p "$prompt")")
+    command=$(shell_join ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 lina-os "$(shell_join agy --model gemini-4-argon-high -p "$prompt")")
     prompt=''
   fi
   polish_run bash -c "$command" dv-polish "$prompt" > "$tmp/output" || rc=$?
@@ -107,7 +113,7 @@ PROMPT
   jq -ej '.body | select(type=="string")' "$tmp/live.json" > "$tmp/live" || { echo 'invalid live PR body; edit skipped'; return 1; }
   cmp -s "$tmp/original" "$tmp/live" || { echo 'live PR body changed; edit skipped'; return 1; }
   if [ -e "$S/pr.md" ] || [ -e "$S/pr-public.sent" ]; then echo 'public body supplied; edit skipped'; return 1; fi
-  gh api --method PATCH "$endpoint" -F "body=@$tmp/output" > /dev/null || { echo 'gh api PATCH failed; original retained'; return 1; }
+  gh api -X PATCH "$endpoint" -F "body=@$tmp/output" > /dev/null || { echo 'gh api PATCH failed; original retained'; return 1; }
   mv "$tmp/output" "$S/pr-body.md" || return 1
   echo 'polish applied'
 }

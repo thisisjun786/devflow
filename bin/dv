@@ -6,30 +6,59 @@ while [ -L "$DV_ENTRY" ]; do
   DV_ENTRY=$(readlink "$DV_ENTRY")
   [[ "$DV_ENTRY" = /* ]] || DV_ENTRY="$entry_dir/$DV_ENTRY"
 done
+entry_commit=$(git -C "$(dirname "$DV_ENTRY")/.." rev-parse HEAD 2>/dev/null || true)
 # shellcheck source=lib/common.sh
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
+# Internal RPCs have their own deadlines. Defer network updates, including in
+# child CLI calls during an award, until an ordinary invocation or watcher pass.
+case "${1:-help}" in _*|bid) export DV_AUTO_UPDATE=0 ;; esac
+# shellcheck source=lib/bidding.sh
+source "$DV_ROOT/lib/bidding.sh"
+# shellcheck source=lib/self-update.sh
+source "$DV_ROOT/lib/self-update.sh"
+self_update 300
+if [ "$(self_update_head)" != "$entry_commit" ]; then exec "$DV_ROOT/bin/dv" "$@"; fi
 # shellcheck source=lib/herdr.sh
 source "$DV_ROOT/lib/herdr.sh"
 # shellcheck source=lib/commands.sh
 source "$DV_ROOT/lib/commands.sh"
+# shellcheck source=lib/stall.sh
+source "$DV_ROOT/lib/stall.sh"
 # shellcheck source=lib/delivery.sh
 source "$DV_ROOT/lib/delivery.sh"
 # shellcheck source=lib/stack.sh
 source "$DV_ROOT/lib/stack.sh"
 # shellcheck source=lib/polish.sh
 source "$DV_ROOT/lib/polish.sh"
-# shellcheck source=lib/bidding.sh
-source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/manager.sh
 source "$DV_ROOT/lib/manager.sh"
+# shellcheck source=lib/task.sh
+source "$DV_ROOT/lib/task.sh"
 # shellcheck source=lib/qa.sh
 source "$DV_ROOT/lib/qa.sh"
 command=${1:-help}; [ "$#" -eq 0 ] || shift
+if [ "$command" = submit ] && [ "${1:-}" = --kind ]; then
+  [ "$#" -ge 2 ] || fail 'missing --kind value'
+  kind=$2; shift 2
+  case "$kind" in task) task_submit "$@"; exit ;; code) ;; *) fail 'kind must be code or task' ;; esac
+fi
+case "$command" in
+  help|--help|-h) printf '%s\n' 'dv submit --kind task <workspace> <ISSUE> <slug> --brief FILE [--agent codex|claude]' 'dv land <task ISSUE> --checked HEAD (after checking out/ and report.md)' ;;
+  land|clean|pr|pr-wait|_pr-wait-start|review|polish)
+    if task_issue "${1:-}"; then
+      case "$command" in
+        land) task_land "$@" ;; clean) task_clean "$@" ;;
+        *) fail 'task jobs have no PR, CI or code review; inspect out/ and report.md, then dv land TASK --checked HEAD' ;;
+      esac
+      exit
+    fi ;;
+esac
 case "$command" in
   manager) cmd_manager "$@" ;;
   qa) cmd_qa "$@" ;;
   _qa-run) cmd__qa_run "$@" ;;
   _manager-run) cmd__manager_run "$@" ;;
+  _stall-recover) cmd__stall_recover "$@" ;;
   host)
     # shellcheck source=lib/host.sh
     source "$DV_ROOT/lib/host.sh"
@@ -38,6 +67,7 @@ case "$command" in
   pr-wait) cmd_pr_wait "$@" ;;
   _pr-wait-start) cmd_pr_wait_start "$@" ;;
   _stack-land) cmd_stack_land "$@" ;;
+  _stack-resume) cmd_stack_resume "$@" ;;
   metrics) cmd_metrics "$@" ;;
   _metrics-sample) cmd__metrics_sample "$@" ;;
   _metrics-collect) cmd__metrics_collect "$@" ;;

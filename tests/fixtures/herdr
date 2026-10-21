@@ -17,6 +17,7 @@ error() {
 if [ -f "$stub/fail" ] && [ "$(cat "$stub/fail")" = "$1 $2" ]; then exit 1; fi
 if [ "$1 $2" != 'workspace create' ]; then
   id=${3%%:*}; dir="$stub/$id"
+  if [ "$1 $2" = 'pane process-info' ]; then id=${4%%:*}; dir="$stub/$id"; fi
   if [ ! -f "$dir/workspace" ]; then
     if [ "$1" = agent ]; then error agent_not_found "agent target $3 not found"
     else error "${1}_not_found" "$1 $3 not found"; fi
@@ -101,6 +102,11 @@ case "$1 $2" in
         source:"recent_unwrapped",tab_id:$tab,text:$text,truncated:false,workspace_id:$workspace},revision:0,type:"output_matched"}}' ;;
   'pane run')
     test "$3" = "$id:p1"; test "$#" = 4; test -f "$dir/ready"
+    # Hold a recovery after the launcher is requested but before it starts.
+    if [ -f "$stub/recovery-hold" ]; then
+      touch "$stub/recovery-entered"
+      while [ -f "$stub/recovery-hold" ]; do sleep 0.05; done
+    fi
     # Run only the configured fake agent, directly; no PTY/tmux or real agents.
     rm -f "$dir/exit"
     cwd=$(jq -r .result.root_pane.cwd "$dir/workspace")
@@ -193,6 +199,12 @@ case "$1 $2" in
       printf '%s\n' "$$" > "$stub/wait-$$.pid"
       trap 'rm -f "$stub/wait-$$.pid"' EXIT
       trap 'exit 0' TERM INT
+      # Let the exit test hold a live grace subscription until its agent has
+      # finished. Completion work must not race a one-second wall-clock timer.
+      if [[ "$untils" = *' idle '* ]] && [ -f "$stub/hold-question-grace" ]; then
+        touch "$stub/question-grace-entered"
+        while [ -f "$stub/hold-question-grace" ]; do sleep 0.05; done
+      fi
       started=$SECONDS
       while :; do
         status=idle; [ ! -f "$dir/status" ] || status=$(cat "$dir/status")
@@ -230,5 +242,12 @@ case "$1 $2" in
     agent_reply agent_info ;;
   'pane get')
     pane_json | jq -c '{id:"cli:pane:get",result:{pane:.,type:"pane_info"}}' ;;
+  'pane process-info')
+    test "$3" = --pane
+    if [ -f "$dir/process-info" ]; then cat "$dir/process-info"
+    else
+      jq -cn --arg pane "$id:p1" '{result:{type:"pane_process_info",process_info:{pane_id:$pane,
+        shell_pid:123,foreground_process_group_id:123,foreground_processes:[{pid:123,name:"bash"}]}}}'
+    fi ;;
   *) printf 'Unexpected herdr call\n' >&2; exit 1 ;;
 esac

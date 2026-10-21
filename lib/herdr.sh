@@ -21,7 +21,7 @@ herdr_start() {
   meta_set --arg pane "$pane" '.herdr_pane=$pane'
   # Match a prompt marker in the fresh pane without depending on line endings
   # or right-prompt decorations. Verified against herdr 0.9.1's Rust matcher.
-  herdr_cmd pane wait-output "$pane" --regex '[$#%>❯➜›]' --source recent-unwrapped --timeout "$((DV_START_WAIT * 1000))" >/dev/null || return 1
+  herdr_cmd pane wait-output "$pane" --regex '([$#%>]|❯|➜|›)' --source recent-unwrapped --timeout "$((DV_START_WAIT * 1000))" >/dev/null || return 1
   # agent start uses canonical executables; pane run preserves configured binaries,
   # DV_* environment and the _agent exit/done wrapper in the pane's own foreground.
   # This command is silent on success; its exit status is the acknowledgement.
@@ -60,6 +60,17 @@ herdr_info() {
   else
     herdr_cmd pane get "$1" | jq -ec '.result.pane | select(type=="object")'
   fi
+}
+herdr_shell_only() {
+  local reply
+  reply=$(herdr_cmd pane process-info --pane "$1" 2>/dev/null) || return 1
+  printf '%s\n' "$reply" | jq -e --arg pane "$1" '
+    .result.process_info | select(.pane_id==$pane) |
+    .shell_pid as $shell |
+    ($shell|type)=="number" and $shell>0 and .foreground_process_group_id==$shell and
+    (.foreground_processes|type)=="array" and (.foreground_processes|length)>0 and
+    all(.foreground_processes[]; .pid==$shell and
+      (.name|test("^(-|.*/)?(bash|zsh|sh|dash|fish|ksh|tcsh|csh)$")))' >/dev/null 2>&1
 }
 # Run the CLI itself as the child so a signal interrupts wait immediately and
 # cleanup can reap the socket subscriber (no orphaned shell/function child).
