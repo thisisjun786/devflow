@@ -133,3 +133,5 @@ session_enter() {
 }
 # shellcheck source=lib/metrics.sh
 source "$DV_ROOT/lib/metrics.sh"
+# shellcheck source=lib/disk.sh
+source "$DV_ROOT/lib/disk.sh"

@@ -37,7 +37,7 @@ bid_cores() {
   printf '%s\n' "$cores"
 }
 bid_resources() {
-  local cores load memory page
+  local cores load memory page cache cache_free=null
   cores=$(bid_cores)
   if [ -r /proc/loadavg ]; then
     load=$(awk '{print $2}' /proc/loadavg)
@@ -47,8 +47,12 @@ bid_resources() {
     page=$(sysctl -n hw.pagesize)
     memory=$(vm_stat | awk -v page="$page" '/Pages (free|inactive|speculative):/ {gsub("\\.", "", $NF); pages+=$NF} END {printf "%d", pages*page/1048576}')
   fi
+  cache=$(disk_cache_path) || cache=''
+  [ -z "$cache" ] || cache_free=$(disk_available_gb "$cache" || echo null)
   jq -cn --argjson cores "$cores" --argjson load "${load:-0}" --argjson memory "${memory:-0}" \
-    '{cores:$cores,load5:$load,memory_available_mb:$memory}'
+    --argjson disk "$(disk_available_gb || echo null)" --arg cache "$cache" --argjson cache_free "$cache_free" \
+    '{cores:$cores,load5:$load,memory_available_mb:$memory,disk_available_gb:$disk,
+      go_cache_path:(if $cache=="" then null else $cache end),cache_disk_available_gb:$cache_free}'
 }
 bid_remote_repo() {
   [[ "$1" =~ ^https?://[^/]+/.+ ]] || [[ "$1" =~ ^ssh://.+ ]] || [[ "$1" =~ ^git@[^:]+:.+ ]]
@@ -101,6 +105,7 @@ bid_agent() {
   bid_limit "$DV_BID_TIMEOUT" "$bin" "$@" >/dev/null 2>&1
 }
 bid_settings() {
+  disk_settings
   [[ "$DV_BID_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_BID_TIMEOUT must be a positive integer'
   [[ "$DV_AWARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_AWARD_TIMEOUT must be a positive integer'
   [[ "$DV_MIN_MEMORY_MB" =~ ^[0-9]+$ ]] || fail 'DV_MIN_MEMORY_MB must be a nonnegative integer'
@@ -135,11 +140,13 @@ cmd_bid() {
   fi
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
-    --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" \
+    --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" --argjson min_disk "$DV_MIN_DISK_GB" \
     '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready,capacity:$capacity,active:$active,free_slots:([0,($capacity-$active)]|max)} |
-    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" else "" end) |
+    ([.disk_available_gb,.cache_disk_available_gb]|map(select(.!=null))|min) as $disk |
+    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
     .status=(if .reason=="" then "submitted" else "rejected" end) |
-    .score=(100*.free_slots/.capacity - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end))' |
+    .score=(100*.free_slots/.capacity - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
+      (if $min_disk>0 and $disk!=null then [0,20*(2*$min_disk-$disk)/$min_disk]|max else 0 end))' |
     if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason]|@tsv'; fi
 }
 cmd_submit() {
