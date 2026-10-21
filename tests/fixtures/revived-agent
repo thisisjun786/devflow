@@ -12,6 +12,11 @@ fi
 jq -n --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" > "$state/revived-input.json"
 printf 'started\n' >> "$state/revived-runs"
 trap 'rm -f "$CASE_DIR/herdr/w-$DV_ISSUE/detected"' EXIT
+if [ "${DV_REVIVE_TEST_HOLD:-0}" = 1 ]; then
+  printf "%s\n" "$$" > "$state/held.pid"
+  while [ ! -f "$state/revive-release" ]; do sleep 0.05; done
+fi
 if [ "${DV_REVIVE_TEST_FAIL:-0}" = 1 ]; then exit 1; fi
 if [ "${DV_REVIVE_TEST_NO_DONE:-0}" = 1 ]; then exit 0; fi
+if [ "${DV_REVIVE_TEST_REPORT:-0}" = 1 ]; then printf 'Corrected report\n' > "$state/report.md"; fi
 dv 'done' "$DV_ISSUE"
