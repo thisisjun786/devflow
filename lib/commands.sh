@@ -75,27 +75,39 @@ cmd_start() {
     '{issue:$issue,repo:$repo,worktree:$worktree,branch:$branch,base:$base,start_head:$start_head,agent:$agent,mode:$mode,slug:$slug,host:$host,started:$started,backend:$backend,status:"running"} +
     (if $token=="" then {} else {award_token:$token} end)' > "$S/meta"
   : > "$S/log"
+  if ! launch_agent; then
+    meta_set '.status="start-failed"'
+    fail "$BACKEND startup failed; state retained for dv clean (no backend fallback)"
+  fi
+  printf '%s %s %s\n' "$ISSUE" "$BRANCH" "$WT"
+}
+launch_agent() {
   # Terminal server environments can predate this shell. Pass exported DV_* values explicitly.
   local env_args=() key launcher
   while IFS= read -r key; do
     case "$key" in DV_*|CODEX_HOME|CLAUDE_CONFIG_DIR|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
   done < <(compgen -e)
-  launcher=$(shell_join env "PATH=$PATH" "${env_args[@]}" "$DV_ROOT/bin/dv" _agent "$ISSUE")
+  launcher=$(shell_join env "PATH=$PATH" "${env_args[@]}" "$DV_ROOT/bin/dv" _agent "$ISSUE" "$@")
   if [ "$BACKEND" = herdr ]; then
-    if ! herdr_start "$launcher"; then
-      meta_set '.status="start-failed"'
-      fail 'herdr startup failed; state retained for dv clean (no tmux fallback)'
-    fi
+    if [ "${1:-}" = --revived ] && [ "${REVIVE_PANE_EXISTS:-0}" = 1 ]; then
+      herdr_cmd pane run "$HERDR_PANE" "$launcher"
+    else herdr_start "$launcher"; fi
+  elif [ "${1:-}" = --revived ] && tmux_dv has-session -t "=$SESSION" 2>/dev/null; then
+    # A retained dead pane needs no kill/force option.
+    tmux_dv respawn-pane -t "$SESSION:0.0" -c "$WT" "$launcher"
   else tmux_dv new-session -d -s "$SESSION" -c "$WT" "$launcher"; fi
-  printf '%s %s %s\n' "$ISSUE" "$BRANCH" "$WT"
 }
 run_agent() {
   load_issue "$1"; require_worktree; cd "$WT" || exit
   export DV_ISSUE="$ISSUE"
-  local agent mode override instruction rc=0 sentinel='' helper=''
+  local agent mode override instruction rc=0 sentinel='' helper='' revived=0
+  [ "${2:-}" != --revived ] || revived=1
+  printf '%s\n' "$$" > "$S/agent.pid"
   agent=$(jq -r .agent "$S/meta"); mode=$(jq -r .mode "$S/meta")
   override="DV_AGENT_CMD_$agent"; override=${!override}
   instruction="Read $S/brief.md and complete everything it asks. Finish with dv done $ISSUE."
+  if [ "$revived" = 1 ]; then instruction=$(cat "$S/revive/prompt.md"); fi
+  export DV_AGENT_INSTRUCTION="$instruction"
   # Native herdr snapshots are collected at done/clean; tmux keeps its TTY log.
   if [ "$BACKEND" = tmux ]; then
     tmux_dv pipe-pane -o -t "$SESSION:0.0" "cat >> $(shell_join "$S/log")"
@@ -158,7 +170,11 @@ run_agent() {
   stop_question_sentinel
   trap - EXIT INT TERM
   printf '%s\n' "$rc" > "$S/agent.exit"
-  if [ "$mode" = exec ]; then
+  if [ "$revived" = 1 ]; then
+    if [ "$rc" -ne 0 ]; then revive_blocked "revived agent exited $rc"
+    elif [ "$mode" = exec ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
+    elif [ ! -f "$S/revive/done" ]; then revive_blocked 'revived goal agent exited without dv done'; fi
+  elif [ "$mode" = exec ]; then
     if [ "$rc" -eq 0 ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
     else "$DV_ROOT/bin/dv" kick failed "$ISSUE" "agent exited $rc"; fi
   # Startup failures already emitted failed through agent_start_failed.
@@ -178,7 +194,8 @@ agent_start_failed() {
   local reason=$1 screen=$2
   printf '%s\n%s\n' "$screen" "$reason" >> "$S/log"
   meta_set --arg reason "$reason" 'if .status=="running" then .status="start-failed" | .failure_reason=$reason else . end'
-  "$DV_ROOT/bin/dv" kick failed "$ISSUE" "$reason"
+  if [ "${revived:-0}" = 1 ]; then revive_blocked "$reason"
+  else "$DV_ROOT/bin/dv" kick failed "$ISSUE" "$reason"; fi
 }
 codex_start_failed() { agent_start_failed "$@"; }
 codex_screen() {
@@ -300,6 +317,7 @@ cmd_done() {
   jq -n --arg head "$head" --argjson files "$files" --arg report "$S/report.md" --arg note "$note" \
     --argjson done_at "$(now)" '{head:$head,files:$files,report:$report,note:$note,done_at:$done_at}' > "$tmp"
   mv "$tmp" "$S/done.json"
+  [ ! -d "$S/revive" ] || touch "$S/revive/done"
   meta_set --arg head "$head" --argjson done_at "$(now)" '.head=$head | .done_at=$done_at | if .status=="running" or .status=="start-failed" then .status="done" | del(.failure_reason) else . end'
   cmd_kick 'done' "$ISSUE" "$note"
 }
@@ -371,7 +389,77 @@ cmd_status() {
     done
   } | if [ "$json" = 1 ]; then jq -s .; else cat; fi
 }
-cmd_send() { [ "$#" -eq 2 ] || fail 'usage: dv send ISSUE text'; load_issue "$1"; send_text "$2"; }
+agent_gone() {
+  local reply pane pid
+  REVIVE_PANE_EXISTS=0
+  if [ "$BACKEND" = tmux ]; then
+    if pane=$(tmux_dv list-panes -t "$SESSION:0" -F '#{pane_index} #{pane_dead}' 2>/dev/null); then
+      printf '%s\n' "$pane" | grep -qx '0 1'
+    else
+      # A session lookup also guards against a missing window in a live session.
+      ! tmux_dv has-session -t "=$SESSION" 2>/dev/null
+    fi
+    return
+  fi
+  # Absence must be confirmed by a structured server reply, not a timeout or
+  # transport error. An undetected custom command can still be running.
+  if reply=$(herdr_cmd agent get "$HERDR_PANE" 2>&1); then return 1; fi
+  printf '%s\n' "$reply" | jq -e '.error.code=="agent_not_found"' >/dev/null 2>&1 || return 1
+  if pane=$(herdr_cmd pane get "$HERDR_PANE" 2>&1); then
+    printf '%s\n' "$pane" | jq -e '.result.pane.pane_id!=null' >/dev/null 2>&1 || return 1
+    REVIVE_PANE_EXISTS=1
+    if [ -f "$S/agent.pid" ]; then
+      pid=$(cat "$S/agent.pid")
+      [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+      ! kill -0 "$pid" 2>/dev/null
+    else [ -f "$S/agent.exit" ]; fi
+  else
+    printf '%s\n' "$pane" | jq -e '.error.code=="pane_not_found"' >/dev/null 2>&1
+  fi
+}
+revive_blocked() {
+  # Both the startup helper and the wrapper can observe the same failure.
+  if mkdir "$S/revive/blocked" 2>/dev/null; then
+    cmd_kick blocked "$ISSUE" "$1; automatic revival already attempted"
+  fi
+  printf 'dv: %s; automatic revival already attempted\n' "$1" >&2
+}
+revive_agent() {
+  require_worktree
+  case "$(jq -r .status "$S/meta")" in landed|cancelled) fail 'cannot revive a finished issue' ;; esac
+  if [ -d "$S/revive" ]; then
+    revive_blocked 'agent unavailable after revival'
+    return 1
+  fi
+  mkdir "$S/revive" || return 1
+  # Keep the previous completion and review-fix.sent intact. The new wrapper
+  # checks its own completion marker, including report-only fixes at the same SHA.
+  local file
+  for file in agent.exit agent.pid done.json; do
+    [ ! -f "$S/$file" ] || cp "$S/$file" "$S/revive/previous-$file"
+  done
+  {
+    printf '%s\n\n' "$1"
+    printf 'Continue in the existing worktree %s on branch %s.\n' "$WT" "$BRANCH"
+    printf 'Read %s/brief.md and, if present, %s/report.md for context.\n' "$S" "$S"
+    printf 'This continues the same request; preserve %s/review-fix.sent and the one-fix-per-PR limit.\n' "$S"
+    printf 'Do not create a new branch or force push. Finish with dv done %s.\n' "$ISSUE"
+  } > "$S/revive/prompt.md"
+  rm -f "$S/agent.exit" "$S/agent.pid"
+  if ! launch_agent --revived; then
+    revive_blocked 'could not start revived agent'
+    return 1
+  fi
+  printf 'dv: revived %s in %s\n' "$ISSUE" "$WT"
+}
+cmd_send() {
+  [ "$#" -eq 2 ] || fail 'usage: dv send ISSUE text'
+  load_issue "$1"; issue_lock; require_worktree
+  # tmux can accept paste/Enter even when remain-on-exit retained a dead pane.
+  if [ "$BACKEND" = tmux ] && agent_gone; then revive_agent "$2"; return; fi
+  if send_text "$2"; then return 0; fi
+  if agent_gone; then revive_agent "$2"; else return 1; fi
+}
 cmd_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean ISSUE'; load_issue "$1"; issue_lock
   clean_worktree

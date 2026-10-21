@@ -104,9 +104,9 @@ event_json() {
 send_text() {
   local text=$1 buffer="dv-$ISSUE-$$"
   if [ "$BACKEND" = herdr ]; then herdr_send_text "$text"; return; fi
-  tmux_dv has-session -t "=$SESSION" 2>/dev/null || fail 'agent tmux is not alive'
-  printf '%s' "$text" | tmux_dv load-buffer -b "$buffer" -
-  tmux_dv paste-buffer -d -p -b "$buffer" -t "$SESSION:0.0"
+  tmux_dv has-session -t "=$SESSION" 2>/dev/null || { printf 'dv: agent tmux is not alive\n' >&2; return 1; }
+  printf '%s' "$text" | tmux_dv load-buffer -b "$buffer" - || return 1
+  tmux_dv paste-buffer -d -p -b "$buffer" -t "$SESSION:0.0" || return 1
   sleep "$DV_SEND_DELAY"
   tmux_dv send-keys -t "$SESSION:0.0" Enter
 }
