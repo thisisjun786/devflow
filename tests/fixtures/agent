@@ -5,4 +5,9 @@ printf 'change for %s\n' "$DV_ISSUE" > "$DV_ISSUE.txt"
 git add "$DV_ISSUE.txt"
 git commit -qm "$DV_ISSUE: fake change"
 printf 'Fake agent report: red/green.\n' > "$DV_STATE/$DV_ISSUE/report.md"
+if git config --get remote.origin.url | grep -q github.com; then
+  dv pr "$DV_ISSUE"
+  dv pr-wait "$DV_ISSUE" --foreground
+  dv pr-wait "$DV_ISSUE" --foreground --review-handled
+fi
 dv 'done' "$DV_ISSUE"

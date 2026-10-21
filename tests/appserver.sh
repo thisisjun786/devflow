@@ -231,13 +231,22 @@ case_appserver_pipeline() {
   appserver_setup remote
   wait_file "$CASE_DIR/server/work.done"
   jq -e '.files==1' "$DV_STATE/AS-1/done.json"
-  dv status AS-1 --json | jq -e '.[0] | .status=="done" and .agent_status=="goal-complete" and .backend=="appserver" and (.tmux|not)'
+  dv status AS-1 --json | jq -e '.[0] | .status=="ready" and .agent_status=="goal-complete" and .backend=="appserver" and (.tmux|not)'
   printf 'Exercise synthetic App Server delivery.\n' > "$DV_STATE/AS-1/pr.md"
   dv pr AS-1
-  wait_pr_ready AS-1
+  dv pr-wait AS-1 --foreground --review-handled > "$CASE_DIR/pr-result"
+  dv 'done' AS-1
   jq -e '.status=="ready"' "$DV_STATE/AS-1/meta"
   cmp "$DV_STATE/AS-1/pr.md" "$GH_STUB_DIR/live-body"
   test -f "$CASE_DIR/server/socket-used"
+  test ! -f "$CASE_DIR/herdr/calls"
+}
+case_appserver_pr_pending() {
+  appserver_setup remote
+  if dv 'done' AS-1; then return 1; fi
+  test ! -f "$DV_STATE/AS-1/done.json"
+  test "$(cat "$CASE_DIR/server/goal")" = active
+  jq -se '[.[]|select(.method=="thread/goal/set" and .params.status=="complete")]|length==0' "$CASE_DIR/server/requests"
 }
 case_appserver_preserve_config() {
   mkdir -p "$HOME/.codex"
