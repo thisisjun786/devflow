@@ -21,6 +21,20 @@ STUB
     printf 'Test public PR body.\n' > "$state/pr.md"
   fi
   printf '[]\n' > "$GH_STUB_DIR/checks"
+  if [ "$mode" = delayed ] && command -v setsid >/dev/null; then
+    # Model a descheduled launcher before setsid can detach it. Without a
+    # separate launch group, caller cleanup kills it in this startup window.
+    DV_TEST_REAL_SETSID=$(command -v setsid)
+    export DV_TEST_REAL_SETSID
+    mkdir "$CASE_DIR/slow-bin"
+    cat > "$CASE_DIR/slow-bin/setsid" <<'STUB'
+#!/usr/bin/env bash
+sleep 0.3
+exec "$DV_TEST_REAL_SETSID" "$@"
+STUB
+    chmod +x "$CASE_DIR/slow-bin/setsid"
+    export PATH="$CASE_DIR/slow-bin:$PATH"
+  fi
 
   # Job control isolates only this caller's group, including on macOS. Kill it
   # immediately after dv pr returns, before waiting for any waiter startup.
@@ -66,3 +80,4 @@ STUB
   printf 'ready for current head; one pr-ready event; lock released\n'
 }
 case_pr_wait_caller_fallback() { case_pr_wait_caller_killed fallback; }
+case_pr_wait_caller_delayed() { case_pr_wait_caller_killed delayed; }
