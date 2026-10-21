@@ -72,12 +72,12 @@ wait_done() {
 needs_tmux() { command -v tmux >/dev/null || exit 77; }
 case_start_done() {
   needs_tmux; repo remote remote; start T-1; wait_done T-1
-  jq -e '.status=="done" and .agent=="codex" and .host=="test-host"' "$DV_STATE/T-1/meta"
+  jq -e '.status=="ready" and .agent=="codex" and .host=="test-host"' "$DV_STATE/T-1/meta"
   jq -e '.files==1 and (.head|length)==40 and (.report|endswith("report.md"))' "$DV_STATE/T-1/done.json"
   jq -e '.kind=="done" and .issue=="T-1"' "$DV_HOME/kick.q"
   test -s "$DV_STATE/T-1/brief.md"
   dv status --json | jq -e 'length==1 and .[0].issue=="T-1"'
-  dv status T-1 | grep 'done'
+  dv status T-1 | grep 'ready'
   head -c 200000 /dev/zero | tr '\0' 'x' >> "$DV_STATE/T-1/log"; printf '\n' >> "$DV_STATE/T-1/log"
   dv status T-1 >/dev/null && dv status --json | jq -e 'length==1'
   if start T-1; then return 1; fi
@@ -432,20 +432,16 @@ case_pr_ready() {
   head=$(git -C "$(jq -r .worktree "$DV_STATE/P-1/meta")" rev-parse HEAD)
   jq -n --arg head "$head" '[{author:{login:"devin-ai-integration[bot]"},commit:{oid:$head}},{author:{login:"chatgpt-codex-connector[bot]"},commit:{oid:$head}}]' > "$GH_STUB_DIR/reviews"
   dv pr P-1
-  wait_pr_ready P-1
+  dv pr-wait P-1 --foreground > /dev/null
   jq -e '.green and .bot_review and (.review_timed_out|not)' "$DV_STATE/P-1/pr-ready.json"
-  for _ in {1..100}; do
-    jq -se 'any(.[]; .kind=="pr-ready")' "$DV_HOME/kick.q" >/dev/null && break
-    sleep 0.1
-  done
-  jq -se 'any(.[]; .kind=="pr-ready")' "$DV_HOME/kick.q"
+  jq -se 'all(.[]; .kind!="pr-ready")' "$DV_HOME/kick.q"
   dv 'done' P-1
   jq -e '.status=="ready"' "$DV_STATE/P-1/meta"
   test "$(grep -c 'pr create' "$GH_STUB_DIR/calls")" = 1
   jq '.[0:1]' "$GH_STUB_DIR/reviews" > "$GH_STUB_DIR/reviews.one"
   mv "$GH_STUB_DIR/reviews.one" "$GH_STUB_DIR/reviews"
   dv pr-wait P-1
-  jq -e '(.bot_review|not) and .review_timed_out' "$DV_STATE/P-1/pr-ready.json"
+  jq -e '(.bot_review|not) and .review_handled and (.review_timed_out|not)' "$DV_STATE/P-1/pr-ready.json"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"}]' > "$GH_STUB_DIR/checks"
   if dv land P-1; then return 1; fi
 }
@@ -1001,6 +997,7 @@ polish_setup() {
   repo polish remote
   git -C "$REPO" worktree add -qb codex/polish "$DV_WORK/polish"
   mkdir -p "$DV_STATE/POL-1"
+  printf '%s\n' "$$" > "$DV_STATE/POL-1/agent.pid"
   jq -n --arg repo "$REPO" --arg wt "$DV_WORK/polish" '{repo:$repo,worktree:$wt,branch:"codex/polish",base:"main",slug:"polish",status:"running"}' > "$DV_STATE/POL-1/meta"
   cat > "$DV_STATE/POL-1/pr-body.md" <<'BODY'
 # Summary
@@ -1629,6 +1626,8 @@ source "$ROOT/tests/codex-exec.sh"
 source "$ROOT/tests/codex-exec-review.sh"
 # shellcheck source=tests/portability.sh
 source "$ROOT/tests/portability.sh"
+# shellcheck source=tests/pr-worker.sh
+source "$ROOT/tests/pr-worker.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
@@ -1639,6 +1638,10 @@ for name in stall_working_banner_detection stall_working_banner_resume stall_lat
     if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
     else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
   fi
+done
+for name in pr_worker_foreground pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_no_rereview pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
 for name in exec_cleanup_success exec_cleanup_failure exec_cleanup_signal exec_exhausted_rebids exec_land_running exec_land_github_running exec_land_failed; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
