@@ -6,6 +6,7 @@ while [ -L "$DV_ENTRY" ]; do
   DV_ENTRY=$(readlink "$DV_ENTRY")
   [[ "$DV_ENTRY" = /* ]] || DV_ENTRY="$entry_dir/$DV_ENTRY"
 done
+watch_commit=$(git -C "$(dirname "$DV_ENTRY")/.." rev-parse HEAD 2>/dev/null || true)
 # shellcheck source=lib/common.sh
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 # shellcheck source=lib/bidding.sh
@@ -18,6 +19,11 @@ source "$DV_ROOT/lib/stall.sh"
 source "$DV_ROOT/lib/stack.sh"
 # shellcheck source=lib/qa.sh
 source "$DV_ROOT/lib/qa.sh"
+# shellcheck source=lib/self-update.sh
+source "$DV_ROOT/lib/self-update.sh"
+watch_auto_update=$DV_AUTO_UPDATE
+# Child CLI calls must not pull while their parent is dispatching an event.
+export DV_AUTO_UPDATE=0
 need jq
 disk_settings
 [[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
@@ -38,6 +44,8 @@ take_lock() {
   if mkdir "$DV_HOME/.watch-lock" 2>/dev/null; then return 0; fi
   local holder=''
   [ -f "$DV_HOME/watch.pid" ] && holder=$(tr -dc '0-9' <"$DV_HOME/watch.pid")
+  # exec retains the PID and lock; other processes must still refuse it.
+  if [ "${DV_WATCH_REEXEC_PID:-}" = "$$" ] && [ "$holder" = "$$" ]; then return 0; fi
   if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
     fail "watcher lock is held by live pid $holder; stop it before starting another"
   fi
@@ -47,13 +55,19 @@ take_lock() {
 }
 take_lock
 printf '%s\n' "$$" > "$DV_HOME/watch.pid"
-pids=''; active=0
+pids=${DV_WATCH_REEXEC_PIDS:-}; active=0
+unset DV_WATCH_REEXEC_PID DV_WATCH_REEXEC_PIDS
+self_update_watch_version "$watch_commit"
 finish() {
   local pid
   metrics_stop
   disk_stop
   for pid in $pull_pids; do if is_pull "$pid"; then kill "$pid" 2>/dev/null || true; fi; done
-  for pid in $pids; do wait "$pid" || true; done
+  for pid in $pids; do
+    # After exec, bash no longer has the old child job table.
+    while qa_alive "$pid"; do sleep 0.1; done
+    wait "$pid" 2>/dev/null || true
+  done
   reap
   rm -f "$DV_HOME/watch.pid"
   rmdir "$DV_HOME/.watch-lock"
@@ -63,7 +77,9 @@ trap 'exit 0' INT TERM
 cursor=0
 [ ! -f "$DV_HOME/cursor" ] || cursor=$(cat "$DV_HOME/cursor")
 touch "$DV_HOME/kick.q" "$DV_HOME/seen"
-last_scan=0
+last_scan=${DV_WATCH_LAST_SCAN:-0}
+unset DV_WATCH_LAST_SCAN
+update_requested=0
 last_appserver_scan=0
 last_metrics=0
 last_disk=0
@@ -126,7 +142,7 @@ reap() {
   local live='' pid record slot event_id rc
   active=0
   for pid in $pids; do
-    if kill -0 "$pid" 2>/dev/null; then live="$live $pid"; active=$((active + 1)); else wait "$pid" || true; fi
+    if qa_alive "$pid"; then live="$live $pid"; active=$((active + 1)); else wait "$pid" 2>/dev/null || true; fi
   done
   pids=$live
   # A manager child can outlive a killed watcher. Count that reservation too;
@@ -253,7 +269,9 @@ while [ ! -e "$DV_HOME/stop" ]; do
     metrics_start
     last_metrics=$(now)
   fi
-  if [ $(( $(now) - last_scan )) -ge "$stall_scan_interval" ]; then reconcile; last_scan=$(now); fi
+  if [ $(( $(now) - last_scan )) -ge "$stall_scan_interval" ]; then
+    reconcile; last_scan=$(now); update_requested=1
+  fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   available=$(wc -l < "$DV_HOME/kick.q")
   while [ "$cursor" -lt "$available" ] && [ ! -e "$DV_HOME/stop" ]; do
@@ -287,6 +305,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
       if [ "$routed" = 0 ]; then
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
+        if self_update_landed "$line"; then update_requested=1; fi
         continue
       elif [ "$routed" != 1 ]; then
         break # Persistence failed: retain the cursor so the event can retry.
@@ -297,9 +316,21 @@ while [ ! -e "$DV_HOME/stop" ]; do
       printf '%s\n' "$line" > "$slot.json.tmp"; mv "$slot.json.tmp" "$slot.json"
     fi
     cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
+    if self_update_landed "$line"; then update_requested=1; fi
   done
   retry_pending
   manager_dispatch
   qa_dispatch
+  # All events have durable cursor/pending state. Never run EXIT cleanup here:
+  # workers, manager turns, QA and pull streams keep their existing handles.
+  if [ ! -e "$DV_HOME/stop" ]; then
+    if [ "$update_requested" = 1 ]; then DV_AUTO_UPDATE=$watch_auto_update self_update 0; update_requested=0; fi
+    if [ "$(self_update_head)" != "$watch_commit" ]; then
+      metrics_stop
+      export DV_WATCH_REEXEC_PID=$$ DV_WATCH_REEXEC_PIDS=$pids DV_WATCH_LAST_SCAN=$last_scan
+      export DV_AUTO_UPDATE=$watch_auto_update
+      exec "$DV_ROOT/bin/dv-watch" "$@"
+    fi
+  fi
   sleep "$DV_WATCH_INTERVAL"
 done

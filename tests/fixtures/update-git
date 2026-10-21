@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${3:-}" = fetch ]; then
+  printf 'fetch\n' >> "$CASE_DIR/fetches"
+  if [ "${UPDATE_FETCH_HANG:-0}" = 1 ]; then sleep 60; else sleep 0.2; fi
+fi
+exec "$UPDATE_REAL_GIT" "$@"
