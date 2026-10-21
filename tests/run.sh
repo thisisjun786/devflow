@@ -1956,6 +1956,8 @@ source "$ROOT/tests/self-update.sh"
 source "$ROOT/tests/disk.sh"
 # shellcheck source=tests/stack.sh
 source "$ROOT/tests/stack.sh"
+# shellcheck source=tests/watcher-stuck.sh
+source "$ROOT/tests/watcher-stuck.sh"
 # shellcheck source=tests/task.sh
 source "$ROOT/tests/task.sh"
 main() {
@@ -2032,6 +2034,10 @@ for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_serve
     if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
+done
+for name in manager_reexec manager_real_conflict manager_real_pending_conflict manager_conflict_restart manager_reserved_collision manager_note_busy watch_stuck_route watch_stuck_bid watch_stuck_stack watch_stuck_empty watch_stuck_worker manager_collision manager_fallback_collision manager_hash_collision manager_legacy_replay manager_note manager_pool_independent watch_capacity_eight watch_stuck; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
+  else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
 done
 for name in manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
