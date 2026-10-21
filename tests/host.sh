@@ -146,14 +146,10 @@ case_host_path_preserve() {
   test -L "$HOME/.profile"
 }
 case_host_real_shells() {
-  local system expected
-  system=$(uname -s)
   host_setup
   export DV_HOST_SHELL=/bin/bash
-  # GNU bash enables SSH_CLIENT detection; Apple's bash 3.2 build does not.
-  # A local stdin pipe is not a real sshd socket, so retain that limitation.
-  expected="$HOME/system:/usr/bin:/bin"
-  if [ "$system" = Darwin ]; then expected=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; fi
+  # GNU and Apple bash builds enable SSH_SOURCE_BASHRC: SSH_CLIENT makes a
+  # non-interactive shell read .bashrc, which can source the user's profile.
   printf '. "$HOME/.profile"\n' > "$HOME/.bashrc"
   export DV_ENTRY="$ROOT/bin/dv"
   # shellcheck source=lib/common.sh
@@ -161,7 +157,7 @@ case_host_real_shells() {
   # shellcheck source=lib/host.sh
   source "$ROOT/lib/host.sh"
   path=$(host_shell_path ssh)
-  test "$path" = "$expected"
+  test "$path" = "$HOME/system:/usr/bin:/bin"
   if command -v zsh >/dev/null; then
     # A login startup file runs after macOS /etc/zprofile's path_helper.
     printf '. "$HOME/.zshenv"\n' > "$HOME/.zprofile"
