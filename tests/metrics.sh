@@ -205,3 +205,19 @@ case_metrics_pull_time() {
   kill "$puller"; wait "$puller" || true
   jq -e '.time==123 and .id=="timed-event"' "$DV_HOME/kick.q"
 }
+case_metrics_queue_corruption() {
+  metrics_fixture
+  printf 'not-json\n{"incomplete":\n' > "$DV_HOME/kick.q"
+  dv-kick question P-1 valid test-host h preserved '' 100
+  cmd__metrics_sample | jq -e '.[0].queue_event.id=="preserved"'
+}
+case_metrics_concurrent() {
+  metrics_fixture
+  local n pid jobs='' event
+  for n in 1 2 3 4 5 6 7 8; do
+    event=$(event_json question P-1 '' test-host h "event-$n")
+    (metrics_handled "$event"; metrics_handled "$event") & jobs="$jobs $!"
+  done
+  for pid in $jobs; do wait "$pid"; done
+  cmd_metrics --json | jq -e '.[0].handled_count==8'
+}

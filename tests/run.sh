@@ -1619,7 +1619,7 @@ source "$ROOT/tests/metrics.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time; do
+for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
   else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
 done

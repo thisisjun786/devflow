@@ -9,15 +9,15 @@ metrics_store() (
   local dir=$1 record=$2 key tmp
   key=$(metrics_key "$(printf '%s\n' "$record" | jq -er .id)") || return 1
   mkdir -p "$dir/records" || return 1
-  owned_lock "$dir/.lock" "$$" || return 1
-  trap 'owned_unlock "$dir/.lock" "$$"' EXIT
-  if [ -f "$dir/records/$key.json" ]; then
-    # First success wins on replay. Refuse a checksum collision.
-    jq -e --argjson record "$record" '.id==$record.id' "$dir/records/$key.json" >/dev/null
-    return
-  fi
   tmp=$(mktemp "$dir/.record.XXXXXX") || return 1
-  printf '%s\n' "$record" > "$tmp" && mv "$tmp" "$dir/records/$key.json"
+  trap 'rm -f "$tmp"' EXIT
+  printf '%s\n' "$record" > "$tmp" || return 1
+  # Publish immutable records with an atomic no-replace link. This also works
+  # for worker subshells sharing the watcher's $$, without stale PID locks.
+  if ln "$tmp" "$dir/records/$key.json" 2>/dev/null; then return 0; fi
+  # First success wins on replay. Refuse checksum/identity collisions.
+  jq -e --argjson record "$record" '.id==$record.id and .host==$record.host and .issue==$record.issue' \
+    "$dir/records/$key.json" >/dev/null
 )
 metrics_note() {
   local kind=$1 head=${2:-} at=${3:-$(now)} record
@@ -135,7 +135,7 @@ cmd__metrics_sample() {
 metrics_queue_events() {
   # Alert delivery/handling is observation, not progress. Do not let our own
   # alerts end the episode they describe. Preserve original event timestamps.
-  jq -sc '[.[]|select(.kind!="idle" and (.time|type)=="number")|{host,issue,id,time}] |
+  jq -Rsc '[split("\n")[] | fromjson? | select(type=="object" and .kind!="idle" and (.time|type)=="number")|{host,issue,id,time}] |
     group_by([.host,.issue]) | map(max_by(.time))' "$DV_HOME/kick.q"
 }
 metrics_collect() {
