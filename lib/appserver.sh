@@ -376,6 +376,7 @@ cmd__appserver_run() {
           else appserver_deliver "$id" "$text"; fi ;;
         status) appserver_snapshot; AS_CLASS=accepted; AS_REPLY=$AS_SNAPSHOT ;;
         recover) appserver_recover "$id" ;;
+        stop) appserver_stop_turn "$id" ;;
         finish)
           appserver_rpc thread/goal/get "$(jq -cn --arg thread "$AS_THREAD" '{threadId:$thread}')"
           if [ "$AS_CLASS" = accepted ] && printf '%s\n' "$AS_REPLY" | jq -e '.result.goal!=null and .result.goal.status!="complete"' >/dev/null; then
@@ -557,6 +558,37 @@ appserver_require_idle() {
   server=$(appserver_status "$ISSUE")
   printf '%s\n' "$server" | jq -e '.agent_status=="goal-complete" or .agent_status=="idle" or .agent_status=="gone"' >/dev/null ||
     fail 'App Server thread is active or uncertain; worktree retained'
+}
+# Runs in the job client's scope, separate from appserver_status's connection.
+# shellcheck disable=SC2031
+appserver_stop_turn() {
+  local id=$1 params
+  appserver_rpc thread/read "$(jq -cn --arg thread "$AS_THREAD" '{threadId:$thread,includeTurns:true}')"
+  [ "$AS_CLASS" = accepted ] || return 0
+  if printf '%s\n' "$AS_REPLY" | jq -e '
+    (.result.thread.status.type=="idle" or .result.thread.status.type=="systemError") and
+    all(.result.thread.turns[]?; .status!="inProgress")' >/dev/null; then return 0; fi
+  if ! params=$(printf '%s\n' "$AS_REPLY" | jq -ce --arg thread "$AS_THREAD" '
+    [.result.thread.turns[]? | select(.status=="inProgress") | .id][-1] |
+    select(type=="string" and length>0) | {threadId:$thread,turnId:.}'); then
+    AS_CLASS=refused AS_REPLY='{"error":{"message":"active turn ID is unknown"}}'
+    return 0
+  fi
+  appserver_mutate "$id-interrupt" turn/interrupt "$params"
+  [ "$AS_CLASS" = accepted ] || return 0
+  if ! appserver_wait_idle; then
+    AS_CLASS=refused AS_REPLY='{"error":{"message":"turn interruption is unconfirmed"}}'
+  fi
+}
+appserver_require_stopped() {
+  local server
+  server=$(appserver_status "$ISSUE")
+  # Failed/systemError threads may be terminal even though the ordinary idle
+  # guard refuses them. An active or uncertain turn still needs confirmation.
+  if printf '%s\n' "$server" | jq -e '
+    .agent_status=="gone" or
+    ((.thread.status.type=="idle" or .thread.status.type=="systemError") and .turn_id==null)' >/dev/null; then return 0; fi
+  appserver_request stop >/dev/null || fail 'App Server turn stop is unconfirmed; worktree retained'
 }
 cmd__appserver_watch() (
   local path

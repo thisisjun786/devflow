@@ -653,7 +653,8 @@ cmd_clean() {
 clean_worktree() {
   if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; fi
   if [ "$BACKEND" = appserver ]; then
-    [ "${1:-}" = merged-pr ] || appserver_require_idle
+    if [ "${1:-}" = merged-pr ]; then appserver_require_stopped
+    else appserver_require_idle; fi
     if appserver_alive; then kill "$(cat "$S/appserver/client.pid")"; fi
     if [ "${1:-}" = merged-pr ]; then
       local deadline
