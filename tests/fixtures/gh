@@ -3,7 +3,26 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 if [ -f "$GH_STUB_DIR/qa-pr" ]; then
   case "$*" in
-    'api repos/test/repo/commits/'*'/pulls') jq -s . "$GH_STUB_DIR/qa-pr"; exit ;;
+    'api repos/test/repo/commits/'*'/pulls')
+      count=0
+      [ ! -f "$GH_STUB_DIR/qa-pull-count" ] || count=$(cat "$GH_STUB_DIR/qa-pull-count")
+      count=$((count + 1)); printf '%s\n' "$count" > "$GH_STUB_DIR/qa-pull-count"
+      if [ -f "$GH_STUB_DIR/qa-empty-pulls" ] && [ "$count" -le "$(cat "$GH_STUB_DIR/qa-empty-pulls")" ]; then
+        printf '[]\n'
+      else jq -s . "$GH_STUB_DIR/qa-pr"; fi
+      exit ;;
+    'pr view '*closingIssuesReferences*)
+      if [ ! -f "$GH_STUB_DIR/qa-legacy-field" ]; then
+        printf 'Unknown JSON field: "closingIssuesReferences"\n' >&2; exit 1
+      fi
+      jq '{closingIssuesReferences:.data.repository.pullRequest.closingIssuesReferences.nodes}' "$GH_STUB_DIR/qa-graphql"; exit ;;
+    'api repos/test/repo/issues/'*'--jq .milestone // empty')
+      jq -c '.data.repository.pullRequest.closingIssuesReferences.nodes[].milestone // empty' "$GH_STUB_DIR/qa-graphql"; exit ;;
+    'api graphql '*)
+      [ ! -f "$GH_STUB_DIR/qa-graphql-fail" ] || { printf 'GraphQL unavailable\n' >&2; exit 1; }
+      [[ "$*" = *'closingIssuesReferences('* ]] && [[ "$*" = *'milestone { number title }'* ]]
+      [[ "$*" = *'--paginate'* ]] && [[ "$*" = *'pageInfo'* ]]
+      cat "$GH_STUB_DIR/qa-graphql"; exit ;;
     'api --paginate repos/test/repo/issues?state=open&per_page=100') cat "$GH_STUB_DIR/qa-issues"; exit ;;
     'api --paginate repos/test/repo/issues/'*'/comments?per_page=100') cat "$GH_STUB_DIR/qa-comments"; exit ;;
     'label create '*) exit ;;
