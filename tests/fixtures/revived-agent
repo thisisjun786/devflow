@@ -20,3 +20,7 @@ if [ "${DV_REVIVE_TEST_FAIL:-0}" = 1 ]; then exit 1; fi
 if [ "${DV_REVIVE_TEST_NO_DONE:-0}" = 1 ]; then exit 0; fi
 if [ "${DV_REVIVE_TEST_REPORT:-0}" = 1 ]; then printf 'Corrected report\n' > "$state/report.md"; fi
 dv 'done' "$DV_ISSUE"
+if [ "${DV_REVIVE_TEST_HOLD_DONE:-0}" = 1 ]; then
+  touch "$state/revive-done-held"
+  while [ ! -f "$state/revive-exit-release" ]; do sleep 0.05; done
+fi

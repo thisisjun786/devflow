@@ -380,3 +380,28 @@ case_revive_goal_owned_done() {
   row=$(dv status --json | jq -c '.[0]')
   test "$(event_json done RV-1 '' test-host "$(jq -r .head "$RV_STATE/meta")" '' award-round | jq -r .id)" = "$current"
 }
+case_revive_done_capacity() {
+  revive_setup; revive_dead
+  jq '.agent="claude" | .mode="goal"' "$RV_STATE/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$RV_STATE/meta"
+  export DV_CLAUDE_BIN="$ROOT/tests/fixtures/revived-agent" DV_REVIVE_TEST_HOLD_DONE=1 DV_MAX_JOBS=1
+  revive_hold
+  dv done RV-1 --note 'manual completion while the replacement is working'
+  dv bid --json | jq -e '.active==1 and .free_slots==0'
+  touch "$RV_STATE/revive-release"
+  wait_file "$RV_STATE/revive-done-held"
+  test ! -f "$RV_STATE/agent.exit"
+  kill -0 "$(cat "$RV_STATE/held.pid")"
+  bidding_functions
+  DV_MANAGER_HOST=$DV_HOST
+  mkdir -p "$DV_HOME/submissions/WAIT-1"
+  printf '{"submitted_at":1}\n' > "$DV_HOME/submissions/WAIT-1/task.json"
+  # The watcher may schedule immediately, while the completed agent still lives.
+  bid_schedule_one() { dv bid --json > "$CASE_DIR/released-bid.json"; }
+  bid_event "$(jq -sc 'map(select(.kind=="done"))|last' "$RV_STATE/events.log")"
+  cat "$CASE_DIR/released-bid.json"
+  jq -e '.active==0 and .free_slots==1' "$CASE_DIR/released-bid.json"
+  touch "$RV_STATE/revive-exit-release"
+  wait_file "$CASE_DIR/herdr/w-RV-1/exit"
+  jq -se 'all(.[]; .kind!="blocked" and .kind!="failed")' "$RV_STATE/events.log"
+}
