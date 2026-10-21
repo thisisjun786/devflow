@@ -131,32 +131,60 @@ checks_finished() {
     else false end)' "$1" >/dev/null
 }
 cmd_pr_wait() {
-  [ "$#" -eq 1 ] || fail 'usage: dv pr-wait ISSUE'
-  load_issue "$1"; require_worktree; cd "$WT" || exit
-  local pr head rc=0 deadline='' reviewed=false snapshot tmp current green
-  pr=$(jq -er .url "$S/pr.json"); head=$(jq -r '.head // empty' "$S/meta")
-  [ -n "$head" ] || head=$(git rev-parse HEAD)
-  # Only one waiter per issue; a later push starts another after this waiter exits.
-  pr_wait_lock || return 0
+  [ "$#" -ge 1 ] || fail 'usage: dv pr-wait ISSUE [--foreground [--review-handled]]'
+  load_issue "$1"; shift; require_worktree; cd "$WT" || exit
+  local foreground=false handled=false arg
+  for arg in "$@"; do
+    case "$arg" in --foreground) foreground=true ;; --review-handled) handled=true ;; *) fail "unknown option: $arg" ;; esac
+  done
+  [ "$handled:$foreground" != true:false ] || fail '--review-handled requires --foreground'
+  local pr head rc=0 deadline='' reviewed=false snapshot tmp current green comments endpoint loop review_head=''
+  pr=$(jq -er .url "$S/pr.json")
+  # A foreground caller must receive a result even when dv pr's safety net owns
+  # the lock. Never terminate a live waiter or return an empty success.
+  until pr_wait_lock; do
+    [ "$foreground" = true ] || return 0
+    sleep "$DV_POLL_INTERVAL"
+  done
   trap pr_wait_unlock EXIT
   trap 'exit 0' INT TERM
+  head=$(jq -r '.head // empty' "$S/meta")
+  [ -n "$head" ] || head=$(git rev-parse HEAD)
+  loop='{"failed_heads":[],"review_handled":false}'
+  [ ! -f "$S/pr-loop.json" ] || loop=$(cat "$S/pr-loop.json")
+  if [ "$handled" = true ]; then
+    review_head=$(jq -er '.head' "$S/pr-ready.json") || fail 'wait for a review snapshot before acknowledging it'
+    git merge-base --is-ancestor "$review_head" "$head" || fail 'review snapshot is not an ancestor of the PR head'
+    loop=$(printf '%s\n' "$loop" | jq --arg head "$review_head" '.review_handled=true | .review_head=$head')
+    tmp=$(mktemp "$S/.pr-loop.XXXXXX"); printf '%s\n' "$loop" > "$tmp"; mv "$tmp" "$S/pr-loop.json"
+  fi
+  if printf '%s\n' "$loop" | jq -e '.review_handled' >/dev/null; then
+    review_head=$(printf '%s\n' "$loop" | jq -er .review_head)
+    git merge-base --is-ancestor "$review_head" "$head" || fail 'handled review is not an ancestor of the PR head'
+  fi
   while :; do
     rc=0
     gh pr checks "$pr" --watch > "$S/checks.log" 2>&1 || rc=$?
     snapshot=$(gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state)
     tmp=$(mktemp "$S/.pr-snapshot.XXXXXX"); printf '%s\n' "$snapshot" > "$tmp"; mv "$tmp" "$S/pr-snapshot.json"
-    [ "$(jq -r .state "$S/pr-snapshot.json")" = OPEN ] || return 0
+    if [ "$(jq -r .state "$S/pr-snapshot.json")" != OPEN ]; then
+      [ "$foreground" != true ] || fail 'PR is no longer open'
+      return 0
+    fi
     # A correction can push while the first wait is active. Follow the new head.
     current=$(jq -r '.head // empty' "$S/meta")
     if [ -n "$current" ] && [ "$current" != "$head" ]; then
       head=$current; deadline=''; reviewed=false
+      if [ -n "$review_head" ]; then
+        git merge-base --is-ancestor "$review_head" "$head" || fail 'handled review is not an ancestor of the PR head'
+      fi
     fi
     if [ "$(jq -r .headRefOid "$S/pr-snapshot.json")" = "$head" ] && checks_finished "$S/pr-snapshot.json"; then
       [ -n "$deadline" ] || deadline=$(( $(now) + DV_REVIEW_WAIT ))
       reviewed=false
       if printf '%s\n' "$snapshot" | jq -e --arg bots "$DV_REVIEW_BOTS" --arg head "$head" \
         '.reviews as $reviews | ($bots|split(",")) | all(.[]; . as $pattern | any($reviews[]?; (.author.login|test($pattern;"i")) and .commit.oid==$head))' >/dev/null; then reviewed=true; fi
-      if [ "$reviewed" = true ] || [ "$(now)" -ge "$deadline" ]; then break; fi
+      if [ -n "$review_head" ] || [ "$reviewed" = true ] || [ "$(now)" -ge "$deadline" ]; then break; fi
     else
       # gh checks --watch returns immediately before CI is registered. Empty
       # or pending rollups must be polled again, even after the review timeout.
@@ -166,10 +194,60 @@ cmd_pr_wait() {
   done
   green=false
   checks_green "$S/pr-snapshot.json" && green=true
+  # Inline findings are not part of gh pr view's reviews field. Fetch all pages
+  # before publishing a result; an API error must not look like a clean review.
+  if [[ "$pr" =~ ^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$ ]]; then
+    endpoint="repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/pulls/${BASH_REMATCH[3]}/comments"
+  else fail 'invalid PR URL'; fi
+  comments=$(gh api --paginate "$endpoint" | jq -s 'add // []')
+  tmp=$(mktemp "$S/.pr-snapshot.XXXXXX")
+  jq --argjson comments "$comments" '. + {inline_comments:$comments}' "$S/pr-snapshot.json" > "$tmp"
+  mv "$tmp" "$S/pr-snapshot.json"
+  if [ "$green" = false ]; then
+    loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.failed_heads |= (. + [$head] | unique)')
+  fi
+  tmp=$(mktemp "$S/.pr-loop.XXXXXX"); printf '%s\n' "$loop" > "$tmp"; mv "$tmp" "$S/pr-loop.json"
+  tmp=$(mktemp "$S/.pr-ready.XXXXXX")
   jq -n --arg head "$head" --argjson checks_exit "$rc" --argjson green "$green" --argjson reviewed "$reviewed" \
-    '{head:$head,checks_exit:$checks_exit,green:$green,bot_review:$reviewed,review_timed_out:($reviewed|not)}' > "$S/pr-ready.json"
-  meta_set --arg head "$head" 'if .head==$head and .status=="pr" then .status="ready" else . end'
-  cmd_kick pr-ready "$ISSUE" "checks=$green bot-review=$reviewed"
+    --argjson loop "$loop" --slurpfile snapshot "$S/pr-snapshot.json" \
+    '{head:$head,checks_exit:$checks_exit,green:$green,bot_review:$reviewed,
+      review_handled:$loop.review_handled,review_timed_out:(($reviewed|not) and ($loop.review_handled|not)),
+      ci_rounds:($loop.failed_heads|length),blocked:(($loop.failed_heads|length)>=3 and ($green|not)),snapshot:$snapshot[0]}' > "$tmp"
+  mv "$tmp" "$S/pr-ready.json"
+  if jq -e '.blocked' "$S/pr-ready.json" >/dev/null; then
+    if [ ! -f "$S/pr-ci-blocked" ]; then
+      cmd_kick blocked "$ISSUE" 'CI failed in 3 rounds; worker could not make the PR green'
+      touch "$S/pr-ci-blocked"
+    fi
+    [ "$foreground" != true ] || cat "$S/pr-ready.json"
+    return 1
+  fi
+  if [ "$foreground" = true ]; then cat "$S/pr-ready.json"; return; fi
+  if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
+  # Recovery uses the existing one-shot revival, only with positive exit
+  # evidence. Keep status=pr so reconciliation can re-arm this safety net.
+  local pid
+  pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then return 0; fi
+  if agent_gone; then
+    # Release before starting a replacement that may immediately wait again.
+    pr_wait_unlock; trap - EXIT
+    "$DV_ROOT/bin/dv" send "$ISSUE" "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI, reviews and inline findings. Fix P0/P1 review findings once (preserve review-fix.sent) and fix CI within 3 rounds. After handling the findings, acknowledge with dv pr-wait $ISSUE --foreground --review-handled before the next push. Commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground until green. Do not request another review. Only run dv done $ISSUE after green CI and review handling."
+  fi
+}
+
+pr_done_check() {
+  local head=$1 pr tmp
+  [ -f "$S/pr.json" ] || fail 'GitHub completion requires dv pr and a green PR'
+  jq -e '.review_handled==true' "$S/pr-loop.json" >/dev/null 2>&1 || fail 'handle the review and acknowledge with pr-wait --foreground --review-handled'
+  jq -e --arg head "$head" '.head==$head and .green and .review_handled' "$S/pr-ready.json" >/dev/null 2>&1 || fail 'wait for the current PR head before done'
+  require_clean "$WT"
+  pr=$(jq -er .url "$S/pr.json")
+  tmp=$(mktemp "$S/.done-checks.XXXXXX")
+  (cd "$WT" && gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,state) > "$tmp"
+  mv "$tmp" "$S/done-checks.json"
+  jq -e --arg head "$head" --arg base "$BASE" '.headRefOid==$head and .baseRefName==$base and .state=="OPEN"' "$S/done-checks.json" >/dev/null || fail 'PR head/base/state mismatch'
+  checks_green "$S/done-checks.json" || fail 'current PR checks must be green before done'
 }
 cmd_review() {
   [ "$#" -eq 1 ] || fail 'usage: dv review ISSUE'

@@ -48,10 +48,10 @@ Claude 온보딩은 `check`의 텍스트 출력과 JSON의 `claude.onboarding`�
 
 ```bash
 dv start ~/code/my-app APP-42 fix-save --brief /path/brief.md
-# 에이전트: 개발·시험·커밋 → dv pr APP-42 → dv done APP-42
+# 에이전트: 개발·시험·커밋 → dv pr APP-42 → dv pr-wait APP-42 --foreground
+# CI 실패와 P0/P1 리뷰를 처리한 뒤 pr-wait APP-42 --foreground --review-handled → dv done APP-42
 dv status APP-42
-dv send APP-42 'P1 저장 오류를 한 번 수정하고 관련 시험, 커밋, dv pr, dv done까지 해주세요.'
-# 시온: 이벤트에서 보고서·diff·시험·리뷰를 확인
+# 시온: green done의 보고서·diff·시험을 이슈 완료 조건·범위와 대조
 dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야 함
 ```
 
@@ -88,7 +88,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv done ISSUE [--note TEXT]` | head·변경 파일 수·보고서 경로·완료 이벤트 |
 | `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작. 상태 폴더에 `pr.md`(작업자가 쓴 공개용 본문)가 있으면 그대로 본문으로 쓰고, 없으면 브리프와 보고서로 만든다 |
 | `dv polish ISSUE` | PR 본문 퇴고·코드/URL 보존 검증 후 본문만 갱신 |
-| `dv pr-wait ISSUE` | CI 등록·종료 후 봇 리뷰 또는 리뷰 대기 시간 종료, pr-ready 이벤트 |
+| `dv pr-wait ISSUE [--foreground [--review-handled]]` | foreground는 CI·리뷰·인라인 지적 JSON 반환. 처리 후 --review-handled로 기록. 기본 모드는 조기 종료 작업자 재개 안전망 |
 | `dv review ISSUE` | 로컬 리뷰 출력과 횟수 저장 |
 | `dv land ISSUE` | PR 허용 방식 선택 / 로컬 시험 후 병합, worktree 정리 |
 | `dv status [ISSUE] [--json]` | 상태, 에이전트, 호스트, 경과, backend·생존·에이전트 상태, 마지막 로그 |
@@ -100,7 +100,9 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv manager start REPO [--agent hermes]` | 저장소별 Hermes 초기 프롬프트 실행·세션 ID 저장, 재호출 시 재사용 |
 | `dv manager status [REPO] [--json]` / `dv manager stop REPO` | 등록·세션·실행 상태 조회 / 관리자 라우팅 중지 |
 
-상태는 `$DV_STATE/ISSUE/`의 `meta`(JSON), `brief.md`, `log`, `report.md`, `done.json`, 리뷰·PR 결과입니다. done은 PR 대기 상태를 덮어쓰지 않습니다. ready는 **확인할 자료가 준비됨**을 뜻하며 CI 성공을 보장하지 않습니다. land는 빈 체크·skipped·pending·실패·head 불일치를 모두 거절합니다. 원격 브랜치를 지우지 않으며 squash 후 로컬 브랜치도 조상이 아니면 보존합니다.
+상태는 `$DV_STATE/ISSUE/`의 `meta`(JSON), `brief.md`, `log`, `report.md`, `done.json`, 리뷰·PR 결과입니다. GitHub의 done은 현재 head의 CI 성공과 리뷰 처리 기록을 확인하고 ready로 바꿉니다. done.json에 checks=green, review=handled를 기록하며 완료 이벤트 메시지에도 담습니다. pr-wait는 결과를 pr-ready.json에 저장하지만 관리자에게 pr-ready를 보내지 않습니다. land는 빈 체크·skipped·pending·실패·head 불일치를 모두 거절합니다. 원격 브랜치를 지우지 않으며 squash 후 로컬 브랜치도 조상이 아니면 보존합니다.
+
+작업자는 foreground 결과를 읽고 P0·P1 리뷰를 한 번 수정하며 review-fix.sent에 기록합니다. 처리 후 다음 push 전에 `--review-handled`로 마지막 스냅샷의 리뷰를 처리했다고 확인합니다. 이 기록이 있으면 후속 CI 수정에서 새 리뷰를 기다리지 않습니다. 리뷰 시간 초과도 결과와 보고서에 남깁니다. pr-loop.json은 리뷰 처리와 실패한 head를 보존하고, 서로 다른 head의 세 번째 CI 실패에서 blocked를 한 번 보냅니다. 관리자는 이슈 완료 조건·범위를 확인해 병합하며, 범위 누락만 한 번 보완 요청합니다.
 
 PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 다시 확인합니다. 체크가 종료된 뒤 `DV_REVIEW_WAIT`의 봇 리뷰 제한 시간이 시작되므로, CI가 아예 없는 PR은 체크 등록을 계속 기다립니다. `dv pr`의 대기자는 Linux에서 `setsid`로 분리하며, `setsid`가 없는 환경에서는 Bash job control로 별도 프로세스 그룹을 만듭니다. `.pr-wait`의 PID 소유자가 죽었으면 다음 대기자가 잠금을 회수합니다. 30분 상태 안전망도 `pr` 상태의 호스트에서 대기자 생존을 확인하고 필요하면 다시 시작합니다.
 

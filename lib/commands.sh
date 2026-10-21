@@ -181,6 +181,10 @@ run_agent() {
     if [ "$rc" -ne 0 ]; then revive_blocked "revived agent exited $rc"
     elif [ "$mode" = exec ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
     elif [ "$(cat "$S/revive/done" 2>/dev/null)" != "$DV_REVIVE_ID" ]; then revive_blocked 'revived goal agent exited without dv done'; fi
+  elif jq -e '.status=="pr"' "$S/meta" >/dev/null; then
+    # The PR remains the worker's responsibility, including an early nonzero
+    # exit. Let the existing safety net revive it with CI/review context.
+    "$DV_ROOT/bin/dv" _pr-wait-start "$ISSUE"
   elif [ "$mode" = exec ]; then
     if [ "$rc" -eq 0 ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
     else "$DV_ROOT/bin/dv" kick failed "$ISSUE" "agent exited $rc"; fi
@@ -309,7 +313,7 @@ accept_devin_trust() {
 }
 cmd_done() {
   [ "$#" -ge 1 ] || fail 'usage: dv done ISSUE [--note TEXT]'
-  load_issue "$1"; shift; local note='' head files tmp episode own_revive=0
+  load_issue "$1"; shift; local note='' head files tmp episode own_revive=0 pr_complete=false
   if [ "$#" -gt 0 ]; then
     if [ "$#" -ne 2 ] || [ "$1" != --note ]; then fail 'expected --note TEXT'; fi
     note=$2
@@ -325,16 +329,23 @@ cmd_done() {
     herdr_snapshot || printf 'dv: warning: could not capture herdr log for %s\n' "$ISSUE" >&2
   fi
   head=$(git -C "$WT" rev-parse HEAD)
+  if is_github; then
+    pr_done_check "$head"
+    pr_complete=true
+    note="checks=green review=handled${note:+; $note}"
+  fi
   files=$(git -C "$WT" diff --name-only "$(jq -r .start_head "$S/meta")" "$head" | wc -l | tr -d ' ')
   tmp=$(mktemp "$S/.done.XXXXXX")
   jq -n --arg head "$head" --argjson files "$files" --arg report "$S/report.md" --arg note "$note" \
-    --arg episode "$episode" --argjson done_at "$(now)" \
+    --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" \
     '{head:$head,files:$files,report:$report,note:$note,done_at:$done_at} +
+    (if $pr_complete then {checks:"green",review:"handled"} else {} end) +
     (if $episode=="" then {} else {episode:$episode} end)' > "$tmp"
   mv "$tmp" "$S/done.json"
-  meta_set --arg head "$head" --arg episode "$episode" --argjson done_at "$(now)" '.head=$head | .done_at=$done_at |
+  meta_set --arg head "$head" --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" '.head=$head | .done_at=$done_at |
     (if $episode!="" then .done_episode=$episode else . end) |
-    if .status=="running" or .status=="start-failed" then .status="done" | del(.failure_reason) else . end'
+    if $pr_complete then .status="ready"
+    elif .status=="running" or .status=="start-failed" then .status="done" | del(.failure_reason) else . end'
   cmd_kick 'done' "$ISSUE" "$note"
   if [ "$own_revive" = 1 ]; then
     printf '%s\n' "$episode" > "$S/revive/done"

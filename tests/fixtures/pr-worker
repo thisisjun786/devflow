@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Deterministic worker acting on fake CI and inline review findings.
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+if [ "${DV_PR_EARLY_EXIT:-0}" = 1 ] && [ ! -d "$state/revive" ]; then
+  dv pr "$DV_ISSUE"
+  exit "${DV_PR_EXIT_CODE:-0}"
+fi
+printf '%s\n' "${DV_AGENT_INSTRUCTION:-foreground worker}" > "$state/worker-input"
+while :; do
+  dv pr-wait "$DV_ISSUE" --foreground > "$state/worker-snapshot"
+  if jq -e '.snapshot.inline_comments | any(.[]; .body|contains("P1"))' "$state/worker-snapshot" >/dev/null && [ ! -f "$state/review-fix.sent" ]; then
+    printf 'P1: fix once\n' > "$state/review-fix.sent"
+    printf 'fixed\n' > review-fix
+    git add review-fix
+    git commit -qm "$DV_ISSUE: fix review P1"
+  fi
+  if ! jq -e .green "$state/worker-snapshot" >/dev/null; then
+    printf 'fixed\n' > ci-fix
+    git add ci-fix
+    git commit -qm "$DV_ISSUE: fix CI"
+    printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
+  fi
+  # gh reads the pushed head, even while the worker has unpushed corrections.
+  jq -r .head "$state/meta" > "$GH_STUB_DIR/head"
+  dv pr-wait "$DV_ISSUE" --foreground --review-handled > "$state/worker-snapshot"
+  dv pr "$DV_ISSUE"
+  git rev-parse HEAD > "$GH_STUB_DIR/head"
+  dv pr-wait "$DV_ISSUE" --foreground > "$state/worker-snapshot"
+  if jq -e .green "$state/worker-snapshot" >/dev/null; then break; fi
+done
+dv 'done' "$DV_ISSUE"
