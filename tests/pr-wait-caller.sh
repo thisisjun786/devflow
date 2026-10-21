@@ -75,9 +75,9 @@ STUB
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   wait_pr_ready P-1; waiter=''
   jq -e --arg head "$(git -C "$REPO" rev-parse HEAD)" '.green and .head==$head' "$state/pr-ready.json"
-  jq -e '.status=="ready"' "$state/meta"
-  jq -se '[.[]|select(.kind=="pr-ready" and .issue=="P-1")]|length==1' "$DV_HOME/kick.q"
-  printf 'ready for current head; one pr-ready event; lock released\n'
+  jq -e '.status=="pr"' "$state/meta"
+  test ! -s "$DV_HOME/kick.q"
+  printf 'snapshot for current head; no manager event; lock released\n'
 }
 case_pr_wait_caller_fallback() { case_pr_wait_caller_killed fallback; }
 case_pr_wait_caller_delayed() { case_pr_wait_caller_killed delayed; }
