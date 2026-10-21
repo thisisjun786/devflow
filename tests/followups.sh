@@ -93,6 +93,9 @@ case_polish_public_during_run() {
 case_polish_public_published() {
   needs_tmux; repo published remote; start PP-1; wait_done PP-1
   printf 'Public body must stay exact.\n' > "$DV_STATE/PP-1/pr.md"
+  # The fake worker already published this head. Wait for this publication's
+  # waiter instead of accepting the previous worker's ready snapshot.
+  mv "$DV_STATE/PP-1/pr-ready.json" "$CASE_DIR/previous-pr-ready.json"
   dv pr PP-1
   wait_pr_ready PP-1
   rm "$DV_STATE/PP-1/pr.md"
