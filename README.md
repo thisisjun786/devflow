@@ -92,6 +92,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv review ISSUE` | 로컬 리뷰 출력과 횟수 저장 |
 | `dv land ISSUE` | PR 허용 방식 선택 / 로컬 시험 후 병합, worktree 정리 |
 | `dv status [ISSUE] [--json]` | 상태, 에이전트, 호스트, 경과, backend·생존·에이전트 상태, 마지막 로그 |
+| `dv metrics [--since 6h] [--json]` | 작업별 유휴 분, 이벤트 처리 지연, 완료→병합 지연, revive/resume 횟수 |
 | `dv send ISSUE 'text'` | 실행 중이면 입력 전달; 종료가 확인되면 같은 작업을 한 번 자동 재시작 |
 | `dv clean ISSUE` | 깨끗한 worktree·herdr/tmux 정리; 병합된 로컬 브랜치만 삭제 |
 | `dv kick KIND ISSUE [msg]` | 완료 알림 전송, 실패 로그 보관 |
@@ -99,6 +100,14 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv-watch` | 로컬 큐 소비, 최대 4개 시온 작업자, 느린 상태 점검 |
 | `dv manager start REPO [--agent hermes]` | 저장소별 Hermes 초기 프롬프트 실행·세션 ID 저장, 재호출 시 재사용 |
 | `dv manager status [REPO] [--json]` / `dv manager stop REPO` | 등록·세션·실행 상태 조회 / 관리자 라우팅 중지 |
+
+`dv metrics`는 로컬 기록과 감시자가 수집한 원격 기록을 호스트·이슈별로 합칩니다. `--since`는 `30m`, `6h`, `7d`처럼 초(s)·분(m)·시간(h)·일(d)을 받습니다. 유휴 시간은 조회 구간과 겹치는 관측 구간만 합산하고, 이벤트 지연은 그 구간에 성공 처리가 끝난 이벤트의 평균 초입니다. `--json`에는 처리 건수·최대 지연·마지막 관측 시각(`observed_at`)·현재 유휴 초도 나옵니다. 완료→병합은 조회 구간 안의 마지막 병합과 **같은 head**의 마지막 완료 사이 초이며, 완료가 조회 구간 전이어도 연결합니다. 아직 관측하거나 완료하지 못한 값은 표에서 `-`, JSON에서 `null`입니다.
+
+기존 `dv-watch`가 `DV_HOSTS`를 `DV_METRICS_INTERVAL`초(기본 60)마다 수집합니다. 각 호스트에도 이 기능을 지원하는 dv가 필요합니다. Git의 추적 파일·무시되지 않은 새 파일의 내용/속성, HEAD, 작업 상태·이벤트가 두 관측 사이 같으면 그 구간을 유휴 시간으로 셉니다. 무시된 빌드 산출물과 터미널 화면 재출력은 진행으로 세지 않습니다. 첫 관측 이전과 관측 사이에 바뀌었다가 원상복구된 내용은 알 수 없으며, 긴 수집 간격에서는 근사값입니다. `DV_STALL_AFTER`초(기본 900)를 **초과**하면 에이전트가 working·idle·종료 중 어느 상태든 `idle` 이벤트를 보냅니다. 파일/이벤트가 바뀌기 전까지 재시작 후에도 한 번만 알립니다. 병합·취소·정리한 작업은 알리지 않습니다.
+
+revive는 자동 재시작 시도 횟수, resume은 살아 있는 에이전트에 성공적으로 전달한 후속 입력과 관리자 세션 재개 시도의 합입니다. JSON은 `agent_resume_count`와 `manager_resume_count`도 구분합니다. 이벤트는 큐 등록이 아니라 작업자·관리자 성공 종료 때 처리된 것으로 기록하며, 실패·재시도·전송·관리자 대기 시간도 지연에 포함합니다. 중복 이벤트 ID는 한 번만 집계합니다. GitHub에서 직접 병합한 PR도 수집 때 서버의 `mergedAt`으로 확인합니다.
+
+지표는 작업 호스트의 `$DV_STATE/ISSUE/metrics/`와 감시 호스트의 `$DV_HOME/metrics/`에 별도로 보존합니다. 기존 meta·설정은 교체하지 않습니다. 조회는 읽기 전용이며, 연결 불가·시간 초과인 호스트는 마지막 관측을 유지하므로 `observed_at`의 신선도를 확인하세요. 수집은 기존 `DV_BID_TIMEOUT` 한도 안에서 파일을 읽고, 오류는 `metrics.log`에 남깁니다. 도입 전 이벤트·재개 횟수는 소급하지 않습니다.
 
 상태는 `$DV_STATE/ISSUE/`의 `meta`(JSON), `brief.md`, `log`, `report.md`, `done.json`, 리뷰·PR 결과입니다. done은 PR 대기 상태를 덮어쓰지 않습니다. ready는 **확인할 자료가 준비됨**을 뜻하며 CI 성공을 보장하지 않습니다. land는 빈 체크·skipped·pending·실패·head 불일치를 모두 거절합니다. 원격 브랜치를 지우지 않으며 squash 후 로컬 브랜치도 조상이 아니면 보존합니다.
 

@@ -48,6 +48,8 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
 : "${DV_MAX_WORKERS:=4}" # 1..4
 : "${DV_RECONCILE_INTERVAL:=1800}" # remote status safety net, seconds
+: "${DV_METRICS_INTERVAL:=60}" # file/event activity sampling by dv-watch, seconds
+: "${DV_STALL_AFTER:=900}" # emit one idle event per unchanged episode after this many seconds
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)
 : "${DV_PULL_RETRY:=15}" # seconds between restarts of an ended pull stream
 : "${DV_HOSTS=lina-os hx-linux amd-linux go2-linux}" # SSH aliases for status/bidding; add gos-linux explicitly as the last fallback

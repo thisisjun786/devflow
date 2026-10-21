@@ -82,6 +82,7 @@ manager_turn() {
   local dir=$1 prompt=$2 log=$3 session next='' rc=0 fresh
   session=$(jq -r '.session_id // empty' "$dir/meta.json")
   if [ -n "$session" ]; then
+    [ -z "${METRICS_MANAGER_EVENT:-}" ] || metrics_event "$METRICS_MANAGER_EVENT" manager_resume
     manager_call "$dir" "$prompt" "$session" "$log.resume" || rc=$?
     next=$(manager_session_id "$log.resume.err")
     if [ "$rc" = 0 ] && [ -n "$next" ]; then
@@ -245,6 +246,8 @@ cmd__manager_run() (
   trap 'exit 130' INT
   trap 'exit 143' TERM
   prompt=$(jq -er .prompt "$job") || return 1
+  local METRICS_MANAGER_EVENT
+  METRICS_MANAGER_EVENT=$(jq -c .event "$job")
   log="${job%.json}"
   if jq -e .enabled "$dir/meta.json" >/dev/null; then
     manager_turn "$dir" "$prompt" "$log" || rc=$?
@@ -254,7 +257,7 @@ cmd__manager_run() (
     "$DV_HERMES_BIN" -p sion chat -Q --yolo -t terminal,connections -s devflow --query-file "$prompt" || rc=$?
   fi
   # Retain terminal failures for inspection, without an unbounded retry loop.
-  if [ "$rc" = 0 ]; then mv "$job" "${job%.json}.done"
+  if [ "$rc" = 0 ]; then metrics_handled "$METRICS_MANAGER_EVENT"; mv "$job" "${job%.json}.done"
   else mv "$job" "$dir/failed/$(basename "$job")"; fi
   return "$rc"
 )

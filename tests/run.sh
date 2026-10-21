@@ -1614,9 +1614,15 @@ source "$ROOT/tests/manager.sh"
 source "$ROOT/tests/revive.sh"
 # shellcheck source=tests/portability.sh
 source "$ROOT/tests/portability.sh"
+# shellcheck source=tests/metrics.sh
+source "$ROOT/tests/metrics.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
+  else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
+done
 for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
