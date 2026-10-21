@@ -132,6 +132,7 @@ reap() {
     if [ -f "$slot.exit" ]; then rc=$(cat "$slot.exit")
     elif [ -n "$pid" ]; then rc=125
     else continue; fi
+    if stack_deferred "$record" "$rc"; then continue; fi
     if [ "$rc" = 0 ]; then
       if [ -f "$slot.manager" ]; then manager_fallback_complete "$slot"
       else printf '%s\n' "$event_id" >> "$DV_HOME/seen"; fi

@@ -217,3 +217,19 @@ case_stack_push_retry() {
   test "$(git -C "$DV_WORK/stack-2" rev-parse HEAD)" = "$(git --git-dir="$CASE_DIR/remote.git" rev-parse stack-2)"
   stack_green 2; dv land S-2
 }
+case_stack_defer() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 dev; stack_pr 3 stack-1 $'Depends on #1\nDepends on #2'
+  stack_waiting 3; dv land S-1; stack_watch
+  sleep 2
+  local record
+  for record in "$DV_HOME"/pending/stack-*.json; do
+    if [ -f "$record" ]; then
+      printf 'BUG: unmerged dependency keeps a stack in the retry queue\n'; return 1
+    fi
+  done
+  # A deferred attempt is not terminal: B's later landed event must requeue C.
+  if [ -f "$DV_HOME/seen" ] && grep -q ':stack-land:' "$DV_HOME/seen"; then return 1; fi
+  dv land S-2
+  stack_await 3 '.stack_update_head!=null'
+  stack_green 3; stack_await 3 '.status=="landed"'; stack_stop
+}

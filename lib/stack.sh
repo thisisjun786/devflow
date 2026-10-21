@@ -27,7 +27,7 @@ stack_land_gate() {
     state=$(cd "$WT" && gh pr view "${pr%/*}/$dependency" --json state) || return 1
     if [ "$(printf '%s\n' "$state" | jq -er .state)" != MERGED ]; then
       printf 'dv: waiting-base: PR #%s is not merged\n' "$dependency" >&2
-      return 1
+      return 75 # Wait for another landed event, not continuous dependency polls.
     fi
   done
   # Capture an immutable commit, not FETCH_HEAD shared by sibling worktrees.
@@ -78,6 +78,14 @@ stack_worker() {
     remote=$(shell_join dv _stack-land "$issue" "$head")
     ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$remote"
   fi
+}
+stack_deferred() {
+  local record=$1 rc=$2 slot=${1%.json}
+  [ "$rc" = 75 ] || return 1
+  jq -e '.kind=="stack-land"' "$record" >/dev/null || return 1
+  # Unlike completion, deferral must not mark the stable event ID as seen.
+  # A later base landing (or status reconciliation) can enqueue it again.
+  rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry"
 }
 stack_queue_host() {
   local host=$1 rows=$2 row issue head event id slot key
