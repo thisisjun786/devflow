@@ -14,3 +14,12 @@ printf 'Summary citing input.txt\n' > out/summary.txt
 printf 'input.txt\n' > out/nested/source.txt
 printf 'Produced summary.txt. Source: input.txt. Open points: none.\n' > "$state/report.md"
 dv 'done' "$DV_ISSUE"
+if [ "${DV_TASK_TEST_WAIT_AFTER_DONE:-0}" = 1 ]; then
+  printf '%s\n' "$$" > "$state/held.pid"
+  touch "$state/after-done"
+  while [ ! -f "$state/release" ]; do sleep 0.05; done
+fi
+if [ "${DV_TASK_TEST_MUTATE_AFTER_DONE:-0}" = 1 ]; then
+  printf 'late change\n' >> out/summary.txt
+fi
+exit "${DV_TASK_TEST_EXIT_AFTER_DONE:-0}"

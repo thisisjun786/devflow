@@ -45,7 +45,7 @@ task_submit() {
   elif [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
   mkdir -p "$DV_STATE" "$DV_WORK"
   S="$DV_STATE/$ISSUE"; SESSION="dv-$ISSUE"; BRANCH=''; BASE=''; KIND=task
-  [ ! -e "$S" ] && [ ! -L "$S" ] || fail 'issue state already exists'
+  if [ -e "$S" ] || [ -L "$S" ]; then fail 'issue state already exists'; fi
   if [ "$BACKEND" = tmux ]; then
     ! tmux_dv has-session -t "=$SESSION" 2>/dev/null || fail 'tmux session already exists'
   fi
@@ -86,8 +86,10 @@ task_submit() {
 }
 task_manifest() (
   local out=$1 report=$2 path digest tmp
-  [ -d "$out" ] && [ ! -L "$out" ] || fail 'task out/ is missing or is a symlink'
-  [ -s "$report" ] && [ -f "$report" ] && [ ! -L "$report" ] || fail 'task report.md is missing, empty or is a symlink'
+  if [ ! -d "$out" ] || [ -L "$out" ]; then fail 'task out/ is missing or is a symlink'; fi
+  if [ ! -s "$report" ] || [ ! -f "$report" ] || [ -L "$report" ]; then
+    fail 'task report.md is missing, empty or is a symlink'
+  fi
   tmp=$(mktemp "$S/.manifest.XXXXXX")
   trap 'rm -f "$tmp" "$tmp.paths"' EXIT
   # Reject links, devices and FIFOs rather than reading outside out/.
@@ -120,9 +122,14 @@ task_exec_done() {
   return 1
 }
 task_land() {
-  [ "$#" -eq 3 ] && [ "$2" = --checked ] || fail 'usage: dv land TASK --checked HEAD (after checking the brief, out/ and report.md)'
+  if [ "$#" -ne 3 ] || [ "$2" != --checked ]; then
+    fail 'usage: dv land TASK --checked HEAD (after checking the brief, out/ and report.md)'
+  fi
   load_issue "$1"; issue_lock; require_worktree
-  local checked=$3 head destination target suffix=1 manifest copied
+  local checked=$3 head destination target suffix=1 manifest copied pid
+  # Old metadata and aliases can name the same directory through a symlink.
+  # Compare physical paths on both sides of the recursive-copy guard.
+  WT=$(cd "$WT" && pwd -P)
   [ -f "$S/done.json" ] || fail 'task is not done'
   head=$(jq -r .head "$S/done.json")
   [ "$checked" = "$head" ] || fail 'checked task revision does not match done'
@@ -133,7 +140,16 @@ task_land() {
   if [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'task exec is still running'
     [ "$(jq -r .exec_status "$S/meta")" = 'done' ] || fail 'task exec did not finish successfully'
+  else
+    # done is written by the agent before its CLI and wrapper have exited.
+    # A terminal can retain a shell/dead pane, so check the wrapper process,
+    # not the pane. The shared PID check also treats reaped/zombie runs as dead.
+    pid=$(cat "$S/agent.pid" 2>/dev/null) || fail 'task terminal exit is not confirmed'
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || fail 'task terminal process identity is invalid'
+    ! codex_exec_alive "$S" || fail 'task terminal agent is still running'
+    [ "$(cat "$S/agent.exit" 2>/dev/null)" = 0 ] || fail 'task terminal agent did not exit successfully'
   fi
+  # Re-read the artifacts only after the writer has successfully stopped.
   manifest=$(task_manifest "$WT/out" "$S/report.md") || return 1
   [ "task-$(printf '%s\n' "$manifest" | task_hash)" = "$checked" ] || fail 'task changed since done; inspect it and run dv done again'
   destination=$(jq -r .destination "$S/meta")

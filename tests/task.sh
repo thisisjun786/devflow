@@ -192,3 +192,96 @@ case_task_land_workspace() {
   test "$(cat "$CASE_DIR/Desk project/TK-1/summary.txt")" = 'older result'
   test "$(cat "$CASE_DIR/Desk project/TK-1-v2/summary.txt")" = 'Summary citing input.txt'
 }
+case_task_shellcheck() {
+  shellcheck -x "$ROOT/lib/task.sh"
+}
+task_terminal_setup() {
+  if [ "$1" = tmux ]; then needs_tmux; else export DV_HERDR=1; fi
+  task_setup
+  export DV_TASK_TEST_WAIT_AFTER_DONE=1
+  task_start --agent claude
+  wait_file "$DV_STATE/TK-1/after-done"
+}
+task_terminal_wait() {
+  if [ "$1" = tmux ]; then wait_done TK-1
+  else wait_file "$CASE_DIR/herdr/w-TK-1/exit"; fi
+}
+task_terminal_live() {
+  task_terminal_setup "$1"
+  local s="$DV_STATE/TK-1" head
+  head=$(jq -r .head "$s/done.json")
+  if dv land TK-1 --checked "$head"; then
+    printf 'BUG: land accepted a live terminal task after done\n'; return 1
+  fi
+  test ! -e "$CASE_DIR/destination/TK-1"
+  # A retained/stale success marker cannot prove that this live wrapper exited.
+  printf '0\n' > "$s/agent.exit"
+  if dv land TK-1 --checked "$head"; then return 1; fi
+  touch "$s/release"
+  task_terminal_wait "$1"
+  # Missing or invalid process/exit evidence must also fail closed.
+  cp "$s/agent.pid" "$CASE_DIR/saved-pid"
+  rm "$s/agent.pid"
+  if dv land TK-1 --checked "$head"; then return 1; fi
+  printf 'unknown\n' > "$s/agent.pid"
+  if dv land TK-1 --checked "$head"; then return 1; fi
+  cp "$CASE_DIR/saved-pid" "$s/agent.pid"
+  rm "$s/agent.exit"
+  if dv land TK-1 --checked "$head"; then return 1; fi
+  printf '0\n' > "$s/agent.exit"
+  dv land TK-1 --checked "$head"
+  test -f "$CASE_DIR/destination/TK-1/summary.txt"
+}
+case_task_tmux_live() { task_terminal_live tmux; }
+case_task_herdr_live() { task_terminal_live herdr; }
+task_terminal_failed() {
+  export DV_TASK_TEST_EXIT_AFTER_DONE=7
+  task_terminal_setup "$1"
+  touch "$DV_STATE/TK-1/release"
+  task_terminal_wait "$1"
+  test "$(cat "$DV_STATE/TK-1/agent.exit")" = 7
+  if dv land TK-1 --checked "$(jq -r .head "$DV_STATE/TK-1/done.json")"; then
+    printf 'BUG: land accepted a terminal task that exited 7\n'; return 1
+  fi
+  test ! -e "$CASE_DIR/destination/TK-1"
+}
+case_task_tmux_failed() { task_terminal_failed tmux; }
+case_task_herdr_failed() { task_terminal_failed herdr; }
+task_terminal_changed() {
+  export DV_TASK_TEST_MUTATE_AFTER_DONE=1
+  task_terminal_setup "$1"
+  local head
+  head=$(jq -r .head "$DV_STATE/TK-1/done.json")
+  touch "$DV_STATE/TK-1/release"
+  task_terminal_wait "$1"
+  if dv land TK-1 --checked "$head"; then return 1; fi
+  test ! -e "$CASE_DIR/destination/TK-1"
+  dv 'done' TK-1
+  dv land TK-1 --checked "$(jq -r .head "$DV_STATE/TK-1/done.json")"
+  grep -Fx 'late change' "$CASE_DIR/destination/TK-1/summary.txt"
+}
+case_task_tmux_changed() { task_terminal_changed tmux; }
+case_task_herdr_changed() { task_terminal_changed herdr; }
+case_task_recursive_destination() {
+  needs_tmux; task_setup; task_start; wait_done TK-1
+  local wt alias destination path head
+  wt=$(jq -r .worktree "$DV_STATE/TK-1/meta")
+  head=$(jq -r .head "$DV_STATE/TK-1/done.json")
+  mkdir "$wt/out/subdir"
+  ln -s "$wt" "$CASE_DIR/work-alias"
+  ln -s "$wt/out" "$CASE_DIR/out-alias"
+  cat > "$CASE_DIR/copy-spy" <<'ENV'
+cp() { touch "$CASE_DIR/copy-called"; return 99; }
+ENV
+  for alias in "$wt" "$CASE_DIR/work-alias"; do
+    for destination in "$wt/out" "$wt/out/subdir" "$CASE_DIR/out-alias" "$CASE_DIR/out-alias/subdir"; do
+      jq --arg wt "$alias" --arg destination "$destination" '.worktree=$wt | .destination=$destination' "$DV_STATE/TK-1/meta" > "$CASE_DIR/task-meta"
+      mv "$CASE_DIR/task-meta" "$DV_STATE/TK-1/meta"
+      if BASH_ENV="$CASE_DIR/copy-spy" dv land TK-1 --checked "$head"; then return 1; fi
+      if [ -e "$CASE_DIR/copy-called" ]; then
+        printf 'BUG: recursive copy attempted: worktree=%s destination=%s\n' "$alias" "$destination"; return 1
+      fi
+      for path in "$wt/out/TK-1" "$wt/out/subdir/TK-1"; do test ! -e "$path"; done
+    done
+  done
+}

@@ -21,6 +21,8 @@ pr_fixture() {
   jq -n --arg repo "$REPO" --arg head "$(git -C "$REPO" rev-parse HEAD)" \
     '{issue:"P-1",repo:$repo,worktree:$repo,branch:"feature",base:"main",slug:"waiter",host:"test-host",agent:"codex",started:1,status:"pr",head:$head,start_head:$head}' > "$DV_STATE/P-1/meta"
   printf '{"url":"https://github.com/test/repo/pull/1"}\n' > "$DV_STATE/P-1/pr.json"
+  # The test driver stands in for a live worker; the safety net must not revive it.
+  printf '%s\n' "$$" > "$DV_STATE/P-1/agent.pid"
 }
 watch_fixture() {
   trap watcher_teardown EXIT
@@ -133,7 +135,7 @@ case_pr_wait_concurrent() {
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   for pid in $contenders; do wait "$pid"; done
   contenders=''
-  jq -se '[.[]|select(.kind=="pr-ready")]|length==1' "$DV_HOME/kick.q"
+  test ! -s "$DV_HOME/kick.q"
   test ! -d "$DV_STATE/P-1/.pr-wait"
 }
 case_pr_wait_head() {
@@ -160,7 +162,7 @@ case_pr_wait_failed_checks() {
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"StatusContext","state":"ERROR"}]\n' > "$GH_STUB_DIR/checks"
   dv pr-wait P-1
   jq -e '(.green|not) and .review_timed_out' "$DV_STATE/P-1/pr-ready.json"
-  jq -e '.status=="ready"' "$DV_STATE/P-1/meta"
+  jq -e '.status=="pr"' "$DV_STATE/P-1/meta"
 }
 case_watch_retry() {
   watch_fixture
@@ -239,6 +241,8 @@ case_reconcile_corrected_head() {
   export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=1
   local head_a head_b phase probe
   head_a=$(git -C "$REPO" rev-parse HEAD)
+  dv pr-wait P-1 --foreground > /dev/null
+  dv pr-wait P-1 --foreground --review-handled > /dev/null
   dv 'done' P-1 --note 'Original A complete'
   git -C "$REPO" commit --allow-empty -qm correction
   head_b=$(git -C "$REPO" rev-parse HEAD)
@@ -254,7 +258,7 @@ case_reconcile_corrected_head() {
     if [ "$phase" = ready ]; then
       printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
       wait_pr_ready P-1
-      jq -e '.status=="ready"' "$DV_STATE/P-1/meta"
+      jq -e '.status=="pr"' "$DV_STATE/P-1/meta"
     fi
     # The queue is consumed only after startup reconciliation. Seeing this
     # marker proves that the safety net ran before the negative assertion.
@@ -272,7 +276,7 @@ case_reconcile_corrected_head() {
   dv-watch >> "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_seen_id "$DV_HOST:P-1:done:$head_b"
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
-  jq -se --arg head "$head_b" '[.[]|select(.kind=="done" and .head==$head)] | length==1 and .[0].message=="Correction B complete"' "$DV_HOME/kick.q"
+  jq -se --arg head "$head_b" '[.[]|select(.kind=="done" and .head==$head)] | length==1 and (.[0].message|endswith("Correction B complete"))' "$DV_HOME/kick.q"
   grep -l 'Correction B complete' "$DV_HOME/workers/"*.log
   dv status --json | jq -e --arg head "$head_b" '.[0].done_head==$head and .[0].head==$head'
 }
@@ -294,8 +298,7 @@ case_reconcile_waiter() {
   mkdir "$DV_STATE/P-1/.pr-wait"
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_pr_ready P-1
-  wait_seen 1
-  jq -se 'any(.[]; .issue=="P-1" and .kind=="pr-ready")' "$DV_HOME/kick.q"
+  test ! -s "$DV_HOME/kick.q"
 }
 case_reconcile_waiter_remote() {
   pr_fixture; watch_fixture
@@ -305,5 +308,5 @@ case_reconcile_waiter_remote() {
   mkdir "$DV_STATE/P-1/.pr-wait"
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_pr_ready P-1
-  wait_seen 1
+  test ! -s "$DV_HOME/kick.q"
 }
