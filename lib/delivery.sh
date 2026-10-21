@@ -336,7 +336,7 @@ cmd_land() {
     local_land
   fi
   metrics_note merged "$(git -C "$WT" rev-parse HEAD)"
-  meta_set '.status="landed"'
+  meta_set --argjson time "$(now)" '.status="landed" | .landed_at=$time'
   clean_worktree
   cmd_kick landed "$ISSUE" 'Landed'
 }

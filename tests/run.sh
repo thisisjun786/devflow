@@ -7,6 +7,7 @@ setup() {
   CASE_DIR=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-test.XXXXXX")
   export CASE_DIR
   export HOME="$CASE_DIR/agent home"
+  export GOCACHE="$HOME/.cache/go-build"
   mkdir -p "$HOME/.claude"
   printf '{"hasCompletedOnboarding":true}\n' > "$HOME/.claude.json"
   printf '{"skipDangerousModePermissionPrompt":true}\n' > "$HOME/.claude/settings.json"
@@ -1639,9 +1640,15 @@ source "$ROOT/tests/qa.sh"
 source "$ROOT/tests/metrics.sh"
 # shellcheck source=tests/pr-worker.sh
 source "$ROOT/tests/pr-worker.sh"
+# shellcheck source=tests/disk.sh
+source "$ROOT/tests/disk.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cache_guard disk_custom_cache disk_go_env_cache disk_separate_filesystems disk_unknown disk_award disk_bsd_stat disk_worktrees disk_host disk_watch; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
 for name in appserver_start appserver_accepted appserver_refused appserver_unknown appserver_idle_send appserver_states appserver_failed appserver_stall appserver_question appserver_auto appserver_no_goal appserver_clean_guard appserver_reconnect appserver_active_stall appserver_unknown_restart appserver_question_multiple appserver_question_retry appserver_malformed appserver_watch appserver_fallback appserver_exec_override appserver_goal_override appserver_submit_auto appserver_exec appserver_pipeline appserver_pr_pending appserver_preserve_config appserver_detached appserver_detached_fallback appserver_websocket appserver_active_error_send appserver_interrupt_pending appserver_interrupt_timeout appserver_done_refused appserver_done_unknown appserver_land_active; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

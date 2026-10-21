@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${DF_STUB_FAIL:-0}" = 0 ] || exit 1
+[ "$1" = -Pk ] && [ -d "$2" ]
+[ -z "${DF_STUB_LOG:-}" ] || printf '%s\n' "$2" >> "$DF_STUB_LOG"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf '/dev/stub 209715200 0 %s 0%% /test volume\n' "${DF_STUB_KB:-104857600}"
