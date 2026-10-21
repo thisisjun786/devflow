@@ -78,7 +78,9 @@ cmd__disk_prune() {
   actual=$(cd "$WT" && pwd -P)
   case "$actual" in "$root"/*) ;; *) fail 'disk cleanup: worktree outside work root' ;; esac
   # Never remove the source checkout or a directory merely naming its branch.
-  [ -f "$WT/.git" ] && [ ! -L "$WT/.git" ] && [ ! -L "$WT" ] || fail 'disk cleanup: not a linked worktree'
+  if [ ! -f "$WT/.git" ] || [ -L "$WT/.git" ] || [ -L "$WT" ]; then
+    fail 'disk cleanup: not a linked worktree'
+  fi
   repo_common=$(cd "$REPO" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
   wt_common=$(cd "$WT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
   [ "$repo_common" = "$wt_common" ] || fail 'disk cleanup: repository mismatch'
