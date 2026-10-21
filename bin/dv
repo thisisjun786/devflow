@@ -49,7 +49,10 @@ case "$command" in
   start|done|pr|polish|review|land|status|send|clean|kick|submit|bid|queue|cancel|_submit|_award|_receipt) "cmd_$command" "$@" ;;
   pr-wait) cmd_pr_wait "$@" ;;
   _pr-wait-start) cmd_pr_wait_start "$@" ;;
+  metrics) cmd_metrics "$@" ;;
+  _metrics-sample) cmd__metrics_sample "$@" ;;
+  _metrics-collect) cmd__metrics_collect "$@" ;;
   _agent) run_agent "$@" ;;
-  help|--help|-h) printf '%s\n' 'dv manager start <repo> [--agent hermes] | status [repo] [--json] | stop <repo>' 'dv host check [--json] [--probe-codex] | sync' 'dv submit <repo> <ISSUE> <slug> --brief FILE [--agent codex|claude|devin] [--base BRANCH] [--mode goal|exec]' 'dv bid --json [--repo REPO] [--agent AGENT]' 'dv queue [ISSUE] [--json]' 'dv cancel <ISSUE>' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin] [--brief FILE] [--base BRANCH] [--mode goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|polish|review|land|clean <ISSUE>' 'dv status [ISSUE] [--json]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
+  help|--help|-h) printf '%s\n' 'dv manager start <repo> [--agent hermes] | status [repo] [--json] | stop <repo>' 'dv host check [--json] [--probe-codex] | sync' 'dv submit <repo> <ISSUE> <slug> --brief FILE [--agent codex|claude|devin] [--base BRANCH] [--mode goal|exec]' 'dv bid --json [--repo REPO] [--agent AGENT]' 'dv queue [ISSUE] [--json]' 'dv cancel <ISSUE>' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin] [--brief FILE] [--base BRANCH] [--mode goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|polish|review|land|clean <ISSUE>' 'dv metrics [--since 6h] [--json]' 'dv status [ISSUE] [--json]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
   *) fail "unknown command: $command" ;;
 esac

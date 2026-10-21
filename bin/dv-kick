@@ -11,7 +11,7 @@ source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 [ "$#" -ge 2 ] || fail 'usage: dv-kick kind ISSUE [message [host [head]]]'
 valid_issue "$2"
 mkdir -p "$DV_HOME"
-line=$(event_json "$1" "$2" "${3:-}" "${4:-$DV_HOST}" "${5:-}" "${6:-}" "${7:-}")
+line=$(event_json "$1" "$2" "${3:-}" "${4:-$DV_HOST}" "${5:-}" "${6:-}" "${7:-}" '' "${8:-}")
 # Serialize concurrent writers; readers consume only newline-terminated records.
 tries=0
 until mkdir "$DV_HOME/.kick-lock" 2>/dev/null; do
