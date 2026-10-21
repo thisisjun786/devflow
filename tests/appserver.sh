@@ -50,6 +50,151 @@ appserver_setup() {
   printf 'idle\n' > "$CASE_DIR/server/status"
   dv start "$REPO" AS-1 change --brief "$CASE_DIR/brief"
 }
+appserver_checkout_setup() {
+  local legacy=${1:-false}
+  CLIENT_ROOT="$CASE_DIR/client checkout"
+  mkdir -p "$CLIENT_ROOT"
+  cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/templates" "$ROOT/config.example.sh" "$CLIENT_ROOT/"
+  if [ "$legacy" = true ]; then
+    # Commit A can notice updates, but still has the old recovery decision.
+    cat >> "$CLIENT_ROOT/lib/appserver.sh" <<'LEGACY'
+appserver_recover() { AS_CLASS=accepted AS_REPLY='{}'; }
+LEGACY
+  fi
+  git -C "$CLIENT_ROOT" init -q -b main
+  git -C "$CLIENT_ROOT" config user.email test@example.invalid
+  git -C "$CLIENT_ROOT" config user.name Test
+  git -C "$CLIENT_ROOT" add .
+  git -C "$CLIENT_ROOT" commit -qm 'client A'
+  export PATH="$CLIENT_ROOT/bin:$PATH"
+  appserver_setup
+  CLIENT_PID=$(cat "$DV_STATE/AS-1/appserver/client.pid")
+}
+appserver_checkout_update() {
+  cp "$ROOT/lib/appserver.sh" "$CLIENT_ROOT/lib/appserver.sh"
+  cat >> "$CLIENT_ROOT/lib/appserver.sh" <<'UPDATED'
+if [ "${1:-}" = _appserver-run ]; then
+  printf '%s %s\n' "$$" "$(git -C "$DV_ROOT" rev-parse HEAD)" >> "$CASE_DIR/client-versions"
+fi
+UPDATED
+  git -C "$CLIENT_ROOT" add lib/appserver.sh
+  git -C "$CLIENT_ROOT" commit --allow-empty -qm 'client update'
+}
+appserver_wait_updated() {
+  local commit attempt
+  commit=$(git -C "$CLIENT_ROOT" rev-parse HEAD)
+  for attempt in {1..150}; do
+    if [ -f "$CASE_DIR/client-versions" ] && grep -Fxq "$CLIENT_PID $commit" "$CASE_DIR/client-versions"; then
+      wait_file "$CASE_DIR/server/resumed"
+      test "$(cat "$DV_STATE/AS-1/appserver/client.pid")" = "$CLIENT_PID"
+      kill -0 "$CLIENT_PID"
+      test ! -f "$DV_STATE/AS-1/appserver/exited"
+      return 0
+    fi
+    sleep 0.1
+  done
+  printf 'Client did not exec commit %s with pid %s\n' "$commit" "$CLIENT_PID" >&2
+  return 1
+}
+appserver_reexec_delivery() {
+  local outcome=$1 sender rc=0 state id
+  printf 'DV_APPSERVER_TIMEOUT=5\n' > "$DV_CONFIG"
+  appserver_checkout_setup
+  state="$DV_STATE/AS-1/appserver"
+  printf '%s\n' "$outcome" > "$CASE_DIR/server/outcome"
+  touch "$CASE_DIR/server/hold-mutation"
+  dv send AS-1 'in-flight update' > "$CASE_DIR/receipt" & sender=$!
+  wait_file "$CASE_DIR/server/mutation-held"
+  appserver_checkout_update
+  # A whole poll interval elapses while the server holds the RPC response.
+  sleep 1
+  test ! -f "$CASE_DIR/client-versions"
+  jq -se '[.[]|select(.method=="thread/resume")]|length==0' "$CASE_DIR/server/requests"
+  printf '{"id":"queued","operation":"send","text":"queued update"}\n' > "$state/outbox/queued.json"
+  touch "$CASE_DIR/server/release-mutation"
+  wait "$sender" || rc=$?
+  jq -e --arg outcome "$outcome" '.outcome==$outcome' "$CASE_DIR/receipt"
+  id=$(jq -r .id "$CASE_DIR/receipt")
+  test -f "$state/outbox/$id.finished"
+  if [ "$outcome" = accepted ]; then test "$rc" = 0; else test "$rc" != 0; fi
+  appserver_wait_updated
+  wait_file "$state/outbox/queued.finished"
+  jq -e --arg outcome "$outcome" '.outcome==$outcome' "$state/outbox/queued.receipt"
+  jq -se '[.[]|select(.method=="turn/steer")]|length==2 and all(.[]; .params.threadId=="thread-1")' "$CASE_DIR/server/requests"
+  jq -se '[.[]|select(.method=="thread/start" or .method=="thread/goal/set" or .method=="turn/start")]|length==3' "$CASE_DIR/server/requests"
+  jq -se '[.[]|select(.method=="thread/resume")]|length==1 and .[0].params.threadId=="thread-1"' "$CASE_DIR/server/requests"
+  # Another update must not replay either a finished or an uncertain receipt.
+  rm "$CASE_DIR/server/resumed"
+  appserver_checkout_update
+  appserver_wait_updated
+  dv status AS-1 --json >/dev/null
+  jq -se '[.[]|select(.method=="turn/steer")]|length==2' "$CASE_DIR/server/requests"
+  test "$(wc -l < "$CASE_DIR/client-versions" | tr -d ' ')" = 2
+}
+case_appserver_reexec_accepted() { appserver_reexec_delivery accepted; }
+case_appserver_reexec_refused() { appserver_reexec_delivery refused; }
+case_appserver_reexec_unknown() { appserver_reexec_delivery unknown; }
+case_appserver_legacy_capacity() {
+  appserver_checkout_setup true
+  local state="$DV_STATE/AS-1/appserver"
+  appserver_capacity_error '{"message":"model at capacity","codexErrorInfo":"serverOverloaded"}'
+  touch "$state/blocked"
+  appserver_checkout_update
+  appserver_wait_updated
+  # The first poll evaluates the legacy marker without requiring a watch call.
+  wait_file "$state/capacity-since"
+  test ! -f "$state/blocked"
+  jq -e '.recoveries==0' "$state/recoveries.json"
+  jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
+  printf '0\n' > "$state/capacity-since"
+  dv _appserver-watch
+  jq -e '.recoveries==1 and .last_recovery_reason=="capacity"' "$state/recoveries.json"
+  dv _appserver-watch
+  test -f "$state/blocked"
+  rm "$CASE_DIR/server/resumed"
+  appserver_checkout_update
+  appserver_wait_updated
+  dv _appserver-watch
+  jq -se '[.[]|select(.method=="turn/start" and .params.input[0].text=="continue")]|length==1' "$CASE_DIR/server/requests"
+  jq -se '[.[]|select(.kind=="blocked")]|length==1' "$DV_STATE/AS-1/events.log"
+}
+appserver_legacy_guard() {
+  local guard=$1 state
+  export DV_RECOVER_MAX=1
+  appserver_checkout_setup true
+  state="$DV_STATE/AS-1/appserver"
+  appserver_capacity_error '{"message":"model at capacity"}'
+  touch "$state/blocked"
+  case "$guard" in
+    budget) printf '{"recoveries":1,"last_recovery_reason":"capacity"}\n' > "$state/recoveries.json" ;;
+    episode) printf '{"turn_id":null}\n' > "$state/recovery" ;;
+    idle) rm "$CASE_DIR/server/thread.json"; printf 'idle\n' > "$CASE_DIR/server/status" ;;
+    done)
+      jq -n --arg head "$(git -C "$(jq -r .worktree "$DV_STATE/AS-1/meta")" rev-parse HEAD)" '{head:$head}' > "$DV_STATE/AS-1/done.json" ;;
+    inactive)
+      jq '.status="done"' "$DV_STATE/AS-1/meta" > "$CASE_DIR/meta"
+      mv "$CASE_DIR/meta" "$DV_STATE/AS-1/meta" ;;
+    question)
+      printf '{"id":"question-1","params":{"questions":[{"id":"choice","question":"Choose"}]}}\n' > "$state/questions/question.json" ;;
+  esac
+  appserver_checkout_update
+  appserver_wait_updated
+  dv _appserver-watch
+  dv status AS-1 --json >/dev/null
+  test -f "$state/blocked"
+  test ! -f "$state/capacity-since"
+  jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
+  case "$guard" in
+    budget|episode) jq -e '.recoveries==1' "$state/recoveries.json" ;;
+    *) test ! -f "$state/recoveries.json" ;;
+  esac
+}
+case_appserver_legacy_budget() { appserver_legacy_guard budget; }
+case_appserver_legacy_episode() { appserver_legacy_guard episode; }
+case_appserver_legacy_idle() { appserver_legacy_guard idle; }
+case_appserver_legacy_done() { appserver_legacy_guard done; }
+case_appserver_legacy_inactive() { appserver_legacy_guard inactive; }
+case_appserver_legacy_question() { appserver_legacy_guard question; }
 appserver_scratch_root() {
   local mode=$1 scratch="$CASE_DIR/scratch" rc=0
   if [ "$mode" = long ]; then
