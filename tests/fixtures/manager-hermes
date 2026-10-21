@@ -13,6 +13,9 @@ until (set -C; : > "$stub/lock") 2>/dev/null; do sleep 0.01; done
 n=1; [ ! -f "$stub/calls" ] || n=$(( $(wc -l < "$stub/calls") + 1 ))
 cp "$prompt" "$stub/prompt-$n"
 jq -cn --arg resume "$resume" --arg cwd "$PWD" --argjson args "$args" '{resume:$resume,cwd:$cwd,args:$args}' >> "$stub/calls"
+if [ -f "$stub/fail-worker-once" ] && jq -e 'index("--pass-session-id")==null' <<< "$args" >/dev/null; then
+  rm "$stub/fail-worker-once" "$stub/lock"; touch "$stub/worker-failed"; exit 9
+fi
 if [ -n "$resume" ] && [ -f "$stub/fail-resume" ]; then
   rm "$stub/fail-resume" "$stub/lock"; printf 'Session not found\n' >&2; exit 1
 fi
@@ -29,6 +32,11 @@ active=$(find "$stub" -name 'active-*' -type f | wc -l | tr -d ' ')
 if [ "$active" -gt 1 ]; then touch "$stub/parallel"; fi
 if [ "$active" -gt "${DV_MAX_WORKERS:-4}" ]; then touch "$stub/over-capacity"; fi
 rm "$stub/lock"
+if [ -n "$resume" ]; then
+  while [ -f "$stub/hold-resume" ]; do sleep 0.05; done
+elif jq -e 'index("--pass-session-id")==null' <<< "$args" >/dev/null; then
+  while [ -f "$stub/hold-worker" ]; do sleep 0.05; done
+fi
 sleep "${HERMES_HOLD:-0.01}"
 rm "$stub/active-$sid"
 printf '%s\n' "$sid" >> "$stub/finished"
