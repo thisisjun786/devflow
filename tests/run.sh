@@ -15,6 +15,8 @@ setup() {
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
+  export DV_CODEX_MODE=goal
+  unset DV_MODE
   unset CODEX_HOME
   export DV_TRUSTED_REPOS='' DV_CODEX_ENV_FILE="$HOME/.opencodex/codex-auth-env.sh"
   unset DV_AGENT_QUESTIONS DV_AWARD_TOKEN CLAUDE_CONFIG_DIR
@@ -379,7 +381,7 @@ case_worker_prompt_host() {
 }
 assert_question_args() {
   local issue=$1 agent=$2 mode=${DV_AGENT_QUESTIONS:-sion}
-  if [ "$(jq -r .backend "$DV_STATE/$issue/meta")" = tmux ]; then mode=off; fi
+  if [ "$(jq -r .backend "$DV_STATE/$issue/meta")" != herdr ]; then mode=off; fi
   if [ "$agent" = codex ]; then
     jq -e --arg mode "$mode" '
       index("tools.experimental_request_user_input.enabled=false") as $i |
@@ -510,6 +512,11 @@ herdr_setup() {
   export DV_CLAUDE_BIN="$ROOT/tests/fixtures/herdr-agent" DV_DEVIN_BIN="$ROOT/tests/fixtures/herdr-agent"
 }
 wait_native() {
+  if [ "$(jq -r .backend "$DV_STATE/$1/meta")" = exec ]; then
+    wait_done "$1"
+    test "$(cat "$DV_STATE/$1/agent.exit")" = 0
+    return
+  fi
   wait_file "$CASE_DIR/herdr/w-$1/exit"
   test "$(cat "$CASE_DIR/herdr/w-$1/exit")" = 0
   wait_file "$DV_STATE/$1/agent.exit"
@@ -897,7 +904,7 @@ case_herdr_agents_land() {
   dv start "$REPO" H-4 native --agent claude; wait_native H-4
   jq -e 'index("opus")!=null and index("--dangerously-skip-permissions")!=null' "$DV_STATE/H-4/args.json"
   dv start "$REPO" H-5 native --mode exec; wait_native H-5
-  jq -e 'index("exec")!=null and index("hooks")==null' "$DV_STATE/H-5/args.json"
+  jq -e 'index("exec")!=null and index("hooks")!=null' "$DV_STATE/H-5/args.json"
   DV_TEST_CMD='test -f H-5.txt' dv land H-5
   test ! -f "$CASE_DIR/herdr/w-H-5/workspace"
   test -f "$CASE_DIR/herdr/w-H-3/workspace"; test -f "$CASE_DIR/herdr/w-H-4/workspace"
@@ -1612,6 +1619,10 @@ source "$ROOT/tests/bidding-order.sh"
 source "$ROOT/tests/manager.sh"
 # shellcheck source=tests/revive.sh
 source "$ROOT/tests/revive.sh"
+# shellcheck source=tests/codex-exec.sh
+source "$ROOT/tests/codex-exec.sh"
+# shellcheck source=tests/codex-exec-review.sh
+source "$ROOT/tests/codex-exec-review.sh"
 # shellcheck source=tests/portability.sh
 source "$ROOT/tests/portability.sh"
 # shellcheck source=tests/metrics.sh
@@ -1619,7 +1630,15 @@ source "$ROOT/tests/metrics.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart; do
+for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart metrics_exec metrics_exec_events; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in exec_cleanup_success exec_cleanup_failure exec_cleanup_signal exec_exhausted_rebids exec_land_running exec_land_github_running exec_land_failed; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in exec_success exec_config_flags exec_nonzero exec_capacity exec_rate exec_silence exec_unfinished exec_retry exec_send exec_working exec_fresh exec_partial exec_followup_unfinished exec_no_terminal; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
   else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
 done

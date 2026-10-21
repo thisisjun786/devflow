@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exited=false
+[ ! -f "$DV_STATE/$2/agent.exit" ] || exited=true
+jq -cn --arg kind "$1" --arg issue "$2" --arg host "$4" --arg head "$5" --arg id "$6" --arg token "$7" --argjson exited "$exited" \
+  '{kind:$kind,issue:$issue,host:$host,head:$head,id:$id,token:$token,exited:$exited}' >> "$CASE_DIR/exec-kicks.jsonl"
+exec "$ROOT/bin/dv-kick" "$@"

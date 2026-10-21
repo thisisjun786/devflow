@@ -275,3 +275,17 @@ case_metrics_collector_restart() {
   test "$(wc -l < "$CASE_DIR/metrics-ssh.started" | tr -d ' ')" = 1
   metrics_stop_watch
 }
+case_metrics_exec() {
+  case_exec_retry
+  dv metrics --json | jq -e '.[0] | .revive_count==1 and .agent_resume_count==1'
+  dv send EX-1 'Continue after the exec retry'
+  exec_wait
+  dv metrics --json | jq -e '.[0] | .revive_count==1 and .agent_resume_count==2'
+}
+case_metrics_exec_events() {
+  metrics_fixture
+  cmd__metrics_sample >/dev/null
+  METRICS_NOW=220; cmd__metrics_sample >/dev/null
+  printf '{"type":"item.completed"}\n' > "$DV_STATE/P-1/agent.jsonl"
+  METRICS_NOW=280; cmd__metrics_sample | jq -e '.[0].idle_seconds==0'
+}

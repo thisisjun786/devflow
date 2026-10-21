@@ -60,6 +60,7 @@ metrics_fingerprint() (
     done < <(git ls-files -c -o --exclude-standard -z)
     else printf 'worktree missing\n'; fi
     [ ! -f "$state/events.log" ] || cksum < "$state/events.log"
+    [ ! -f "$state/agent.jsonl" ] || cksum < "$state/agent.jsonl"
     cksum < "$state/meta"
     metrics_records "$state/metrics"
   } | cksum
