@@ -199,9 +199,17 @@ case_watch_inflight_replay() {
     sleep 0.1
   done
   test ! -s "$DV_HOME/seen"
+  # Queue persistence precedes dispatch. Observe the child actually starting
+  # before counting it, rather than racing the watcher after cursor advance.
+  for _ in {1..100}; do
+    [ "$(find "$DV_HOME/workers" -name '*.started' | wc -l | tr -d ' ')" = 0 ] || break
+    sleep 0.1
+  done
   test "$(find "$DV_HOME/workers" -name '*.started' | wc -l | tr -d ' ')" = 1
   touch "$DV_HOME/release"
   wait_seen 1
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  test "$(find "$DV_HOME/workers" -name '*.started' | wc -l | tr -d ' ')" = 1
 }
 case_watch_killed() {
   watch_fixture

@@ -1,6 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
+if [ -f "$GH_STUB_DIR/qa-pr" ]; then
+  case "$*" in
+    'api repos/test/repo/commits/'*'/pulls') jq -s . "$GH_STUB_DIR/qa-pr"; exit ;;
+    'api --paginate repos/test/repo/issues?state=open&per_page=100') cat "$GH_STUB_DIR/qa-issues"; exit ;;
+    'api --paginate repos/test/repo/issues/'*'/comments?per_page=100') cat "$GH_STUB_DIR/qa-comments"; exit ;;
+    'label create '*) exit ;;
+    'issue edit '*) printf 'issue-edit %s\n' "$2" >> "$GH_STUB_DIR/qa-actions"; exit ;;
+    'issue comment '*|'pr comment '*)
+      target=$3
+      action=issue-comment; [ "$1" != pr ] || action=qa-summary
+      printf '%s %s\n' "$action" "$target" >> "$GH_STUB_DIR/qa-actions"
+      while [ "$1" != --body-file ]; do shift; done
+      jq --rawfile body "$2" '.+[{body:$body}]' "$GH_STUB_DIR/qa-comments" > "$GH_STUB_DIR/qa-comments.tmp"
+      mv "$GH_STUB_DIR/qa-comments.tmp" "$GH_STUB_DIR/qa-comments"
+      exit ;;
+    'api --method POST repos/test/repo/issues --input -')
+      cat > "$GH_STUB_DIR/qa-created"
+      printf 'issue-create\n' >> "$GH_STUB_DIR/qa-actions"
+      jq --slurpfile created "$GH_STUB_DIR/qa-created" '.+[$created[0]+{number:20,state:"open"}]' "$GH_STUB_DIR/qa-issues" > "$GH_STUB_DIR/qa-issues.tmp"
+      mv "$GH_STUB_DIR/qa-issues.tmp" "$GH_STUB_DIR/qa-issues"
+      printf '{"html_url":"https://github.com/test/repo/issues/20"}\n'; exit ;;
+    'issue list '*) cat "$GH_STUB_DIR/qa-issues"; exit ;;
+  esac
+fi
 case "$*" in
   'api --paginate repos/'*/comments)
     [ ! -f "$GH_STUB_DIR/comments-fail" ] || exit 1
