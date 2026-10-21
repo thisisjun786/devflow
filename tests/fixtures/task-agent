@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+jq -n --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" > "$state/task-agent.json"
+if [ "$(jq -r .backend "$state/meta")" = exec ]; then
+  printf '{"type":"thread.started","thread_id":"task-fixture"}\n'
+fi
+if [ "$(jq -r '.agent+":"+.mode+":"+.backend' "$state/meta")" = codex:goal:herdr ]; then
+  printf 'dv-ready>\n'
+  for _ in {1..100}; do
+    [ ! -f "$state/goal-input" ] || break
+    sleep 0.05
+  done
+  test -f "$state/goal-input"
+fi
+if [ "${DV_TASK_TEST_HOLD:-0}" = 1 ]; then
+  printf '%s\n' "$$" > "$state/held.pid"
+  while :; do sleep 0.1; done
+fi
+mkdir -p out/nested
+printf 'Summary citing input.txt\n' > out/summary.txt
+printf 'input.txt\n' > out/nested/source.txt
+printf 'Produced summary.txt. Source: input.txt. Open points: none.\n' > "$state/report.md"
+dv 'done' "$DV_ISSUE"
+if [ "${DV_TASK_TEST_WAIT_AFTER_DONE:-0}" = 1 ]; then
+  printf '%s\n' "$$" > "$state/held.pid"
+  touch "$state/after-done"
+  while [ ! -f "$state/release" ]; do sleep 0.05; done
+fi
+if [ "${DV_TASK_TEST_MUTATE_AFTER_DONE:-0}" = 1 ]; then
+  printf 'late change\n' >> out/summary.txt
+fi
+exit "${DV_TASK_TEST_EXIT_AFTER_DONE:-0}"

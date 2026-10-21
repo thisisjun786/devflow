@@ -32,9 +32,27 @@ source "$DV_ROOT/lib/stack.sh"
 source "$DV_ROOT/lib/polish.sh"
 # shellcheck source=lib/manager.sh
 source "$DV_ROOT/lib/manager.sh"
+# shellcheck source=lib/task.sh
+source "$DV_ROOT/lib/task.sh"
 # shellcheck source=lib/qa.sh
 source "$DV_ROOT/lib/qa.sh"
 command=${1:-help}; [ "$#" -eq 0 ] || shift
+if [ "$command" = submit ] && [ "${1:-}" = --kind ]; then
+  [ "$#" -ge 2 ] || fail 'missing --kind value'
+  kind=$2; shift 2
+  case "$kind" in task) task_submit "$@"; exit ;; code) ;; *) fail 'kind must be code or task' ;; esac
+fi
+case "$command" in
+  help|--help|-h) printf '%s\n' 'dv submit --kind task <workspace> <ISSUE> <slug> --brief FILE [--agent codex|claude]' 'dv land <task ISSUE> --checked HEAD (after checking out/ and report.md)' ;;
+  land|clean|pr|pr-wait|_pr-wait-start|review|polish)
+    if task_issue "${1:-}"; then
+      case "$command" in
+        land) task_land "$@" ;; clean) task_clean "$@" ;;
+        *) fail 'task jobs have no PR, CI or code review; inspect out/ and report.md, then dv land TASK --checked HEAD' ;;
+      esac
+      exit
+    fi ;;
+esac
 case "$command" in
   manager) cmd_manager "$@" ;;
   qa) cmd_qa "$@" ;;
