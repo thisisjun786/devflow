@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
+case "$1 $2" in
+  'pr view')
+    number=${3##*/}; file="$GH_STUB_DIR/pr-$number.json"
+    [ ! -f "$GH_STUB_DIR/fail-$number" ] || exit 1
+    jq --arg head "$(git --git-dir="$CASE_DIR/remote.git" rev-parse "refs/heads/stack-$number")" \
+      '.headRefOid=$head | if .checked_head==$head then . else .statusCheckRollup=[] end' "$file" ;;
+  'pr merge')
+    number=${3##*/}; file="$GH_STUB_DIR/pr-$number.json"
+    head=$(git --git-dir="$CASE_DIR/remote.git" rev-parse "refs/heads/stack-$number")
+    [ "$5" = --match-head-commit ] && [ "$6" = "$head" ]
+    git -C "$REPO" fetch -q origin "stack-$number"
+    case "$4" in
+      --squash) git -C "$REPO" merge --squash "$head"; git -C "$REPO" commit -qm "squash PR $number" ;;
+      --rebase) git -C "$REPO" cherry-pick "$head" ;;
+      --merge) git -C "$REPO" merge --no-edit --no-ff "$head" ;;
+      *) exit 1 ;;
+    esac
+    git -C "$REPO" push -q origin dev
+    jq --arg merged "$(git -C "$REPO" rev-parse HEAD)" '.state="MERGED" | .mergeCommit={oid:$merged}' "$file" > "$file.tmp"; mv "$file.tmp" "$file"
+    printf '%s\n' "$number" >> "$GH_STUB_DIR/order" ;;
+  'api repos/test/repo')
+    jq -n --arg method "${STACK_TEST_METHOD:-merge}" \
+      '{allow_merge_commit:($method=="merge"),allow_squash_merge:($method=="squash"),allow_rebase_merge:($method=="rebase")}' ;;
+  *) printf 'Unexpected stack gh: %s\n' "$*" >&2; exit 1 ;;
+esac
