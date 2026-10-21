@@ -138,6 +138,21 @@ case_appserver_states() {
   dv clean AS-1
   test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
 }
+case_appserver_large_reply() {
+  # A multi-MB thread/read reply arrives over many one-second reads. It must be
+  # assembled, not dropped, so status, clean and land see the real state.
+  appserver_setup
+  head -c 3000000 /dev/zero | tr '\0' 'x' > "$CASE_DIR/big.txt"
+  jq -cn --rawfile big "$CASE_DIR/big.txt" '{thread:{id:"thread-1",status:{type:"idle"},
+    turns:[{id:"turn-1",status:"completed",error:null,
+      items:[{type:"agentMessage",id:"m1",text:$big},{type:"agentMessage",id:"m2",text:"finished"}]}]}}' \
+    > "$CASE_DIR/server/thread.json"
+  printf 'complete\n' > "$CASE_DIR/server/goal"
+  dv status AS-1 --json | jq -e '.[0] | .agent_status=="goal-complete" and .alive==true'
+  dv 'done' AS-1
+  dv clean AS-1
+  test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
+}
 case_appserver_failed() {
   appserver_setup
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"failed","items":[],"error":{"message":"model failed","codexErrorInfo":"other"}}]}}' > "$CASE_DIR/server/thread.json"
