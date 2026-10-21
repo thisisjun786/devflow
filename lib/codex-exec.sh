@@ -25,7 +25,7 @@ codex_exec_status() {
   else printf 'failed\n'; fi
 }
 codex_exec_stop() {
-  if [ -n "$exec_child" ]; then
+  if [ -n "${exec_child:-}" ]; then
     bid_stop_tree "$exec_child"
     exec_stopped_rc=0
     wait "$exec_child" 2>/dev/null || exec_stopped_rc=$?
@@ -33,8 +33,13 @@ codex_exec_stop() {
   fi
 }
 codex_exec_cleanup() {
+  # Normal returns must clean up before the function's locals leave scope.
+  # EXIT still covers errors and signals while the function is executing.
+  trap - EXIT
+  trap '' INT TERM
   codex_exec_stop
   owned_unlock "$S/.exec-lock" "$$"
+  trap - INT TERM
 }
 codex_exec_events() {
   local line event kind session
@@ -114,19 +119,24 @@ codex_exec_run() {
     if [ -z "$exec_reason" ]; then
       meta_set '.exec_status="done" | del(.failure_reason)'
       printf '%s\n' "$rc" > "$S/agent.exit"
+      codex_exec_cleanup
       return 0
     fi
     printf '%s\n' "$exec_reason" > "$S/exec/$run/failure"
     meta_set --arg reason "$exec_reason" '.exec_status=(if $reason|startswith("stalled:") then "stalled" elif $reason|startswith("failed-to-finish:") then "failed-to-finish" else "failed" end) | .failure_reason=$reason'
     if [ ! -f "$S/exec-retry.used" ]; then
       printf '%s\n' "$run" > "$S/exec-retry.used"
-      cmd_kick failed "$ISSUE" "$exec_reason; retrying once in the same worktree"
+      # A failed event is terminal for the scheduler. Keep the retry local so
+      # it cannot consume/deduplicate the eventual terminal failure event.
+      printf '%s; retrying once in the same worktree\n' "$exec_reason" >> "$S/log"
       instruction="Continue the interrupted request in this worktree. Preserve existing changes. The original request follows:
 $original_instruction"
     else
       meta_set '.status="blocked" | .exec_status="blocked"'
-      cmd_kick blocked "$ISSUE" "$exec_reason; automatic exec retry already attempted"
       printf '%s\n' "$rc" > "$S/agent.exit"
+      codex_exec_cleanup
+      cmd_kick failed "$ISSUE" "$exec_reason; automatic exec retry already attempted"
+      cmd_kick blocked "$ISSUE" "$exec_reason; automatic exec retry already attempted"
       return 1
     fi
   done

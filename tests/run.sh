@@ -1621,11 +1621,17 @@ source "$ROOT/tests/manager.sh"
 source "$ROOT/tests/revive.sh"
 # shellcheck source=tests/codex-exec.sh
 source "$ROOT/tests/codex-exec.sh"
+# shellcheck source=tests/codex-exec-review.sh
+source "$ROOT/tests/codex-exec-review.sh"
 # shellcheck source=tests/portability.sh
 source "$ROOT/tests/portability.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in exec_cleanup_success exec_cleanup_failure exec_cleanup_signal exec_exhausted_rebids exec_land_running exec_land_github_running exec_land_failed; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
 for name in exec_success exec_config_flags exec_nonzero exec_capacity exec_rate exec_silence exec_unfinished exec_retry exec_send exec_working exec_fresh exec_partial exec_followup_unfinished exec_no_terminal; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
   else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi

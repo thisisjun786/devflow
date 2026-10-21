@@ -2,7 +2,7 @@
 # Native exec tests use only temporary repositories, fake agents and local kicks.
 # shellcheck disable=SC2154,SC2016
 exec_setup() {
-  repo exec
+  repo exec "${2:-}"
   unset DV_MODE DV_CODEX_MODE
   export DV_HERDR=1 DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/codex-exec" DV_STALL_AFTER=2
   export DV_EXEC_SCENARIO=${1:-success}
@@ -59,7 +59,8 @@ case_exec_retry() {
   dv start "$REPO" EX-1 exec --mode exec
   exec_wait
   jq -se 'length==2 and (.[1].args|index("resume")!=null and index("fixture-thread")!=null)' "$DV_STATE/EX-1/stub-runs.jsonl"
-  jq -se 'map(.kind)==["failed","done"]' "$DV_STATE/EX-1/events.log"
+  jq -se 'map(.kind)==["done"]' "$DV_STATE/EX-1/events.log"
+  grep -F 'retrying once' "$DV_STATE/EX-1/log"
   jq -e '.status=="done"' "$DV_STATE/EX-1/meta"
 }
 case_exec_send() {
