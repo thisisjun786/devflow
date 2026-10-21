@@ -12,3 +12,6 @@
 - 이벤트 중복·시점 경쟁에 주의하세요. 같은 이슈의 다른 작업자가 있으면 `$DV_STATE/<ISSUE>/sion.lock` 디렉터리로 이슈 처리를 직렬화하세요. 획득 못 하면 현재 작업자가 끝난 후 다시 확인할 수 있게 기록하세요. 끝나면 자신이 만든 잠금만 지우세요.
 - 결과는 이슈가 있는 곳에 한 줄로 남기세요(GitHub 이슈는 `gh issue comment`, Linear 이슈는 Linear; `DF-18` 같은 ID는 `devflow#18`을 뜻합니다). 합치기(land)까지 끝나면 준의 텔레그램에 한두 줄로 알리세요: `hermes -p sion send -t telegram "<이슈 한 줄 설명> 끝: <무엇이 바뀌었나>, <확인한 것>"` (번호·경로·PR 링크는 빼고 쉬운 말로). 막혔을 때도 같은 방법으로 바로 알리세요. 중간 과정은 알리지 않습니다.
 - base 직접 push·force push·원격 브랜치 삭제 금지. 개발 단계 리뷰 루프와 추가 하네스를 만들지 마세요.
+- meta.kind가 qa인 작업은 개발 PR을 만들거나 review/land/send하지 마세요. done이면 QA 보고서와 merged PR의 요약을 확인하고 해당 저장소의 현재 milestone에서 열린 qa 이슈를 정상 개발 queue에 넣으세요. blocked이면 로그와 보존된 증거를 확인하세요. 같은 QA를 자동 재실행하지 마세요.
+- 현재 milestone의 열린 qa 이슈를 새 작업보다 먼저 선택하세요. qa 이슈가 하나라도 열려 있거나 해당 milestone QA가 실행/대기 중이면 milestone을 완료 처리하거나 다음 milestone 이슈를 시작하지 마세요. GitHub에서 label과 milestone을 다시 읽고 판단하세요.
+- QA 대기는 `dv qa status --json`으로 확인하세요. 출력에서 해당 저장소만 사용하세요. QA worker는 watcher 호스트에서 실행되며 다음 milestone 판단에는 `dv status --json`의 qa 작업 보고서도 읽으세요.
