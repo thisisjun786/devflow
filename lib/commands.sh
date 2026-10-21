@@ -647,7 +647,7 @@ cmd_send() {
 }
 cmd_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean ISSUE'; load_issue "$1"; issue_lock
-  clean_worktree
+  clean_worktree idle
   meta_set --argjson time "$(now)" '.cleaned_at=$time'
 }
 clean_worktree() {
