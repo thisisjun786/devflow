@@ -16,6 +16,12 @@ case_symlink_claude_stale_server() { needs_tmux; symlink_tmp_case claude_stale_s
 case_symlink_claude_stale_server_empty() { needs_tmux; symlink_tmp_case claude_stale_server_empty; }
 case_symlink_revive_dead() { symlink_tmp_case revive_dead; }
 case_symlink_revive_tmux() { needs_tmux; symlink_tmp_case revive_tmux; }
+case_symlink_task_land() { needs_tmux; symlink_tmp_case task_land; }
+case_symlink_exec_send() {
+  # A child shell may report the physical cwd for a symlinked worktree.
+  printf 'set -P\n' > "$CASE_DIR/physical-cd"
+  BASH_ENV="$CASE_DIR/physical-cd" symlink_tmp_case exec_send
+}
 case_revive_wait_exit() {
   # Completion metadata precedes the fake terminal wrapper's final writes.
   RV_STATE="$DV_STATE/RV-1"

@@ -136,11 +136,13 @@ case_manager_capacity_restart() {
 }
 case_manager_fallback_restart() {
   manager_setup
-  export DV_WORKER_RETRY=1
+  # Keep the first retry pending regardless of scheduler/poll timing. Advance
+  # only this fixture's durable retry deadline after the watcher has stopped.
+  export DV_WORKER_RETRY=3600
   dv manager start "$REPO"
   manager_event M-2 "$REPO"
   manager_functions
-  local dir job line
+  local dir job line slot
   dir=$(dirname "$(manager_meta)")
   line=$(cat "$DV_HOME/kick.q")
   manager_enqueue "$line" "$CASE_DIR/brief" 0
@@ -155,6 +157,9 @@ case_manager_fallback_restart() {
   wait_file "$CASE_DIR/hermes/worker-failed"
   touch "$DV_HOME/stop"; wait "$watcher"
   test -f "$job"
+  slot=$(manager_fallback_slot "$dir" "$job")
+  test -s "$slot.retry"
+  printf '0\n' > "$slot.retry"
   rm "$DV_HOME/stop"
   manager_watch_until 3
   test -f "${job%.json}.done"
