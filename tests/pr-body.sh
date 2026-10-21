@@ -35,6 +35,72 @@ case_pr_fallback_summary() {
   if grep -F -e "$DV_STATE" -e '$DV_STATE' -e '$S/' -e '.local/state/devflow' -e 'Internal report tail.' "$GH_STUB_DIR/live-body"; then return 1; fi
   test "$(wc -c < "$GH_STUB_DIR/live-body")" -lt 1200
 }
+case_pr_fallback_private_paths() {
+  pr_body_setup
+  {
+    printf '# Changes\n\nPublishes a safe report summary.\n'
+    printf 'Worktree: `%s`\nHome: "%s"\nRepository: %s\n' "$PR_WT" "$HOME" "$REPO"
+    printf 'Saved in %s/PUB-1/report.md\n' "$DV_STATE"
+    cat <<'PATHS'
+Private absolute: /home/reporter/project/report.md
+Private home: ~/project/report.md
+Private named home: ~reporter/project/report.md
+Private link: [report](/opt/project/report.md)
+Private label:path=/var/private/report.md
+Private quoted:'/srv/private/report.md'
+Private root: /
+Private variable: $HOME
+Private variable: ${HOME}/project
+Private variable: $WT/report.md
+Private variable: ${WT}
+Private variable: $DV_STATE/report.md
+Private variable: ${DV_STATE}
+Private variable: $REPO/report.md
+Private variable: $S/report.md
+PATHS
+  } > "$PR_STATE/report.md"
+  pr_body_publish
+  printf 'Publishes a safe report summary.\n' > "$CASE_DIR/expected-summary"
+  if ! cmp "$CASE_DIR/expected-summary" "$GH_STUB_DIR/live-body"; then
+    cat "$GH_STUB_DIR/live-body"; return 1
+  fi
+}
+case_pr_fallback_private_hosts() {
+  pr_body_setup
+  # Configuration values need not be exported to child processes.
+  cat > "$DV_CONFIG" <<'CONFIG'
+DV_HOSTS='build.internal
+worker-02'
+DV_PULL_HOSTS='pull.internal pull-02'
+DV_HOST=local.internal
+CONFIG
+  cat > "$PR_STATE/report.md" <<'REPORT'
+# Changes
+
+Publishes a safe report summary.
+Built on build.internal.
+Run on worker-02.
+Pulled from pull.internal.
+Fallback: pull-02.
+Local runtime is local.internal.
+REPORT
+  pr_body_publish
+  printf 'Publishes a safe report summary.\n' > "$CASE_DIR/expected-summary"
+  if ! cmp "$CASE_DIR/expected-summary" "$GH_STUB_DIR/live-body"; then
+    cat "$GH_STUB_DIR/live-body"; return 1
+  fi
+}
+case_pr_fallback_public_tokens() {
+  pr_body_setup
+  printf "DV_HOSTS=''\nDV_PULL_HOSTS=''\nDV_HOST=''\n" > "$DV_CONFIG"
+  cat > "$PR_STATE/report.md" <<'REPORT'
+Updates src/lib.sh and tests/run.sh.
+See [docs](https://example.test/guide) and https://example.test/a/b.
+Keep `a/b`, `$HOMEWORK`, and foo~bar unchanged.
+REPORT
+  pr_body_publish
+  cmp "$PR_STATE/report.md" "$GH_STUB_DIR/live-body"
+}
 case_pr_fallback_missing() {
   pr_body_setup
   rm "$PR_STATE/report.md"
