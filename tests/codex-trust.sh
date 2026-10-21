@@ -16,6 +16,8 @@ case_codex_allowlist() {
 }
 case_codex_persisted_trust() {
   repo 'trust "quoted"'; herdr_setup
+  local root
+  root=$(cd "$REPO" && pwd -P)
   mkdir -p "$HOME/.codex"
   printf '# preserve user settings\nmodel = "test"\n\n[projects."/elsewhere"]\ntrust_level = "untrusted"\n' > "$HOME/.codex/config.toml"
   cp "$HOME/.codex/config.toml" "$CASE_DIR/original"
@@ -24,7 +26,7 @@ case_codex_persisted_trust() {
   dv start "$REPO" TRUST-1 trust --mode exec
   wait_native TRUST-1
   head -n 5 "$HOME/.codex/config.toml" | cmp "$CASE_DIR/original" -
-  grep -Fx "[projects.$(jq -Rn --arg path "$REPO" '$path')]" "$HOME/.codex/config.toml"
+  grep -Fx "[projects.$(jq -Rn --arg path "$root" '$path')]" "$HOME/.codex/config.toml"
   grep -Fx 'trust_level = "trusted"' "$HOME/.codex/config.toml"
   cp "$HOME/.codex/config.toml" "$CASE_DIR/trusted"
   dv start "$REPO" TRUST-2 trust --mode exec
@@ -34,8 +36,10 @@ case_codex_persisted_trust() {
 }
 case_codex_trust_conflict() {
   repo conflict; herdr_setup
+  local root
+  root=$(cd "$REPO" && pwd -P)
   mkdir -p "$HOME/.codex"
-  printf '[projects."%s"]\ntrust_level = "untrusted"\n' "$REPO" > "$HOME/.codex/config.toml"
+  printf '[projects."%s"]\ntrust_level = "untrusted"\n' "$root" > "$HOME/.codex/config.toml"
   cp "$HOME/.codex/config.toml" "$CASE_DIR/original"
   if dv start "$REPO" CONFLICT-1 trust > "$CASE_DIR/denied.log" 2>&1; then return 1; fi
   grep -Fi 'untrusted' "$CASE_DIR/denied.log"
@@ -44,8 +48,10 @@ case_codex_trust_conflict() {
 }
 case_codex_trust_duplicate() {
   repo duplicate; herdr_setup
+  local root
+  root=$(cd "$REPO" && pwd -P)
   mkdir -p "$HOME/.codex"
-  printf '[projects."%s"]\ntrust_level = "untrusted"\ntrust_level = "trusted"\n' "$REPO" > "$HOME/.codex/config.toml"
+  printf '[projects."%s"]\ntrust_level = "untrusted"\ntrust_level = "trusted"\n' "$root" > "$HOME/.codex/config.toml"
   cp "$HOME/.codex/config.toml" "$CASE_DIR/original"
   if dv start "$REPO" DUP-1 trust > "$CASE_DIR/duplicate.log" 2>&1; then cat "$CASE_DIR/duplicate.log"; return 1; fi
   cmp "$CASE_DIR/original" "$HOME/.codex/config.toml"
@@ -96,6 +102,8 @@ case_codex_provider_env() {
 }
 case_codex_trust_formats() {
   repo formats; herdr_setup
+  local root
+  root=$(cd "$REPO" && pwd -P)
   mkdir -p "$HOME/.codex"
   # Literal strings, quoted provider keys, comments and dotted assignments.
   cat > "$HOME/.codex/config.toml" <<CONFIG
@@ -103,7 +111,7 @@ case_codex_trust_formats() {
 [model_providers.'custom']
   env_key = 'DF43_TEST_TOKEN'
 [projects]
-'$REPO'.trust_level = 'trusted' # keep this spelling
+'$root'.trust_level = 'trusted' # keep this spelling
 CONFIG
   cp "$HOME/.codex/config.toml" "$CASE_DIR/original"
   export DF43_TEST_TOKEN=fixture-secret
@@ -115,8 +123,9 @@ CONFIG
 case_codex_trust_refuse() {
   repo unsupported; herdr_setup
   mkdir -p "$HOME/.codex"
-  local config
-  for config in "[projects.\"$REPO\"]" 'projects = { "/somewhere" = { trust_level = "trusted" } }' 'model_provider = "unfinished'; do
+  local config root
+  root=$(cd "$REPO" && pwd -P)
+  for config in "[projects.\"$root\"]" 'projects = { "/somewhere" = { trust_level = "trusted" } }' 'model_provider = "unfinished'; do
     printf '%s\n' "$config" > "$HOME/.codex/config.toml"
     cp "$HOME/.codex/config.toml" "$CASE_DIR/original"
     if dv start "$REPO" REFUSE-1 trust > "$CASE_DIR/refuse.log" 2>&1; then return 1; fi
@@ -132,10 +141,12 @@ case_codex_trust_refuse() {
 }
 case_codex_trust_linked() {
   repo linked; herdr_setup
+  local root
+  root=$(cd "$REPO" && pwd -P)
   git -C "$REPO" worktree add -qb linked "$CASE_DIR/linked"
   dv start "$CASE_DIR/linked" LINK-1 trust --mode exec
   wait_native LINK-1
-  grep -Fx "[projects.$(jq -Rn --arg path "$REPO" '$path')]" "$HOME/.codex/config.toml"
+  grep -Fx "[projects.$(jq -Rn --arg path "$root" '$path')]" "$HOME/.codex/config.toml"
   test "$(grep -c '^\[projects' "$HOME/.codex/config.toml")" = 1
   dv clean LINK-1
 }
