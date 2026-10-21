@@ -21,7 +21,11 @@ update_fixture() {
 }
 update_publish() {
   # A changed command proves this invocation reloaded code after pulling.
-  sed 's/dv manager start/updated-command dv manager start/' "$UPDATE_SEED/bin/dv" > "$CASE_DIR/new-dv"
+  # Change the entry script prefix too, proving the original invocation
+  # reloads correctly even when Git replaces the file bash is reading.
+  { printf '%s\n' '#!/usr/bin/env bash' '# Published version changes the entry script prefix.'
+    sed -e '1d' -e 's/dv manager start/updated-command dv manager start/' "$UPDATE_SEED/bin/dv"
+  } > "$CASE_DIR/new-dv"
   cat "$CASE_DIR/new-dv" > "$UPDATE_SEED/bin/dv"
   git -C "$UPDATE_SEED" add .
   git -C "$UPDATE_SEED" commit -qm update

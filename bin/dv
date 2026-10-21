@@ -13,7 +13,7 @@ source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/self-update.sh
 source "$DV_ROOT/lib/self-update.sh"
-self_update
+self_update 300
 if [ "$(self_update_head)" != "$entry_commit" ]; then exec "$DV_ROOT/bin/dv" "$@"; fi
 # shellcheck source=lib/herdr.sh
 source "$DV_ROOT/lib/herdr.sh"
