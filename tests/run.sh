@@ -733,8 +733,13 @@ case_question_grace() {
 }
 case_question_exit() {
   question_setup
+  # The fake agent still commits and records done after release. Hold the
+  # grace response so this tests cancellation on exit, not Git's speed.
+  touch "$CASE_DIR/herdr/hold-question-grace"
   question_state blocked
+  wait_file "$CASE_DIR/herdr/question-grace-entered"
   question_finish
+  rm "$CASE_DIR/herdr/hold-question-grace"
   sleep 1.2
   test "$(question_count)" = 0
 }
