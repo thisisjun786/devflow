@@ -50,6 +50,45 @@ appserver_setup() {
   printf 'idle\n' > "$CASE_DIR/server/status"
   dv start "$REPO" AS-1 change --brief "$CASE_DIR/brief"
 }
+appserver_scratch_root() {
+  local mode=$1 scratch="$CASE_DIR/scratch" rc=0
+  if [ "$mode" = long ]; then
+    scratch="$CASE_DIR/scratch with spaces/$(printf '%0120d' 0)"
+  fi
+  mkdir -p "$scratch" "$CASE_DIR/tmpdir" "$CASE_DIR/guard-bin"
+  export DV_MKTEMP_REAL DV_MKTEMP_ROOT="$CASE_DIR" DV_MKTEMP_LOG="$CASE_DIR/mktemp.log"
+  DV_MKTEMP_REAL=$(command -v mktemp)
+  cat > "$CASE_DIR/guard-bin/mktemp" <<'GUARD'
+#!/usr/bin/env bash
+set -euo pipefail
+for arg in "$@"; do
+  case "$arg" in
+    "$DV_MKTEMP_ROOT"/*) printf 'allowed: %s\n' "$arg" >> "$DV_MKTEMP_LOG" ;;
+    /*) printf 'refused external template: %s\n' "$arg" >> "$DV_MKTEMP_LOG"; exit 1 ;;
+  esac
+done
+exec "$DV_MKTEMP_REAL" "$@"
+GUARD
+  chmod +x "$CASE_DIR/guard-bin/mktemp"
+  export PATH="$CASE_DIR/guard-bin:$PATH" TMPDIR="$CASE_DIR/tmpdir"
+  if [ "$mode" = tmpdir ]; then
+    unset DV_TEST_TMP
+    export TMPDIR="$scratch"
+  else
+    # Distinct roots prove DV_TEST_TMP takes precedence; include a trailing slash.
+    export DV_TEST_TMP="$scratch/"
+    scratch="$scratch/"
+  fi
+  bash "$ROOT/tests/run.sh" --case appserver_start > "$CASE_DIR/scratch.log" 2>&1 || rc=$?
+  cat "$CASE_DIR/scratch.log" "$DV_MKTEMP_LOG"
+  test "$rc" = 0
+  if grep -q 'refused external template:' "$DV_MKTEMP_LOG"; then return 1; fi
+  grep -Fx "allowed: $scratch/dv-as.XXXXXX" "$DV_MKTEMP_LOG"
+  grep -Fx "allowed: $scratch/dv-ws-peer.XXXXXX" "$DV_MKTEMP_LOG"
+}
+case_appserver_scratch_root() { appserver_scratch_root override; }
+case_appserver_scratch_tmpdir() { appserver_scratch_root tmpdir; }
+case_appserver_scratch_long() { appserver_scratch_root long; }
 case_appserver_start() {
   appserver_setup
   jq -e '.backend=="appserver" and .thread_id=="thread-1"' "$DV_STATE/AS-1/meta"

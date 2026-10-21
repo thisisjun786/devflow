@@ -7,7 +7,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 [ "$(hostname -s)" = lina-os ] || { echo 'Run this smoke test on lina-os.' >&2; exit 1; }
 for tool in ssh tar git jq tmux; do command -v "$tool" >/dev/null; done
 real_ssh=$(command -v ssh)
-live_root=$(mktemp -d /tmp/df21-live.XXXXXX)
+live_root=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/df21-live.XXXXXX")
 remote_hosts='hx-linux go2-linux'
 created='' watcher=''
 printf 'live-root=%s\n' "$live_root"
