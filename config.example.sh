@@ -12,7 +12,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_APPSERVER_SOCKET:=}" # empty uses Codex's existing default control socket
 : "${DV_APPSERVER_TIMEOUT:=10}" # bounded JSON-RPC response wait, seconds
 : "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds
-: "${DV_STALL_AFTER:=300}" # App Server / exec / watcher idle: seconds without activity
+: "${DV_STALL_AFTER:=300}" # App Server / exec / watcher idle or blocked queue cursor, seconds
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
 : "${DV_CLAUDE_BIN:=claude}"
@@ -51,7 +51,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_HERMES_BIN:=hermes}"
 : "${DV_WATCH_INTERVAL:=3}" # local queue read interval, seconds
 : "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
-: "${DV_MAX_WORKERS:=4}" # 1..4
+: "${DV_MAX_WORKERS:=4}" # 1..8 ordinary/fallback/QA workers; managers have separate slots
 : "${DV_RECONCILE_INTERVAL:=1800}" # remote status safety net, seconds
 : "${DV_METRICS_INTERVAL:=60}" # file/event activity sampling by dv-watch, seconds
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)

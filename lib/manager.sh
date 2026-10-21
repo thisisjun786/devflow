@@ -169,10 +169,26 @@ manager_stop() (
   trap 'manager_unlock "$dir"' EXIT
   manager_set "$dir" '.enabled=false'
 )
+manager_note() (
+  [ "$#" = 2 ] || fail 'usage: dv manager note <repo> <file>'
+  local dir tmp job
+  dir=$(manager_dir "$1") || fail 'manager identity conflict'
+  if [ ! -f "$dir/meta.json" ] || ! jq -e .enabled "$dir/meta.json" >/dev/null; then fail 'manager is not enabled'; fi
+  [ -f "$2" ] && [ -r "$2" ] || fail 'manager note needs a readable file'
+  mkdir -p "$dir/notices"
+  tmp=$(mktemp "$dir/notices/.note-XXXXXX") || return 1
+  trap 'rm -f "$tmp"' EXIT
+  job="$dir/notices/note-$(now)-$$-${tmp##*/.note-}.json"
+  jq -cn --rawfile text "$2" --arg host "$DV_HOST" --argjson time "$(now)" \
+    '{kind:"operator_note",text:$text,host:$host,time:$time}' > "$tmp" || return 1
+  # Publish only a complete note; a busy manager picks it up next turn.
+  ln "$tmp" "$job" || return 1
+  printf '%s\n' "$job"
+)
 cmd_manager() {
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || fail "run manager commands on $DV_MANAGER_HOST"
   local action=${1:-}; [ "$#" = 0 ] || shift
-  case "$action" in start|status|stop) "manager_$action" "$@" ;; *) fail 'usage: dv manager start|status|stop' ;; esac
+  case "$action" in start|status|stop|note) "manager_$action" "$@" ;; *) fail 'usage: dv manager start|status|stop|note' ;; esac
 }
 manager_event_repo() {
   local line=$1 issue host repo rows
@@ -193,26 +209,67 @@ manager_event_repo() {
     bid_limit "$DV_BID_TIMEOUT" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$(shell_join git -C "$repo" config --get remote.origin.url)"
   fi
 }
+manager_conflict() {
+  local dir=$1 path=$2 id=$3 saved reserved=false slot
+  # A running batch or durable fallback still refers to its original pathname.
+  # Preserve an archival copy in that case; its owner must finish the receipt.
+  if [ -f "$dir/run.lock/pid" ] && [ -f "$dir/run.lock/batch.json" ] &&
+    jq -e --arg path "$path" 'any(.[]; .job==$path)' "$dir/run.lock/batch.json" >/dev/null; then reserved=true; fi
+  slot=$(manager_fallback_slot "$dir" "$path")
+  if [ -f "$slot.manager" ] && [ "$(cat "$slot.manager")" = "$path" ]; then reserved=true; fi
+  mkdir -p "$dir/conflict" || return 2
+  saved=$(mktemp -d "$dir/conflict/entry-XXXXXX") || return 2
+  saved="$saved/$(basename "$path")"
+  if [ "$reserved" = true ]; then cp "$path" "$saved" || return 2
+  else mv "$path" "$saved" || return 2; fi
+  jq -cn --arg path "$path" --arg saved "$saved" --arg id "$id" --argjson reserved "$reserved" --argjson time "$(now)" \
+    '{kind:"queue_conflict",path:$path,saved:$saved,event_id:$id,reserved:$reserved,time:$time}' >> "$dir/events.log" || return 2
+  printf 'queue_conflict: %s preserved in %s (incoming %s)\n' "$path" "$saved" "$id" >&2
+}
+manager_slot() {
+  local dir=$1 name=$2 id=$3 previous occupied=1
+  # Include legacy receipts so a restart during an upgrade cannot replay work.
+  for previous in "$dir/pending/$name.json" "$dir/pending/$name.done" "$dir/failed/$name.json" \
+    "$dir/fallback/$name.json" "$dir/fallback/$name.done"; do
+    [ -f "$previous" ] || continue
+    if jq -e --arg id "$id" '.event.id==$id' "$previous" >/dev/null; then return 0; fi
+    manager_conflict "$dir" "$previous" "$id" || return 2
+    [ ! -f "$previous" ] || occupied=3
+  done
+  return "$occupied"
+}
 manager_enqueue() {
-  local line=$1 prompt=$2 sequence=$3 repo dir job tmp previous
+  local line=$1 prompt=$2 sequence=$3 repo dir job tmp id legacy name suffix=0 rc previous
   [ -d "$DV_HOME/managers" ] || return 1
   repo=$(manager_event_repo "$line") || return 1
   dir=$(manager_dir "$repo") || return 1
   [ -f "$dir/meta.json" ] && jq -e .enabled "$dir/meta.json" >/dev/null || return 1
-  job="$dir/pending/$(printf '%020d' "$sequence").json"
+  id=$(jq -er '.id | select(type=="string")' <<< "$line") || return 2
+  legacy=$(printf '%020d' "$sequence")
+  name="$legacy-$(printf '%s' "$id" | cksum | awk '{print $1 "-" $2}')"
   # A crash between enqueue and cursor persistence must not overwrite a job
-  # already running or replay one that has finished.
-  for previous in "$job" "${job%.json}.done" "$dir/failed/$(basename "$job")" \
-    "$dir/fallback/$(basename "$job")" "$dir/fallback/$(basename "${job%.json}.done")"; do
-    if [ -f "$previous" ]; then
-      jq -e --argjson event "$line" '.event.id==$event.id' "$previous" >/dev/null || return 2
-      return 0
-    fi
+  # already running or replay one that has finished. Scan collision suffixes
+  # too: the stranger may have finished and vacated the preferred name.
+  for previous in "$dir/pending/$name"*.json "$dir/pending/$name"*.done "$dir/failed/$name"*.json \
+    "$dir/fallback/$name"*.json "$dir/fallback/$name"*.done; do
+    [ -f "$previous" ] || continue
+    if jq -e --arg id "$id" '.event.id==$id' "$previous" >/dev/null; then return 0; fi
   done
+  rc=0; manager_slot "$dir" "$legacy" "$id" || rc=$?
+  case "$rc" in 0) return 0 ;; 2) return 2 ;; esac
+  while :; do
+    job=$name
+    [ "$suffix" = 0 ] || job="$name-$suffix"
+    rc=0; manager_slot "$dir" "$job" "$id" || rc=$?
+    case "$rc" in 0) return 0 ;; 1) break ;; 2) return 2 ;; esac
+    suffix=$((suffix + 1))
+  done
+  job="$dir/pending/$job.json"
   tmp=$(mktemp "$dir/.pending.XXXXXX") || return 2
-  jq -cn --argjson event "$line" --arg prompt "$prompt" --argjson queued_at "$(now)" \
-    '{event:$event,prompt:$prompt,queued_at:$queued_at}' > "$tmp" || return 2
-  mv "$tmp" "$job" || return 2
+  if ! jq -cn --argjson event "$line" --arg prompt "$prompt" --argjson queued_at "$(now)" \
+    '{event:$event,prompt:$prompt,queued_at:$queued_at}' > "$tmp" || ! mv "$tmp" "$job"; then
+    rm -f "$tmp"; return 2
+  fi
 }
 # The watcher owns fallback routing; workers use its existing durable retry path.
 manager_fallback_slot() {
@@ -283,12 +340,15 @@ manager_fallback_dispatch() {
 # Snapshot once under the reservation. Arrivals during a turn belong to the
 # next batch, and issues with an outstanding fallback cannot race that worker.
 manager_dispatch() {
-  local meta dir job issue anchor
+  local meta dir job issue anchor enabled
   local jobs=() notices=()
   for meta in "$DV_HOME"/managers/*/meta.json; do
-    [ "$active" -lt "$DV_MAX_WORKERS" ] || break
     [ -f "$meta" ] || continue
     dir=$(dirname "$meta")
+    enabled=false
+    jq -e .enabled "$meta" >/dev/null && enabled=true
+    # Enabled managers own one slot per repository, outside the worker pool.
+    if [ "$enabled" = false ] && [ "$active" -ge "$DV_MAX_WORKERS" ]; then continue; fi
     if ! manager_lock "$dir"; then manager_fallback_dispatch "$dir"; continue; fi
     jobs=(); notices=(); anchor=''
     for job in "$dir"/pending/*.json; do
@@ -315,7 +375,8 @@ manager_dispatch() {
     else jq -n '[inputs | .+{job:input_filename}]' "${notices[@]}" > "$dir/run.lock/notices.json"; fi
     printf '%s\n' "$anchor" > "$dir/run.lock/job"
     "$DV_ROOT/bin/dv" _manager-run "$dir" "$anchor" > "${anchor%.json}.log" 2>&1 &
-    pids="$pids $!"; active=$((active + 1))
+    if [ "$enabled" = true ]; then manager_pids="${manager_pids:-} $!"
+    else pids="$pids $!"; active=$((active + 1)); fi
   done
 }
 cmd__manager_run() (
@@ -342,8 +403,10 @@ cmd__manager_run() (
     printf '\n작업자 호스트(DV_HOST): `%s`\n' "$DV_HOST"
     printf '\n이 저장소의 대기 이벤트를 이번 턴에서 모두 처리하세요. 이슈별 최신 이벤트만 실행하고 superseded 이벤트는 문맥으로만 읽으세요.\n이벤트 배치(JSON 데이터):\n```json\n'
     jq 'map(del(.job,.prompt))' "$dir/run.lock/batch.json"
+    printf '```\n\n운영자 메모입니다. 이번 턴의 작업 문맥으로 읽으세요.\n```json\n'
+    jq 'map(select(.kind=="operator_note") | del(.job))' "$dir/run.lock/notices.json"
     printf '```\n\n별도 worker 처리 결과입니다. 이미 처리했으므로 다시 실행하지 말고 현재 상태를 확인하세요.\n```json\n'
-    jq 'map(del(.job))' "$dir/run.lock/notices.json"
+    jq 'map(select(.kind!="operator_note") | del(.job))' "$dir/run.lock/notices.json"
     printf '```\n'
   } > "$prompt"
   if jq -e .enabled "$dir/meta.json" >/dev/null; then

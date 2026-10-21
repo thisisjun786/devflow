@@ -99,7 +99,7 @@ case_manager_busy_default() {
   manager_event M-2 "$REPO"
   local dir
   dir=$(dirname "$(manager_meta)")
-  wait_file "$dir/pending/00000000000000000001.json"
+  wait_file "$dir/pending/$(manager_job_name 1 worker:M-2:pr-ready:abc).json"
   sleep 0.2
   test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 2
   # Advance only the synthetic reservation's clock, proving the default is 120s.
@@ -113,26 +113,29 @@ case_manager_capacity_restart() {
   manager_setup
   export DV_MANAGER_MAX_WAIT=0 DV_MAX_WORKERS=1
   dv manager start "$REPO"
-  touch "$CASE_DIR/hermes/hold-resume"
+  touch "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/hold-worker"
   manager_event M-1 "$REPO"
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & local watcher=$!
   manager_wait_calls 2
   manager_event M-2 "$REPO"; manager_event M-3 "$REPO"
   local dir
   dir=$(dirname "$(manager_meta)")
-  wait_file "$dir/pending/00000000000000000002.json"
+  manager_wait_calls 3
+  wait_file "$dir/pending/$(manager_job_name 2 worker:M-3:pr-ready:abc).json"
   kill -KILL "$watcher"; wait "$watcher" 2>/dev/null || true
   dv-watch >> "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   sleep 0.4
-  test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 2
-  rm "$CASE_DIR/hermes/hold-resume"
-  manager_wait_calls 3
+  # The inherited manager has its own slot; the inherited fallback occupies
+  # the only worker slot, so M-3 must still wait after a watcher restart.
+  test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 3
+  rm "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/hold-worker"
+  wait_file "$dir/pending/$(manager_job_name 2 worker:M-3:pr-ready:abc).done"
   touch "$DV_HOME/stop"; wait "$watcher"
-  jq -se 'length==3 and all(.[]; .resume=="" or .resume=="session-1")' "$CASE_DIR/hermes/calls"
+  jq -se 'length>=4 and all(.[]; .resume=="" or .resume=="session-1")' "$CASE_DIR/hermes/calls"
   test ! -f "$CASE_DIR/hermes/over-capacity"
   test ! -f "$CASE_DIR/hermes/overlap"
   grep -F M-2 "$CASE_DIR/hermes/prompt-3"
-  grep -F M-3 "$CASE_DIR/hermes/prompt-3"
+  grep -F M-3 "$CASE_DIR/hermes/prompt-4"
 }
 case_manager_fallback_restart() {
   manager_setup
@@ -144,9 +147,9 @@ case_manager_fallback_restart() {
   dir=$(dirname "$(manager_meta)")
   line=$(cat "$DV_HOME/kick.q")
   manager_enqueue "$line" "$CASE_DIR/brief" 0
-  job="$dir/fallback/00000000000000000000.json"
+  job="$dir/fallback/$(manager_job_name 0 worker:M-2:pr-ready:abc).json"
   mkdir -p "$dir/fallback"
-  mv "$dir/pending/00000000000000000000.json" "$job"
+  mv "$dir/pending/$(basename "$job")" "$job"
   # Simulate a crash after the durable handoff but before worker persistence.
   printf '1\n' > "$DV_HOME/cursor"
   jq -r .id <<< "$line" > "$DV_HOME/seen"
@@ -160,7 +163,7 @@ case_manager_fallback_restart() {
   test -f "${job%.json}.done"
   jq -se '[.[]|select(.kind=="event_handled")]|length==1 and .[0].route=="fallback"' "$dir/events.log"
   manager_enqueue "$line" "$CASE_DIR/brief" 0
-  test ! -f "$dir/pending/00000000000000000000.json"
+  test ! -f "$dir/pending/$(basename "$job")"
   grep -F '"route": "fallback"' "$CASE_DIR/hermes/prompt-4"
 }
 case_manager_fallback_serial() {
@@ -176,16 +179,16 @@ case_manager_fallback_serial() {
   dv-kick 'done' M-2 'must wait for fallback' worker abc
   local dir
   dir=$(dirname "$(manager_meta)")
-  wait_file "$dir/pending/00000000000000000002.json"
+  wait_file "$dir/pending/$(manager_job_name 2 worker:M-2:done:abc).json"
   # Finish the manager while its other-issue fallback is still held.
   rm "$CASE_DIR/hermes/hold-resume"
-  wait_file "$dir/pending/00000000000000000000.done"
+  wait_file "$dir/pending/$(manager_job_name 0 worker:M-1:pr-ready:abc).done"
   manager_event M-3 "$REPO"
   manager_wait_calls 4
   jq -se 'length==4 and .[3].resume=="session-1"' "$CASE_DIR/hermes/calls"
   grep -F M-3 "$CASE_DIR/hermes/prompt-4"
   if grep -F 'must wait for fallback' "$CASE_DIR/hermes/prompt-4"; then return 1; fi
-  wait_file "$dir/pending/00000000000000000003.done"
+  wait_file "$dir/pending/$(manager_job_name 3 worker:M-3:pr-ready:abc).done"
   rm "$CASE_DIR/hermes/hold-worker"
   manager_wait_calls 5
   touch "$DV_HOME/stop"; wait "$watcher"
@@ -255,7 +258,7 @@ case_manager_parallel() {
   local first=$REPO
   repo other; dv manager start "$REPO"
   manager_event M-1 "$first"; manager_event M-2 "$REPO"; manager_event M-3 "$first"
-  export HERMES_HOLD=1 DV_MAX_WORKERS=2
+  export HERMES_HOLD=1 DV_MAX_WORKERS=1
   manager_watch_until 4
   test -f "$CASE_DIR/hermes/parallel"
   test ! -f "$CASE_DIR/hermes/overlap"

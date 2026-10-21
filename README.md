@@ -114,6 +114,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv-watch` | 로컬 큐 소비, 최대 4개 시온 작업자, 느린 상태 점검 |
 | `dv manager start REPO [--agent hermes]` | 저장소별 Hermes 초기 프롬프트 실행·세션 ID 저장, 재호출 시 재사용 |
 | `dv manager status [REPO] [--json]` / `dv manager stop REPO` | 등록·세션·실행 상태 조회 / 관리자 라우팅 중지 |
+| `dv manager note REPO FILE` | 활성 관리자의 다음 배치에 파일 내용으로 운영자 메모 추가 |
 
 `dv metrics`는 로컬 기록과 감시자가 수집한 원격 기록을 호스트·이슈별로 합칩니다. `--since`는 `30m`, `6h`, `7d`처럼 초(s)·분(m)·시간(h)·일(d)을 받습니다. 유휴 시간은 조회 구간과 겹치는 관측 구간만 합산하고, 이벤트 지연은 그 구간에 성공 처리가 끝난 이벤트의 평균 초입니다. `--json`에는 처리 건수·최대 지연·마지막 관측 시각(`observed_at`)·현재 유휴 초도 나옵니다. 완료→병합은 조회 구간 안의 마지막 병합과 **같은 head**의 마지막 완료 사이 초이며, 완료가 조회 구간 전이어도 연결합니다. 아직 관측하거나 완료하지 못한 값은 표에서 `-`, JSON에서 `null`입니다.
 
@@ -137,9 +138,13 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 관리자는 GitHub와 dv의 현재 상태에서 의존 이슈가 닫힌 작업을 milestone 순으로 골라 brief와 `dv submit`을 준비하고 빈 호스트 자리를 채웁니다. `templates/manager-prompt.md`가 참조하는 `templates/worker-prompt.md`를 초기 입력에 원문 그대로 포함합니다. 이후 입력에도 기존 worker 규칙을 포함하고, 해당 저장소의 대기 이벤트 전부를 한 배치로 보냅니다. 이슈별 최신 이벤트를 처리하며 이전 이벤트는 `superseded`와 `superseded_by`로 표시해 문맥으로만 읽습니다. 최신 순서는 이벤트의 `time`, 같은 시간이면 큐 순서로 정합니다. 실행 도중 도착한 이벤트는 다음 배치에 포함합니다.
 
-등록과 세션 ID는 `$DV_HOME/managers/<저장소 키>/meta.json`, 대기 이벤트는 `pending/`, 실행 결과는 `events.log`와 각 실행의 `.out`/`.err`에 남습니다. 저장소는 submission 또는 이슈 meta에서 찾으며 GitHub HTTPS/SSH URL을 같은 식별자로 정규화합니다. 원격 이슈는 설정된 `DV_HOSTS`에서만 상태와 origin을 조회하고 저장소 이름만으로 매칭하지 않습니다. 같은 저장소의 관리자 배치는 디스크 큐와 실행 잠금으로 한 번에 하나씩 처리합니다. 서로 다른 저장소와 기존 worker는 `DV_MAX_WORKERS` 한도 안에서 병렬 실행됩니다.
+등록과 세션 ID는 `$DV_HOME/managers/<저장소 키>/meta.json`, 대기 이벤트는 `pending/`, 실행 결과는 `events.log`와 각 실행의 `.out`/`.err`에 남습니다. 저장소는 submission 또는 이슈 meta에서 찾으며 GitHub HTTPS/SSH URL을 같은 식별자로 정규화합니다. 원격 이슈는 설정된 `DV_HOSTS`에서만 상태와 origin을 조회하고 저장소 이름만으로 매칭하지 않습니다. 같은 저장소의 관리자 배치는 디스크 큐와 실행 잠금으로 한 번에 하나씩 처리합니다. 활성 관리자는 저장소마다 별도 실행 자리 하나를 가지며, 일반·fallback·QA worker는 `DV_MAX_WORKERS`(기본 4, 범위 1–8)를 공유합니다. 관리자가 실행 중이거나 watcher가 재시작해도 일반 worker 자리를 차지하지 않습니다.
 
-관리자 턴이 `DV_MANAGER_MAX_WAIT`(기본 120초)를 넘으면 그 턴과 다른 이슈의 대기 이벤트를 세션 없는 기존 worker 경로로 보냅니다. 관리자와 fallback worker를 합쳐 `DV_MAX_WORKERS`를 지키며, 같은 이슈가 실행 중이면 해당 이슈의 후속 이벤트는 기다립니다. `fallback/`에 전달을 먼저 보존하고 기존 worker 재시도·재시작 복구를 사용합니다. 성공 결과는 `notices/`에 저장해 관리자의 다음 입력에 덧붙입니다. 새 이벤트가 없어도 결과 전달을 위한 턴을 실행합니다. `events.log`의 `event_handled`에는 이벤트별 `event_id`, `event_time`, `handled_at`, `latency_seconds`(초), `route`(`manager` 또는 `fallback`), `exit_code`, `disposition`이 남습니다. 관리자 배치 실패도 종료 코드와 함께 기록하고, fallback 실패는 기존 worker 규칙으로 재시도하여 성공했을 때 기록합니다. 미래 시각의 이벤트는 지연을 0으로 기록합니다.
+대기 파일명은 `<cursor>-<event ID checksum>-<ID 길이>.json`입니다. 기존 숫자 슬롯과 새 슬롯 모두 실제 이벤트 ID를 비교해 재실행을 막습니다. 다른 이벤트가 차지한 슬롯은 `conflict/`에 보존하고 `queue_conflict`를 `events.log`와 `manager.log`에 기록합니다. 이미 실행 중인 배치나 fallback이 참조하는 파일은 사본을 보존하고 원래 경로에서 완료할 수 있게 둡니다. 새 이벤트는 다른 이름으로 계속 수신합니다. 운영자 메모는 큐 파일을 직접 만들지 않고 `dv manager note REPO FILE`로 넣습니다. `notices/note-*.json`에 파일 내용을 그대로 저장하며, 실행 중 도착한 메모는 다음 배치에서 fallback 처리 결과와 구분해 읽습니다.
+
+큐 처리가 실패해 같은 줄을 `DV_STALL_AFTER`초(기본 300) 넘게 재시도하면 `watcher-stuck` 이벤트를 기존 큐·이벤트 로그에 남기고 stderr와 `watch.log`에도 줄 번호·원인을 출력합니다. 한 멈춤 구간에 한 번 알리며, 커서가 진행하면 다음 멈춤을 다시 감지합니다. 큐가 비어 있는 유휴 상태에는 이 경보를 내지 않습니다. 경보 이벤트의 worker 전달은 막힌 줄이 풀린 뒤 이루어지므로, 멈춘 동안에는 stderr/로그로 확인할 수 있습니다.
+
+관리자 턴이 `DV_MANAGER_MAX_WAIT`(기본 120초)를 넘으면 그 턴과 다른 이슈의 대기 이벤트를 세션 없는 기존 worker 경로로 보냅니다. fallback worker는 `DV_MAX_WORKERS`를 지키며, 같은 이슈가 실행 중이면 해당 이슈의 후속 이벤트는 기다립니다. `fallback/`에 전달을 먼저 보존하고 기존 worker 재시도·재시작 복구를 사용합니다. 성공 결과는 `notices/`에 저장해 관리자의 다음 입력에 덧붙입니다. 새 이벤트가 없어도 결과 전달을 위한 턴을 실행합니다. `events.log`의 `event_handled`에는 이벤트별 `event_id`, `event_time`, `handled_at`, `latency_seconds`(초), `route`(`manager` 또는 `fallback`), `exit_code`, `disposition`이 남습니다. 관리자 배치 실패도 종료 코드와 함께 기록하고, fallback 실패는 기존 worker 규칙으로 재시도하여 성공했을 때 기록합니다. 미래 시각의 이벤트는 지연을 0으로 기록합니다.
 
 재개가 실패하거나 세션 ID를 받지 못하면 실패를 기록하고 초기 역할과 해당 이벤트로 새 세션을 한 번 실행해 새 ID를 저장합니다. 새 실행까지 실패하면 이벤트를 `failed/`에 보관하며 자동으로 계속 재시도하지 않습니다. 재개 실패 전에 일부 동작이 실행됐을 수 있으므로 기존 worker의 head·중복·review-fix 확인 규칙이 계속 필요합니다. Hermes가 압축 후 새 ID를 반환하면 그 ID를 이어 사용합니다.
 

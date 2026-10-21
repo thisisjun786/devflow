@@ -18,7 +18,7 @@ source "$DV_ROOT/lib/stack.sh"
 source "$DV_ROOT/lib/qa.sh"
 need jq
 disk_settings
-[[ "$DV_MAX_WORKERS" =~ ^[1-4]$ ]] || fail 'DV_MAX_WORKERS must be 1..4'
+[[ "$DV_MAX_WORKERS" =~ ^[1-8]$ ]] || fail 'DV_MAX_WORKERS must be 1..8'
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
 [[ "$DV_METRICS_INTERVAL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_METRICS_INTERVAL must be positive seconds'
 [[ "$DV_STALL_AFTER" =~ ^[0-9]+$ ]] || fail 'DV_STALL_AFTER must be nonnegative seconds'
@@ -40,13 +40,13 @@ take_lock() {
 }
 take_lock
 printf '%s\n' "$$" > "$DV_HOME/watch.pid"
-pids=''; active=0
+pids=''; manager_pids=''; active=0
 finish() {
   local pid
   metrics_stop
   disk_stop
   for pid in $pull_pids; do if is_pull "$pid"; then kill "$pid" 2>/dev/null || true; fi; done
-  for pid in $pids; do wait "$pid" || true; done
+  for pid in $pids $manager_pids; do wait "$pid" || true; done
   reap
   rm -f "$DV_HOME/watch.pid"
   rmdir "$DV_HOME/.watch-lock"
@@ -122,13 +122,19 @@ reap() {
     if kill -0 "$pid" 2>/dev/null; then live="$live $pid"; active=$((active + 1)); else wait "$pid" || true; fi
   done
   pids=$live
-  # A manager child can outlive a killed watcher. Count that reservation too;
-  # its lock still owns the batch and must not permit excess fallback workers.
+  live=''
+  for pid in $manager_pids; do
+    if kill -0 "$pid" 2>/dev/null; then live="$live $pid"; else wait "$pid" || true; fi
+  done
+  manager_pids=$live
+  # Inherited enabled managers retain their per-repo reservation, without
+  # consuming worker slots. Disabled-manager batches use ordinary workers.
   for record in "$DV_HOME"/managers/*/run.lock/pid; do
     [ -f "$record" ] || continue
+    jq -e .enabled "${record%/run.lock/pid}/meta.json" >/dev/null && continue
     pid=$(cat "$record" 2>/dev/null) || continue
     if [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
-      case " $live " in *" $pid "*) ;; *) active=$((active + 1)) ;; esac
+      case " $pids " in *" $pid "*) ;; *) active=$((active + 1)) ;; esac
     fi
   done
   for record in "$DV_HOME/pending/"*.json; do
@@ -139,9 +145,9 @@ reap() {
     fi
     pid=''; [ ! -f "$slot.pid" ] || pid=$(cat "$slot.pid")
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      # Tracked children (including managers) were counted above. Add only
+      # Tracked ordinary children were counted above. Add only
       # pending workers inherited from a previous watcher here.
-      case " $live " in *" $pid "*) ;; *) active=$((active + 1)) ;; esac
+      case " $pids " in *" $pid "*) ;; *) active=$((active + 1)) ;; esac
       continue
     fi
     if [ -f "$slot.exit" ]; then rc=$(cat "$slot.exit")
@@ -222,8 +228,27 @@ reconcile() {
     fi
   done
 }
+stall_cursor=''; stall_started=0; stall_reported=0
+watch_stall() {
+  local reason=$1 stalled_event=$2 issue message time
+  if [ -z "$reason" ]; then stall_cursor=''; stall_reported=0; return 0; fi
+  time=$(now)
+  if [ "$stall_cursor" != "$cursor" ]; then
+    stall_cursor=$cursor; stall_started=$time; stall_reported=0
+  fi
+  [ "$stall_reported" = 0 ] && [ $((time - stall_started)) -gt "$DV_STALL_AFTER" ] || return 0
+  issue=$(jq -er '.issue | select(type=="string" and test("^[A-Za-z0-9][A-Za-z0-9_-]*$"))' <<< "$stalled_event" 2>/dev/null) || issue=unknown
+  message="watcher-stuck: line $((cursor + 1)): $reason (issue $issue, unchanged for $((time - stall_started))s)"
+  printf '%s\n' "$message" >&2
+  printf '%s\n' "$message" >> "$DV_HOME/watch.log"
+  # Persist via the existing queue and event log. stderr stays visible even
+  # while the blocked line prevents dispatching the alarm to a worker.
+  # Use a watcher-scoped issue so this alarm cannot supersede the blocked
+  # issue's real event when a manager later coalesces its batch.
+  if "$DV_ROOT/bin/dv-kick" watcher-stuck WATCHER "$message" "$DV_HOST" '' \
+    "$DV_HOST:watcher-stuck:$$:$cursor:$stall_started"; then stall_reported=1; fi
+}
 while [ ! -e "$DV_HOME/stop" ]; do
-  manager_fallback_recover
   reap
   qa_recover
   pulls
@@ -248,19 +273,20 @@ while [ ! -e "$DV_HOME/stop" ]; do
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then reconcile; last_scan=$(now); fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   available=$(wc -l < "$DV_HOME/kick.q")
+  stall_reason=''; line=''
   while [ "$cursor" -lt "$available" ] && [ ! -e "$DV_HOME/stop" ]; do
-    [ "$cursor" -lt "$(wc -l < "$DV_HOME/kick.q")" ] || break
+    if [ "$cursor" -ge "$(wc -l < "$DV_HOME/kick.q")" ]; then stall_reason='queue shortened before read'; break; fi
     line=$(sed -n "$((cursor + 1))p" "$DV_HOME/kick.q")
-    [ -n "$line" ] || break
+    if [ -z "$line" ]; then stall_reason='empty queue line'; break; fi
     if ! id=$(printf '%s\n' "$line" | jq -er '.id | select(type=="string")'); then
       printf 'invalid queue line %s\n' "$((cursor + 1))" >> "$DV_HOME/watch.log"
     elif ! grep -Fxq -- "$id" "$DV_HOME/seen" && ! pending_event "$id"; then
       if [ "$(jq -r .kind <<< "$line")" = landed ]; then
-        qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1 || break
+        if ! qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1; then stall_reason='qa_enqueue failed'; break; fi
       fi
       # Deterministic scheduling is driven by this existing queue, never a bid poll.
-      if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then break; fi
-      if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then break; fi
+      if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then stall_reason='bid_event failed'; break; fi
+      if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then stall_reason='stack_landed_event failed'; break; fi
       if [ "$(printf '%s\n' "$line" | jq -r .kind)" = submitted ]; then
         metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
@@ -281,15 +307,21 @@ while [ ! -e "$DV_HOME/stop" ]; do
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
         continue
       elif [ "$routed" != 1 ]; then
+        stall_reason="manager_enqueue failed (exit $routed)"
         break # Persistence failed: retain the cursor so the event can retry.
       fi
       # Persist before advancing the queue. Failed/unacknowledged work survives
       # a watcher restart, while in-flight duplicate IDs stay suppressed.
       slot="$DV_HOME/pending/$cursor"
-      printf '%s\n' "$line" > "$slot.json.tmp"; mv "$slot.json.tmp" "$slot.json"
+      if ! printf '%s\n' "$line" > "$slot.json.tmp" || ! mv "$slot.json.tmp" "$slot.json"; then
+        stall_reason='worker queue persistence failed'; break
+      fi
     fi
     cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
   done
+  watch_stall "$stall_reason" "$line"
+  # Resolve legacy slot conflicts before handing fallback records to workers.
+  manager_fallback_recover
   retry_pending
   manager_dispatch
   qa_dispatch
