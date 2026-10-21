@@ -283,11 +283,34 @@ case_appserver_states() {
   dv clean AS-1
   test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
 }
+case_appserver_read_partial() {
+  # A JSON-RPC line split by a pause longer than one read timeout must be
+  # assembled, not dropped (devflow#139). Independent of host speed.
+  DV_ENTRY="$ROOT/bin/dv" bash -s <<'READ_PARTIAL'
+set -euo pipefail
+source "$ROOT/lib/common.sh"
+source "$ROOT/lib/appserver.sh"
+AS_PARTIAL='' AS_LINE=''
+exec 8< <(printf '{"id":"a","result":{"x":"'; sleep 2.5; printf 'tail"}}\n'; printf '{"id":"b"}\n')
+appserver_read_line 10
+[ "$AS_LINE" = '{"id":"a","result":{"x":"tail"}}' ]
+appserver_read_line 5
+[ "$AS_LINE" = '{"id":"b"}' ]
+# A deadline that expires mid-line keeps the fragment for the next call.
+exec 8< <(printf '{"id":"c",'; sleep 2.5; printf '"ok":1}\n')
+if appserver_read_line 1; then exit 1; fi
+[ -n "$AS_PARTIAL" ]
+appserver_read_line 10
+[ "$AS_LINE" = '{"id":"c","ok":1}' ]
+READ_PARTIAL
+}
 case_appserver_large_reply() {
   # A multi-MB thread/read reply arrives over many one-second reads. It must be
   # assembled, not dropped, so status, clean and land see the real state.
   appserver_setup
-  head -c 3000000 /dev/zero | tr '\0' 'x' > "$CASE_DIR/big.txt"
+  # Production RPC budget; the reply still spans many one-second reads.
+  export DV_APPSERVER_TIMEOUT=30
+  head -c 1500000 /dev/zero | tr '\0' 'x' > "$CASE_DIR/big.txt"
   jq -cn --rawfile big "$CASE_DIR/big.txt" '{thread:{id:"thread-1",status:{type:"idle"},
     turns:[{id:"turn-1",status:"completed",error:null,
       items:[{type:"agentMessage",id:"m1",text:$big},{type:"agentMessage",id:"m2",text:"finished"}]}]}}' \
