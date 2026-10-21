@@ -102,31 +102,65 @@ qa_settings() (
   case "$DV_QA_AGENT" in codex|claude) ;; *) fail 'DV_QA_AGENT must be codex or claude' ;; esac
   jq -cn --arg enabled "$DV_QA" --arg agent "$DV_QA_AGENT" '{enabled:($enabled=="1"),agent:$agent}'
 )
+qa_merged_pr() {
+  local repository=$1 head=$2 base=${3:-} result attempt
+  # GitHub can associate the merge commit with its PR after the landed event.
+  # Keep the latest-base selection for coalesced jobs, but bound the wait.
+  for attempt in 1 2 3 4 5 6; do
+    result=$(gh api "repos/$repository/commits/$head/pulls") || return 1
+    result=$(jq -c --arg base "$base" '[.[] | select(.merged_at!=null and
+      ($base=="" or .base.ref==$base))] | sort_by(.merged_at) | last' <<< "$result") || return 1
+    if [ "$result" != null ]; then printf '%s\n' "$result"; return 0; fi
+    printf 'QA pr lookup: no merged PR for %s at %s (attempt %s/6)\n' "$repository" "$head" "$attempt" >&2
+    [ "$attempt" = 6 ] || sleep 5
+  done
+  return 1
+}
 qa_milestone() {
-  local repository=$1 pr=$2 result number
+  local repository=$1 pr=$2 result
   result=$(jq -c '.milestone // empty' <<< "$pr")
   if [ -n "$result" ]; then printf '%s\n' "$result"; return; fi
   # Closing issues carry the milestone when the PR itself has none. Refuse
   # ambiguity rather than silently attributing findings to a later milestone.
-  result=$(gh pr view "$(jq -r .number <<< "$pr")" -R "$repository" --json closingIssuesReferences) || return 1
-  result=$(
-    while IFS= read -r number; do
-      gh api "repos/$repository/issues/$number" --jq '.milestone // empty' || exit 1
-    done < <(jq -r '.closingIssuesReferences[].number' <<< "$result")
-  ) || return 1
-  result=$(jq -sc 'unique_by(.number)' <<< "$result")
-  if [ "$(jq length <<< "$result")" = 1 ]; then jq -c '.[0]' <<< "$result"; return; fi
-  fail 'QA needs one milestone on the merged PR or its closing issues'
+  # gh 2.46 does not expose closingIssuesReferences through pr view --json.
+  result=$(gh api graphql --paginate -f owner="${repository%%/*}" -f name="${repository#*/}" \
+    -F number="$(jq -r .number <<< "$pr")" -f query='
+      query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
+        repository(owner:$owner, name:$name) {
+          pullRequest(number:$number) {
+            closingIssuesReferences(first:100, after:$endCursor) {
+              nodes { number milestone { number title } }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }') || return 1
+  result=$(jq -sce 'if length==0 or any(.[]; (.errors | length)>0 or
+      (.data.repository.pullRequest.closingIssuesReferences.nodes | type)!="array")
+    then error("QA milestone: invalid closing issues response")
+    else [.[].data.repository.pullRequest.closingIssuesReferences.nodes[].milestone // empty] | unique_by(.number) end' <<< "$result") || return 1
+  case "$(jq length <<< "$result")" in
+    0) printf 'null\n' ;;
+    1) jq -c '.[0]' <<< "$result" ;;
+    *) fail 'QA milestone: multiple distinct milestones on closing issues' ;;
+  esac
 }
 qa_run_cleanup() {
-  local rc=$?
+  local rc=$? reason
   trap - EXIT INT TERM
   if [ -n "${qa_child:-}" ]; then bid_stop_tree "$qa_child"; wait "$qa_child" 2>/dev/null || true; fi
+  reason="QA failed at $qa_step (exit $rc); inspect log before retrying"
+  if [ "$rc" != 0 ]; then
+    printf '%s\n' "$reason" >&2
+    if [ -z "${S:-}" ] || [ ! -f "$S/meta" ]; then
+      jq -n --arg reason "$reason" '{status:"blocked",failure_reason:$reason}' > "$qa_dir/meta"
+    fi
+  fi
   if [ -n "${S:-}" ] && [ -f "$S/meta" ]; then
     printf '%s\n' "$rc" > "$S/agent.exit"
     if [ "$rc" != 0 ]; then
-      meta_set '.status="blocked" | .failure_reason="QA interrupted or failed; inspect log before retrying"'
-      cmd_kick blocked "$ISSUE" 'QA failed; evidence retained'
+      meta_set --arg reason "$reason" '.status="blocked" | .failure_reason=$reason'
+      cmd_kick blocked "$ISSUE" "$reason"
     fi
   fi
   printf '%s\n' "$rc" > "$qa_dir/exit"
@@ -138,7 +172,7 @@ qa_run_cleanup() {
 cmd__qa_run() (
   [ "$#" = 1 ] || fail 'usage: dv _qa-run <qa-directory>'
   local qa_dir=$1 qa_child='' scratch repository remote base head settings agent pr milestone prompt
-  local S='' ISSUE='' WT=''
+  local S='' ISSUE='' WT='' qa_step='request'
   [ "$(dirname "$qa_dir")" = "$DV_HOME/qa" ] || fail 'invalid QA directory'
   [ "$(cat "$qa_dir/pid")" = "$PPID" ] || fail 'QA runner has no parent reservation'
   (set -C; printf '%s\n' "$$" > "$qa_dir/claim") 2>/dev/null || fail 'QA reservation already claimed'
@@ -152,14 +186,17 @@ cmd__qa_run() (
   if [ -z "$base" ]; then
     # A remote job may target dev while origin/HEAD names a release branch.
     head=$(jq -er .event.head "$qa_dir/running.json")
-    pr=$(gh api "repos/$repository/commits/$head/pulls")
-    base=$(jq -er '[.[] | select(.merged_at!=null)] | sort_by(.merged_at) | last | .base.ref // empty' <<< "$pr")
+    qa_step='pr lookup'
+    pr=$(qa_merged_pr "$repository" "$head")
+    base=$(jq -er '.base.ref // empty' <<< "$pr")
   fi
+  qa_step='checkout'
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/dv-qa.XXXXXX")
   printf '%s\n' "$scratch" > "$qa_dir/scratch"
   git clone --quiet --no-hardlinks --no-checkout "$remote" "$scratch/source"
   git -C "$scratch/source" checkout --quiet --detach "refs/remotes/origin/$base"
   head=$(git -C "$scratch/source" rev-parse HEAD)
+  qa_step='settings'
   settings=$(qa_settings "$scratch/source")
   if ! jq -e .enabled <<< "$settings" >/dev/null; then
     printf 'QA disabled: %s\n' "$repository"
@@ -167,6 +204,7 @@ cmd__qa_run() (
     rm -rf "$scratch"
     exit 0
   fi
+  qa_step='job setup'
   ISSUE=$(qa_job_id "$repository" "$head"); valid_issue "$ISSUE"
   S="$DV_STATE/$ISSUE"
   if [ -e "$S" ]; then
@@ -184,15 +222,18 @@ cmd__qa_run() (
   printf '%s\n' "$$" > "$S/agent.pid"
   # Select the most recent merged PR for this base, including a newer merge
   # coalesced while a prior QA run held the repository reservation.
-  pr=$(gh api "repos/$repository/commits/$head/pulls")
-  pr=$(jq -ce --arg base "$base" '[.[] | select(.merged_at!=null and .base.ref==$base)] | sort_by(.merged_at) | last | select(.!=null)' <<< "$pr")
+  qa_step='pr lookup'
+  pr=$(qa_merged_pr "$repository" "$head" "$base")
+  meta_set --argjson pr "$pr" '.pr=$pr.number'
+  qa_step='milestone'
   milestone=$(qa_milestone "$repository" "$pr")
-  meta_set --argjson pr "$pr" --argjson milestone "$milestone" '.pr=$pr.number | .milestone=$milestone'
+  meta_set --argjson milestone "$milestone" '.milestone=$milestone'
+  qa_step='agent setup'
   mkdir -m 700 "$scratch/home" "$scratch/state" "$scratch/out"
   prompt="$S/brief.md"
   cat "$DV_ROOT/templates/qa-prompt.md" > "$prompt"
   printf '\nJob: %s\nRepository: %s\nHead: %s\nMilestone: %s\nIsolated product home/state/output: %s/{home,state,out}\nReport: %s/report.md\n' \
-    "$ISSUE" "$repository" "$head" "$(jq -r .title <<< "$milestone")" "$scratch" "$S" >> "$prompt"
+    "$ISSUE" "$repository" "$head" "$(jq -r '.title // "none"' <<< "$milestone")" "$scratch" "$S" >> "$prompt"
   export DV_ISSUE="$ISSUE" DV_QA_SCRATCH="$scratch"
   if [ -n "$DV_QA_AGENT_CMD" ]; then
     (cd "$WT" && bash -c "$DV_QA_AGENT_CMD \"\$@\"" dv-qa "$prompt") > "$S/log" 2>&1 & qa_child=$!
@@ -206,6 +247,7 @@ cmd__qa_run() (
       --no-session-persistence -p "$(cat "$prompt")") > "$S/log" 2>&1 & qa_child=$!
   fi
   printf '%s\n' "$qa_child" > "$qa_dir/child.pid"
+  qa_step='agent'
   wait "$qa_child"; qa_child=''
   [ -f "$S/done.json" ] || fail 'QA exited without dv done'
 )
@@ -236,21 +278,23 @@ qa_finding() (
   body=$(mktemp "$S/.finding.XXXXXX")
   {
     printf '%s\n\n' "$marker"
-    printf 'QA at `%s` · milestone **%s**\n\n' "$(jq -r .head "$S/meta")" "$(jq -r .milestone.title "$S/meta")"
+    printf 'QA at `%s` · milestone **%s**\n\n' "$(jq -r .head "$S/meta")" "$(jq -r '.milestone.title // "none"' "$S/meta")"
     jq -r '"## Steps\n"+.steps+"\n\n## Expected\n"+.expected+"\n\n## Actual\n"+.actual+"\n\n## Evidence\n"+.evidence' <<< "$data"
   } > "$body"
   # Create only missing labels; never overwrite a repository's existing label.
   gh label create qa -R "$repository" --color 7057ff --description 'Real-use QA finding' 2>/dev/null || gh label list -R "$repository" --json name --jq '.[].name' | grep -Fxq qa
   gh label create "$kind" -R "$repository" --color d73a4a --description 'QA finding type' 2>/dev/null || gh label list -R "$repository" --json name --jq '.[].name' | grep -Fxq "$kind"
   if [ -n "$match" ]; then
-    gh issue edit "$match" -R "$repository" --add-label "qa,$kind" --milestone "$(jq -r .milestone.title "$S/meta")"
+    local milestone_args=()
+    if [ "$milestone" != null ]; then milestone_args=(--milestone "$(jq -r .milestone.title "$S/meta")"); fi
+    gh issue edit "$match" -R "$repository" --add-label "qa,$kind" ${milestone_args[@]+"${milestone_args[@]}"}
     result=$(gh api --paginate "repos/$repository/issues/$match/comments?per_page=100" | jq -sc --arg marker "$marker" 'add | any(.[]; (.body // "")|contains($marker))')
     if [ "$result" != true ]; then gh issue comment "$match" -R "$repository" --body-file "$body"; fi
     result="https://github.com/$repository/issues/$match"
   else
     # API gives an unambiguous number and preserves the current milestone.
     result=$(jq -n --arg title "$title" --rawfile body "$body" --arg kind "$kind" --argjson milestone "$milestone" \
-      '{title:$title,body:$body,labels:["qa",$kind],milestone:$milestone}' |
+      '{title:$title,body:$body,labels:["qa",$kind]} + (if $milestone==null then {} else {milestone:$milestone} end)' |
       gh api --method POST "repos/$repository/issues" --input -)
     result=$(jq -er .html_url <<< "$result")
   fi

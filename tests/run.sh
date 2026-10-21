@@ -1685,7 +1685,7 @@ for name in appserver_start appserver_accepted appserver_refused appserver_unkno
     else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
   fi
 done
-for name in qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids qa_transport_retry qa_recovered_capacity qa_explicit_match qa_config_data qa_unbound_event qa_bound_event; do
+for name in qa_pr_lookup_retry qa_base_lookup_retry qa_pr_lookup_blocked qa_base_lookup_blocked qa_milestone_graphql qa_no_milestone qa_no_milestone_match qa_milestone_blocked qa_milestone_ambiguous qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids qa_transport_retry qa_recovered_capacity qa_explicit_match qa_config_data qa_unbound_event qa_bound_event; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
   else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
 done

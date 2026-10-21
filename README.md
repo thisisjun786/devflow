@@ -312,7 +312,11 @@ QA는 `docs/qa.md`, 없으면 AGENTS.md의 QA 절, README·milestone·설계 문
 사용합니다. 실제 계정·사용자 데이터·배포는 사용하지 않고 코드를 고치지 않습니다.
 발견은 현재 milestone에 `qa`와 `bug` 또는 `feature`로 기록합니다. merged PR의
 milestone을 우선하고, 없으면 그 PR이 닫는 이슈들의 공통 milestone을 씁니다.
-정보가 없거나 모호하면 잘못된 milestone에 쓰지 않고 blocked로 남습니다.
+둘 다 milestone이 없으면 `Milestone: none`으로 QA를 진행하고 새 발견 이슈에는
+milestone 없이 라벨만 붙입니다. 기존 이슈의 milestone은 그대로 둡니다.
+서로 다른 milestone이 여럿이면 blocked로 남습니다. 병합 직후 PR 연결이 비어
+있으면 최대 6회(5초 간격) 재시도합니다. 실패 단계는 meta의 `failure_reason`과
+runner log에 기록하며, job 생성 전 실패는 runner 디렉터리의 meta에 남깁니다.
 
 ```sh
 dv qa search QA-owner-repo-sha 'conversation input'
