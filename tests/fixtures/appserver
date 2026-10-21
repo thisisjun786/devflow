@@ -55,7 +55,9 @@ while IFS= read -r line; do
   case "$method" in
     initialize) result='{"userAgent":"stub"}' ;;
     initialized) continue ;;
-    thread/start|thread/resume) result='{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}' ;;
+    thread/start|thread/resume)
+      result='{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}'
+      [ "$method" != thread/resume ] || touch "$CASE_DIR/server/resumed" ;;
     thread/goal/set|thread/goal/get)
       if [ -f "$CASE_DIR/server/no-goal" ]; then
         jq -cn --argjson id "$id" '{id:$id,error:{code:-32601,message:"Method not found"}}'; continue
@@ -86,6 +88,13 @@ while IFS= read -r line; do
       else turn=$(cat "$CASE_DIR/server/turn-id" 2>/dev/null) || turn='turn-1'
         result=$(jq -cn --arg status "$status" --arg turn "$turn" '{thread:{id:"thread-1",status:{type:$status},turns:(if $status=="active" then [{id:$turn,status:"inProgress",items:[]}] else [] end)}}'); fi ;;
     turn/start|turn/steer)
+      if [ "$method" = turn/steer ] && [ -f "$CASE_DIR/server/hold-mutation" ]; then
+        touch "$CASE_DIR/server/mutation-held"
+        for _ in {1..200}; do
+          [ ! -f "$CASE_DIR/server/release-mutation" ] || break
+          sleep 0.05
+        done
+      fi
       outcome=accepted; [ ! -f "$CASE_DIR/server/outcome" ] || outcome=$(cat "$CASE_DIR/server/outcome")
       if [ "$outcome" = refused ]; then
         jq -cn --argjson id "$id" '{id:$id,error:{code:-32602,message:"turn mismatch"}}'; continue

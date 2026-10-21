@@ -353,6 +353,8 @@ cmd__appserver_run() {
   local AS_EVENTS=1 AS_SEQ=0 AS_THREAD='' AS_REPLY='{}' AS_CLASS=unknown AS_SNAPSHOT='{}' AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER=''
   local AS_LINE='' AS_PARTIAL=''
   local instruction params id file operation text line last_poll=0
+  # bin/dv captures HEAD before sourcing the libraries.
+  local client_commit=${entry_commit:-} current_commit
   DV_APPSERVER_SOCKET=$(jq -r --arg socket "$DV_APPSERVER_SOCKET" '.appserver_socket // $socket' "$S/meta")
   AS_THREAD=$(jq -r '.thread_id // ""' "$S/meta")
   printf '%s\n' "$$" > "$S/appserver/client.pid"
@@ -397,6 +399,7 @@ cmd__appserver_run() {
           else appserver_deliver "$id" "$text"; fi ;;
         status) appserver_snapshot; AS_CLASS=accepted; AS_REPLY=$AS_SNAPSHOT ;;
         recover) appserver_recover "$id" ;;
+        stop) appserver_stop_turn "$id" ;;
         finish)
           appserver_rpc thread/goal/get "$(jq -cn --arg thread "$AS_THREAD" '{threadId:$thread}')"
           if [ "$AS_CLASS" = accepted ] && printf '%s\n' "$AS_REPLY" | jq -e '.result.goal!=null and .result.goal.status!="complete"' >/dev/null; then
@@ -413,7 +416,17 @@ cmd__appserver_run() {
       if printf '%s\n' "$line" | jq -e 'type=="object"' >/dev/null 2>&1; then appserver_event "$line"; fi
     fi
     if [ $(( $(now) - last_poll )) -ge "$DV_APPSERVER_POLL" ]; then
+      # Outbox RPCs and their receipts are settled before switching code. exec
+      # keeps client.pid valid; the persisted thread takes the resume path.
+      current_commit=$(self_update_head)
+      if [ -n "$current_commit" ] && [ "$current_commit" != "$client_commit" ]; then
+        appserver_close
+        exec "$DV_ROOT/bin/dv" _appserver-run "$ISSUE"
+      fi
       appserver_snapshot; appserver_questions; last_poll=$(now)
+      if [ -f "$S/appserver/blocked" ] && [ ! -f "$S/appserver/recoveries.json" ]; then
+        appserver_recover legacy-recovery
+      fi
     fi
   done
   cmd_kick blocked "$ISSUE" 'App Server connection ended; inspect unknown receipts before reconnecting'
@@ -478,7 +491,7 @@ appserver_recover() {
   local id=$1 state last params reason text=continue count turn
   AS_CLASS=accepted AS_REPLY='{}'
   # A queued watch may outlive dv done or a prior recovery decision.
-  [ ! -f "$S/appserver/blocked" ] || return 0
+  if [ -f "$S/appserver/blocked" ] && [ -f "$S/appserver/recoveries.json" ]; then return 0; fi
   if appserver_done_current; then return 0; fi
   jq -e '.status=="running" or .status=="pr"' "$S/meta" >/dev/null || return 0
   appserver_snapshot
@@ -486,6 +499,15 @@ appserver_recover() {
   AS_CLASS=accepted AS_REPLY='{}'
   printf '%s\n' "$AS_SNAPSHOT" | jq -e '.question_pending|not' >/dev/null || return 0
   if appserver_done_current; then return 0; fi
+  if [ -f "$S/appserver/blocked" ]; then
+    [ "$state" = failed ] || return 0
+    # Older clients could block before recording a recovery budget. Persist
+    # the migration before unblocking so a later block is never reconsidered.
+    # Keep any legacy recovery episode and its consumed count intact.
+    printf '%s\n' "$AS_SNAPSHOT" | jq -c '{recoveries,last_recovery_reason}' |
+      appserver_atomic "$S/appserver/recoveries.json"
+    rm -f "$S/appserver/blocked"
+  fi
   case "$state" in
     failed)
       reason=failed
@@ -579,6 +601,37 @@ appserver_require_idle() {
   server=$(appserver_status "$ISSUE")
   printf '%s\n' "$server" | jq -e '.agent_status=="goal-complete" or .agent_status=="idle" or .agent_status=="gone"' >/dev/null ||
     fail 'App Server thread is active or uncertain; worktree retained'
+}
+# Runs in the job client's scope, separate from appserver_status's connection.
+# shellcheck disable=SC2031
+appserver_stop_turn() {
+  local id=$1 params
+  appserver_rpc thread/read "$(jq -cn --arg thread "$AS_THREAD" '{threadId:$thread,includeTurns:true}')"
+  [ "$AS_CLASS" = accepted ] || return 0
+  if printf '%s\n' "$AS_REPLY" | jq -e '
+    (.result.thread.status.type=="idle" or .result.thread.status.type=="systemError") and
+    all(.result.thread.turns[]?; .status!="inProgress")' >/dev/null; then return 0; fi
+  if ! params=$(printf '%s\n' "$AS_REPLY" | jq -ce --arg thread "$AS_THREAD" '
+    [.result.thread.turns[]? | select(.status=="inProgress") | .id][-1] |
+    select(type=="string" and length>0) | {threadId:$thread,turnId:.}'); then
+    AS_CLASS=refused AS_REPLY='{"error":{"message":"active turn ID is unknown"}}'
+    return 0
+  fi
+  appserver_mutate "$id-interrupt" turn/interrupt "$params"
+  [ "$AS_CLASS" = accepted ] || return 0
+  if ! appserver_wait_idle; then
+    AS_CLASS=refused AS_REPLY='{"error":{"message":"turn interruption is unconfirmed"}}'
+  fi
+}
+appserver_require_stopped() {
+  local server
+  server=$(appserver_status "$ISSUE")
+  # Failed/systemError threads may be terminal even though the ordinary idle
+  # guard refuses them. An active or uncertain turn still needs confirmation.
+  if printf '%s\n' "$server" | jq -e '
+    .agent_status=="gone" or
+    ((.thread.status.type=="idle" or .thread.status.type=="systemError") and .turn_id==null)' >/dev/null; then return 0; fi
+  appserver_request stop >/dev/null || fail 'App Server turn stop is unconfirmed; worktree retained'
 }
 cmd__appserver_watch() (
   local path
