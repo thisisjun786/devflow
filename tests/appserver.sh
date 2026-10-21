@@ -1,6 +1,46 @@
 #!/usr/bin/env bash
 # Sourced by run.sh. No real model, daemon, provider or remote repository.
 # shellcheck disable=SC2154,SC2016
+case_teardown_wait_client() {
+  local fixture="$CASE_DIR/teardown" pid stopped=false
+  mkdir -p "$fixture/state/T-1/appserver" "$fixture/home"
+  cat > "$CASE_DIR/late-client" <<'CLIENT'
+#!/usr/bin/env bash
+trap 'sleep 0.3; touch "$CASE_DIR/client-stopped"; exit 0' TERM
+touch "$CASE_DIR/client-ready"
+while :; do sleep 0.1; done
+CLIENT
+  bash "$CASE_DIR/late-client" & pid=$!
+  printf '%s\n' "$pid" > "$fixture/state/T-1/appserver/client.pid"
+  wait_file "$CASE_DIR/client-ready"
+  CASE_DIR="$fixture" DV_STATE="$fixture/state" DV_HOME="$fixture/home" DV_TEST_KEEP=0 teardown
+  [ ! -f "$CASE_DIR/client-stopped" ] || stopped=true
+  wait "$pid" || true
+  test "$stopped" = true
+  test ! -e "$fixture"
+}
+case_teardown_preserve_live_client() {
+  local fixture="$CASE_DIR/teardown" pid refused=false
+  mkdir -p "$fixture/state/T-1/appserver" "$fixture/home"
+  cat > "$CASE_DIR/held-client" <<'CLIENT'
+#!/usr/bin/env bash
+trap '' TERM
+touch "$CASE_DIR/client-ready"
+while :; do sleep 0.1; done
+CLIENT
+  bash "$CASE_DIR/held-client" & pid=$!
+  printf '%s\n' "$pid" > "$fixture/state/T-1/appserver/client.pid"
+  wait_file "$CASE_DIR/client-ready"
+  # Only the driver's bounded wait is accelerated; the fake client is a
+  # separate shell and still ignores TERM until this test explicitly stops it.
+  sleep() { command sleep 0.001; }
+  if CASE_DIR="$fixture" DV_STATE="$fixture/state" DV_HOME="$fixture/home" DV_TEST_KEEP=0 teardown; then :
+  else refused=true; fi
+  kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
+  test "$refused" = true
+  test -d "$fixture"
+  rm "$fixture/state/T-1/appserver/client.pid"
+}
 appserver_setup() {
   repo appserver "${1:-}"
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
@@ -210,6 +250,9 @@ case_appserver_goal_override() {
   export DV_CODEX_MODE=auto DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive"
   dv start "$REPO" AS-1 override --mode goal
   wait_file "$DV_STATE/AS-1/done.json"
+  # done.json is published before metrics and the terminal metadata update.
+  # The completion event is emitted after both, so teardown cannot race them.
+  wait_file "$DV_STATE/AS-1/events.log"
   jq -e '.backend=="tmux" and .mode=="goal" and .status=="done"' "$DV_STATE/AS-1/meta"
   dv clean AS-1
 }

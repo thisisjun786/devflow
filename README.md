@@ -96,7 +96,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | 명령 | 기능 |
 |---|---|
 | `dv submit REPO ISSUE SLUG --brief FILE [--agent AGENT] [--base BRANCH] [--mode MODE]` | 관리자에게 제출, 호스트는 입찰로 결정 |
-| `dv bid --json [--repo REPO] [--agent AGENT]` | 수용량·부하·메모리·clone·로그인 조회, 상태 변경 없음 |
+| `dv bid --json [--repo REPO] [--agent AGENT]` | 수용량·부하·메모리·디스크·clone·로그인 조회, 상태 변경 없음 |
 | `dv queue [ISSUE] [--json]` / `dv cancel ISSUE` | 관리자 배정 상태 조회 / 미배정 제출 취소 |
 | `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치·상태 및 선택한 backend 생성 |
 | `dv done ISSUE [--note TEXT]` | head·변경 파일 수·보고서 경로·완료 이벤트 |
@@ -151,7 +151,17 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 `dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 호스트별 설정이고 기본값은 `max(1, floor(코어 수 / 8))`입니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 만석, 로그인 불가, 사용할 수 없는 저장소·터미널, `DV_MIN_MEMORY_MB`(기본 512) 미만이면 거절합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`를 사용하며, 다른 CLI는 `DV_AGENT_READY_codex/claude/devin`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
 
-점수는 `100 × 빈 자리/수용량 − 20 × load5/코어 + min(64, 남은 메모리/1024) + clone 보너스 20`입니다. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 순으로 진행하며, 점수가 높아도 뒤 그룹이 앞 그룹을 추월하지 않습니다. 같은 그룹에서는 높은 점수가 먼저이고, 기본 관리자(lina-os)에서 동점 순서는 **hx-linux → amd-linux → go2-linux → lina-os → gos-linux**입니다(준 10-20 결정). 조회는 각 그룹 안에서 `DV_HOSTS`에 적힌 순서를 따릅니다. hx·amd·go2·gos 별칭에도 같은 우선순위를 적용합니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 쓰는 최후 후보입니다. 낙찰 호스트는 잠금 안에서 수용량을 다시 확인하고 `dv start`를 실행합니다. 직접 실행하는 `dv start`는 수동 경로이므로 자동 배정 중에는 `submit`을 사용하세요.
+점수는 `100 × 빈 자리/수용량 − 20 × load5/코어 + min(64, 남은 메모리/1024) + clone 보너스 20 − 디스크 감점`입니다. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 순으로 진행하며, 점수가 높아도 뒤 그룹이 앞 그룹을 추월하지 않습니다. 같은 그룹에서는 높은 점수가 먼저이고, 기본 관리자(lina-os)에서 동점 순서는 **hx-linux → amd-linux → go2-linux → lina-os → gos-linux**입니다(준 10-20 결정). 조회는 각 그룹 안에서 `DV_HOSTS`에 적힌 순서를 따릅니다. hx·amd·go2·gos 별칭에도 같은 우선순위를 적용합니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 쓰는 최후 후보입니다. 낙찰 호스트는 잠금 안에서 수용량과 디스크를 다시 확인하고 `dv start`를 실행합니다. 직접 실행하는 `dv start`는 수동 경로이므로 자동 배정 중에는 `submit`을 사용하세요.
+
+`disk_available_gb`는 `DV_WORK`가 있는 파일시스템의 남은 GiB이며 `cache_disk_available_gb`는 Go 캐시 파일시스템의 남은 GiB입니다. 캐시 경로는 `GOCACHE`를 우선하고 비어 있으면 `go env GOCACHE`로 구합니다. 아직 없는 경로는 가장 가까운 기존 상위 디렉터리를 조회하며 생성하지 않습니다. 두 디스크 중 하나라도 `DV_MIN_DISK_GB`(기본 15) 미만이면 `low disk`, 조회 실패는 `disk unavailable`로 거절합니다. 디스크 감점은 더 작은 남은 용량을 기준으로 `max(0, 20 × (2 × 최소 용량 − 남은 용량) / 최소 용량)`이며, 기본값에서는 양쪽 모두 30GiB 이상이면 0점, 작은 쪽이 15GiB이면 20점입니다. 최소 용량 0은 용량 거절·감점을 끄지만 조회 실패는 계속 거절합니다. Go 미설치·`GOCACHE=off` 등으로 캐시 경로를 구할 수 없으면 캐시 측정은 null이고 작업 디스크만 판단합니다. `dv host check`는 두 경로·남은 용량과 Go 캐시, `~/.cache` 전체 크기를 표시합니다. JSON에는 `work_root`, `go_cache_path`, 두 디스크 측정값, `cache_sizes_kb.go_build`와 `cache_sizes_kb.total`(KiB, 각각 Go 캐시와 `~/.cache`)이 추가되며 측정 실패는 null입니다.
+
+기존 `dv-watch`는 로컬 및 `DV_HOSTS`의 각 호스트에서 `DV_DISK_INTERVAL`초(기본 1800) 간격으로 디스크 안전 정리가 실행되도록 요청합니다. 별도 수집 프로세스가 실행하므로 큐 처리는 기다리지 않습니다. 각 호스트의 잠금·마지막 실행 시각이 중복 실행과 watcher 재시작에 따른 반복 정리를 막습니다. 먼저 구한 Go 캐시 경로에서 접근한 지 `DV_CACHE_TRIM_DAYS`일(기본 2, 분 단위 판정)이 지난 일반 파일을 지웁니다. 이후에도 **캐시 파일시스템**의 남은 용량이 최소값 미만일 때만 해당 `GOCACHE`를 지정해 `go clean -cache`를 실행합니다. 작업 디스크만 부족할 때 다른 디스크의 캐시를 전부 비우지는 않습니다. 삭제 전에 물리 경로를 구하고 루트·홈·홈의 상위 디렉터리를 거절합니다(`..`·심볼릭 링크를 통한 별칭 포함). 캐시 디렉터리 자체가 심볼릭 링크이면 정리하지 않습니다. 검증된 물리 경로를 파일 삭제와 Go 명령에 동일하게 사용하며, Go 미설치·실행 실패·디스크 조회 실패를 로그에 남깁니다. 접근 시각을 갱신하지 않는 파일시스템에서는 최근 사용 여부를 정확히 알 수 없고, 실행 중인 빌드가 삭제된 캐시를 다시 생성할 수 있습니다.
+
+같은 정리는 `landed`·`canceled`·`cancelled` 상태가 된 지 하루를 초과한 작업의 worktree도 제거합니다. `landed_at`, `canceled_at`/`cancelled_at`을 사용하며 기존 기록에 시각이 없으면 meta 파일 수정 시각을 사용합니다. 작업 잠금, work root 내부의 linked worktree, 저장소·브랜치 일치, 깨끗한 Git 상태, 에이전트 종료/유휴를 확인합니다. dirty·실행 중·상태 불명·잠긴 작업은 보존합니다. 상태 기록은 남기고 성공 시 `cleaned_at`을 기록합니다. 호스트별 `$DV_STATE/.disk/cleanup.log`에 정리 종류·대상·전후 KiB·회수 KiB와 종료 시 남은 디스크를 누적하며, 요청 실패는 watcher의 `$DV_HOME/disk.log`에 남깁니다. 크기 차이는 동시에 실행되는 빌드의 영향을 받을 수 있습니다.
+
+정리 간격은 각 호스트의 마지막 **시작** 시각을 기준으로 계산합니다. watcher는 최대 60초 간격(`DV_DISK_INTERVAL`이 더 짧으면 해당 간격)으로 기한을 확인합니다. 정리가 오래 걸리거나 watcher가 기한 직전에 재시작되어도 다음 정리를 30분 더 미루지 않으며, 호스트 잠금과 실행 중인 수집 프로세스 확인으로 중복 정리를 막습니다.
+
+개행이 포함된 캐시 경로는 지원하지 않습니다. `go env GOCACHE` 출력과 심볼릭 링크를 해석한 캐시·홈 경로도 개행을 잃지 않고 검사합니다. 경로를 안전하게 비교할 수 없으면 캐시를 정리하지 않고 보존합니다.
 
 관리자 상태는 `$DV_HOME/submissions/ISSUE/task.json`이고 `dv queue`로 봅니다. A2A 상태 `submitted/working/input-required/completed/failed/canceled`를 사용하며, 개별 입찰은 `submitted/rejected`입니다. 기존 개발·PR 상태(`dv status`의 running/pr/ready 등)는 그대로 유지합니다. `bids.json`에는 점수·거절 이유, `dispatch.log`에는 시작 결과가 남습니다. 모두 거절하면 submitted로 남고, 기존 done/failed/landed 이벤트가 올 때만 재입찰합니다. 별도 입찰 폴링이나 데몬은 없습니다. `dv cancel`은 아직 배정되지 않은 제출만 취소합니다.
 
@@ -281,7 +291,7 @@ tests/run.sh
 shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fixtures/*
 ```
 
-실제 에이전트·GitHub·SSH·Hermes를 시험에서 부르지 않습니다. 임시 bare 원격과 실제 tmux를 쓰며 tmux가 없을 때만 해당 시험을 skip합니다. `DV_TEST_TMP=/scratch/...`로 임시 위치를 지정할 수 있습니다. 큐·worker 기록은 운영자가 보관 주기를 정하고, worktree는 `dv clean`으로 정리하세요.
+실제 에이전트·GitHub·SSH·Hermes를 시험에서 부르지 않습니다. 임시 bare 원격과 실제 tmux를 쓰며 tmux가 없을 때만 해당 시험을 skip합니다. `DV_TEST_TMP=/scratch/...`로 임시 위치를 지정할 수 있습니다. 디스크 시험은 `df`·Go 스텁과 임시 캐시를 사용합니다. 큐·worker 기록은 운영자가 보관 주기를 정하고, 자동 정리 대상이 아닌 worktree는 `dv clean`으로 정리하세요.
 
 App Server 시험은 임시 Unix 소켓과 Bash JSON-RPC 스텁을 사용합니다. 시험에 OpenBSD `nc`가
 필요합니다(macOS 기본 제공, Linux 패키지 `netcat-openbsd`). 실제 Codex 데몬·모델·계정은
