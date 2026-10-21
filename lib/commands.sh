@@ -647,14 +647,25 @@ cmd_send() {
 }
 cmd_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean ISSUE'; load_issue "$1"; issue_lock
-  clean_worktree
+  clean_worktree idle
   meta_set --argjson time "$(now)" '.cleaned_at=$time'
 }
 clean_worktree() {
   if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; fi
   if [ "$BACKEND" = appserver ]; then
-    appserver_require_idle
+    if [ "${1:-}" = merged-pr ]; then appserver_require_stopped
+    else appserver_require_idle; fi
     if appserver_alive; then kill "$(cat "$S/appserver/client.pid")"; fi
+    if [ "${1:-}" = merged-pr ]; then
+      local deadline
+      deadline=$(( $(now) + DV_APPSERVER_TIMEOUT ))
+      while appserver_alive; do
+        [ "$(now)" -lt "$deadline" ] || fail 'App Server client did not stop; worktree retained'
+        sleep 0.1
+      done
+      # The client may have written files after the initial clean check.
+      if [ -d "$WT" ]; then require_clean "$WT"; fi
+    fi
   elif [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'exec is still running; worktree retained'
   elif [ "$BACKEND" = herdr ]; then

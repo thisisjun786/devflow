@@ -474,6 +474,63 @@ case_appserver_land_active() {
   test ! -d "$wt"
 }
 
+appserver_merged_land() {
+  local status=$1 wt head
+  appserver_setup remote
+  wt=$(jq -r .worktree "$DV_STATE/AS-1/meta")
+  git -C "$wt" commit --allow-empty -qm 'AS-1: delivered change'
+  head=$(git -C "$wt" rev-parse HEAD)
+  printf '%s\n' "$head" > "$GH_STUB_DIR/head"
+  printf '{"url":"https://github.com/test/repo/pull/1"}\n' > "$DV_STATE/AS-1/pr.json"
+  jq --arg head "$head" '.status="pr" | .head=$head' "$DV_STATE/AS-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/AS-1/meta"
+  jq -cn --arg status "$status" '{thread:{id:"thread-1",status:{type:$status},turns:[{id:"turn-1",status:"failed",items:[],error:{message:"model error"}}]}}' > "$CASE_DIR/server/thread.json"
+  # OPEN PRs and ordinary clean still require an idle, confirmed thread.
+  if dv land AS-1; then return 1; fi
+  if dv clean AS-1; then return 1; fi
+  test -d "$wt"
+  test -f "$DV_STATE/AS-1/appserver/client.pid"
+  jq -e '.status=="pr"' "$DV_STATE/AS-1/meta"
+  touch "$GH_STUB_DIR/merged"
+  dv land AS-1
+  test ! -d "$wt"
+  test ! -f "$DV_STATE/AS-1/appserver/client.pid"
+  test -f "$DV_STATE/AS-1/appserver/exited"
+  jq -e --arg head "$head" '.status=="landed" and .head==$head' "$DV_STATE/AS-1/meta"
+  jq -e --arg head "$head" '.state=="MERGED" and .headRefOid==$head' "$DV_STATE/AS-1/land-result.json"
+  dv land AS-1
+  jq -se --arg head "$head" '[.[]|select(.kind=="landed")]|length==1 and .[0].head==$head' "$DV_STATE/AS-1/events.log"
+  if grep '^pr merge ' "$GH_STUB_DIR/calls"; then return 1; fi
+}
+case_appserver_land_merged_failed() { appserver_merged_land idle; }
+case_appserver_land_merged_system_error() { appserver_merged_land systemError; }
+
+appserver_merged_active() {
+  local outcome=$1 wt
+  appserver_setup remote
+  wt=$(jq -r .worktree "$DV_STATE/AS-1/meta")
+  git -C "$wt" rev-parse HEAD > "$GH_STUB_DIR/head"
+  printf '{"url":"https://github.com/test/repo/pull/1"}\n' > "$DV_STATE/AS-1/pr.json"
+  touch "$GH_STUB_DIR/merged"
+  if [ "$outcome" = timeout ]; then
+    printf '100\n' > "$CASE_DIR/server/interrupt-polls"
+    if dv land AS-1; then return 1; fi
+    test -d "$wt"
+    test -f "$DV_STATE/AS-1/appserver/client.pid"
+    test ! -f "$DV_STATE/AS-1/events.log"
+    rm "$CASE_DIR/server/interrupt-polls" "$CASE_DIR/server/interrupt-remaining"
+    printf 'idle\n' > "$CASE_DIR/server/status"
+  fi
+  dv land AS-1
+  jq -se '[.[]|select(.method=="turn/interrupt")]|length==1 and .[0].params.turnId=="turn-1"' "$CASE_DIR/server/requests"
+  test "$(cat "$CASE_DIR/server/status")" = idle
+  test ! -d "$wt"
+  test ! -f "$DV_STATE/AS-1/appserver/client.pid"
+  jq -se '[.[]|select(.kind=="landed")]|length==1' "$DV_STATE/AS-1/events.log"
+}
+case_appserver_land_merged_active() { appserver_merged_active success; }
+case_appserver_land_merged_timeout() { appserver_merged_active timeout; }
+
 # Recovery tests drive time through synthetic state, never the host clock.
 appserver_age() { printf '0\n' > "$DV_STATE/AS-1/appserver/activity"; }
 appserver_progress() {
