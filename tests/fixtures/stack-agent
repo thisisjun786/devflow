@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Minimal acknowledged agent transport. No agent process or provider is used.
+set -euo pipefail
+case "$1 $2" in
+  'agent get') jq -cn --arg pane "$3" '{result:{agent:{pane_id:$pane,agent_status:"idle"}}}' ;;
+  'pane read') exit 0 ;;
+  'agent prompt')
+    [ ! -f "$CASE_DIR/send-failed" ] || exit 1
+    printf '%s\n' "$4" >> "$DV_STATE/$3/sent-input"
+    printf '{"result":{"type":"agent_prompted"}}\n' ;;
+  'workspace close') printf '{"result":{"type":"ok"}}\n' ;;
+  *) printf 'Unexpected stack agent call: %s\n' "$*" >&2; exit 1 ;;
+esac

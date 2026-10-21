@@ -86,7 +86,9 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
 
-선행 PR의 landed 이벤트를 받으면 `dv-watch`는 자신과 `DV_HOSTS`의 대기 작업을 기존 재시도 큐에 넣습니다. 각 작업은 자신의 worktree에서 `origin/<BASE>`를 fetch·merge하고 브랜치를 일반 push한 뒤 새 head의 CI가 전부 성공해야 병합합니다(`BASE=dev`이면 `origin/dev`). 선행 PR이 아직 미병합이면 다음 landed 이벤트나 상태 점검까지 큐에서 유예합니다. 연쇄·다중 의존성을 매번 확인하며, CI를 기다리는 작업이 다른 stack의 진행을 막지 않습니다. watcher 재시작은 기존 pending 큐를 이어가고, 놓친 이벤트·접속할 수 없었던 호스트는 기존 상태 안전망이 복구합니다. `DV_MAX_WORKERS`의 동시 실행 한도를 공유합니다.
+선행 PR의 landed 이벤트를 받으면 `dv-watch`는 자신과 `DV_HOSTS`의 모든 `waiting-base` 작업을 기존 재시도 큐에 넣습니다. `stack_head`가 없는 과거 기록도 포함합니다. 기본 30분 주기의 상태 안전망도 같은 호스트들을 조회하므로 대기에 들어오기 전에 병합된 기반과 놓친 이벤트를 복구합니다. 선행 PR이 모두 병합되고 병합 결과가 실제 `origin/<BASE>`에 포함되면, 해당 작업자에게 `dv send`로 base 병합·필요한 시험 재실행·일반 push·현재 head의 초록 CI·`dv done`을 요청합니다. 기존 land 승인(`stack_head`)이 있는 작업은 새 done 뒤 자동 병합을 이어가고, 승인 기록이 없으면 완료를 관리자에게 전달합니다. 미병합 기반은 다음 이벤트나 안전망까지 유예하며 `DV_MAX_WORKERS`의 동시 실행 한도를 공유합니다.
+
+대기 시작 시각은 `stack_waiting_since`에 보존합니다. 대기가 `DV_STALL_AFTER`를 넘었고 모든 기반이 대상 브랜치에 병합됐으면 `stalled` 이벤트의 메시지로 `bases-merged`를 보냅니다. 시각이 없는 과거 기록은 처음 관측한 시각부터 셉니다. 재개 요청은 `stack_resume`과 `stack-resume.log`에 기록하여 watcher 재시작과 이벤트 재전달에도 중복 전송하지 않습니다. 전송 실패는 `blocked`로 알리고 로그를 남깁니다.
 
 업데이트 충돌은 worktree에 남기고 해당 에이전트에 `dv send`를 한 번 요청합니다. 요청은 `stack-conflict.sent`, 전달 결과는 `stack-conflict.log`에 보존합니다. 에이전트가 충돌을 해결·커밋·push하면 큐가 새 head의 CI를 확인하여 이어갑니다. 전달 실패는 자동으로 중복 전송하지 않으므로 로그를 확인해야 합니다. dirty worktree, API 오류, 비어 있거나 실패한 CI는 병합하지 않으며 기존 완료·리뷰 기록과 원격 브랜치를 보존합니다.
 

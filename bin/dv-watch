@@ -118,7 +118,7 @@ worker_start() {
   (
     trap - EXIT INT TERM
     rc=0
-    if [ "$(printf '%s\n' "$event" | jq -r .kind)" = stack-land ]; then
+    if printf '%s\n' "$event" | jq -e '.kind=="stack-land" or .kind=="stack-resume"' >/dev/null; then
       stack_worker "$event" || rc=$?
     elif [ -n "$DV_WORKER_CMD" ]; then
       bash -c "$DV_WORKER_CMD \"\$@\"" dv-worker "$prompt" || rc=$?
@@ -200,7 +200,7 @@ pending_event() {
 }
 reconcile() {
   local host rows row issue head id remote event_host token recovered
-  for host in $DV_HOSTS; do
+  for host in $(printf '%s\n' "$DV_HOST $DV_HOSTS" | tr ' ' '\n' | sort -u); do
     # The watcher's own host needs no ssh (and may have no key to itself).
     if [ "$host" = "$DV_HOST" ]; then
       rows=$(dv status --json 2>> "$DV_HOME/reconcile.log") || continue

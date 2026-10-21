@@ -2,6 +2,7 @@
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 case "$1 $2" in
+  'pr checks') exit 0 ;;
   'pr view')
     number=${3##*/}; file="$GH_STUB_DIR/pr-$number.json"
     [ ! -f "$GH_STUB_DIR/fail-$number" ] || exit 1
@@ -24,5 +25,6 @@ case "$1 $2" in
   'api repos/test/repo')
     jq -n --arg method "${STACK_TEST_METHOD:-merge}" \
       '{allow_merge_commit:($method=="merge"),allow_squash_merge:($method=="squash"),allow_rebase_merge:($method=="rebase")}' ;;
+  'api --paginate') printf '[]\n' ;;
   *) printf 'Unexpected stack gh: %s\n' "$*" >&2; exit 1 ;;
 esac
