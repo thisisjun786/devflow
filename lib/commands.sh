@@ -109,10 +109,27 @@ launch_agent() {
       if [ "${1:-}" = --revived ]; then herdr_clean || return 1; fi
       herdr_start "$launcher"
     fi
-  elif [ "${1:-}" = --revived ] && tmux_dv has-session -t "=$SESSION" 2>/dev/null; then
-    # A retained dead pane needs no kill/force option.
-    tmux_dv respawn-pane -t "$SESSION:0.0" -c "$WT" "$launcher"
-  else tmux_dv new-session -d -s "$SESSION" -c "$WT" "$launcher"; fi
+  else
+    if [ "${1:-}" = --revived ] && tmux_dv has-session -t "=$SESSION" 2>/dev/null; then
+      # A retained dead pane needs no kill/force option.
+      tmux_dv respawn-pane -t "$SESSION:0.0" -c "$WT" "$launcher" || return 1
+    else
+      tmux_dv new-session -d -s "$SESSION" -c "$WT" "$launcher" || return 1
+    fi
+    # tmux can return zero even when its server could not create the socket.
+    tmux_dv has-session -t "=$SESSION" 2>/dev/null || {
+      # A fast wrapper may already have completed and closed its session.
+      # Revivals retain old done.json, so require this revival's completion.
+      if [ "$(cat "$S/agent.exit" 2>/dev/null)" = 0 ] && [ -s "$S/done.json" ]; then
+        if [ "${1:-}" != --revived ] ||
+          { [ -s "$S/revive/id" ] && cmp -s "$S/revive/id" "$S/revive/done"; }; then
+          return 0
+        fi
+      fi
+      printf 'dv: tmux session %s is missing after startup\n' "$SESSION" >&2
+      return 1
+    }
+  fi
 }
 run_agent() {
   load_issue "$1"; require_worktree; cd "$WT" || exit
