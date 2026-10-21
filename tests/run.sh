@@ -1616,11 +1616,18 @@ STUB
   mkdir "$DV_STATE/.admission-lock"
   printf '%s\n' "$$" > "$DV_STATE/.admission-lock/pid-$$"
   ln "$DV_STATE/.admission-lock/pid-$$" "$DV_STATE/.admission-lock/owner"
+  export BASH_ENV="$ROOT/tests/fixtures/race-env" DV_TEST_RACE=admission_cancel DV_TEST_ACTOR=cancelled
   if award_request LOCK-3 | bid_limit 1 bid_rpc "$DV_HOST" _award > "$CASE_DIR/live-owner.json"; then return 1; fi
+  test -f "$CASE_DIR/contended-cancelled"
+  unset BASH_ENV DV_TEST_RACE DV_TEST_ACTOR
   test -f "$DV_STATE/.admission-lock/pid-$$"
-  rm "$DV_STATE/.admission-lock/pid-$$"
-  rm "$DV_STATE/.admission-lock/owner"
-  rmdir "$DV_STATE/.admission-lock"
+  test "$(cat "$DV_STATE/.admission-lock/owner")" = "$$"
+  test ! -e "$DV_STATE/LOCK-3"
+  # Cancellation may leave a non-owner candidate. Release only our own claim;
+  # an empty directory is not part of the live-owner protection contract.
+  owned_unlock "$DV_STATE/.admission-lock" "$$"
+  test ! -e "$DV_STATE/.admission-lock/owner"
+  test ! -e "$DV_STATE/.admission-lock/pid-$$"
 }
 bid_without_tmux() {
   cat > "$CASE_DIR/no-tmux-env" <<'NO_TMUX'

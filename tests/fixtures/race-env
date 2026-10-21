@@ -18,6 +18,12 @@ ln() {
   local rc=0
   command ln "$@" || rc=$?
   if [ "$rc" != 0 ]; then touch "$CASE_DIR/contended-$DV_TEST_ACTOR"; fi
+  if [ "${DV_TEST_RACE:-}" = admission_cancel ] && [ "$rc" != 0 ] &&
+    [ "${2:-}" = "$DV_STATE/.admission-lock/owner" ]; then
+    # Force cancellation after publishing our candidate, before removing it.
+    # SIGKILL intentionally leaves that non-owner PID file behind.
+    command sleep 30
+  fi
   return "$rc"
 }
 rmdir() {
