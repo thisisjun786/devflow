@@ -818,9 +818,14 @@ case_herdr_undetected() {
     cat "$CASE_DIR/undetected-status.json" "$CASE_DIR/herdr/w-HU-1/output"
     return 1
   fi
+  # Keep this send check about a live, undetected wrapper. A confirmed dead
+  # wrapper now revives once (covered separately by the recovery cases).
+  cp "$DV_STATE/HU-1/agent.pid" "$CASE_DIR/original-agent.pid"
+  printf '%s\n' "$$" > "$DV_STATE/HU-1/agent.pid"
   if dv send HU-1 hello > "$CASE_DIR/send.out" 2> "$CASE_DIR/send.err"; then return 1; fi
   grep -F agent_not_found "$CASE_DIR/send.err"
   test ! -s "$CASE_DIR/send.out"
+  mv "$CASE_DIR/original-agent.pid" "$DV_STATE/HU-1/agent.pid"
   dv 'done' HU-1
   cmp "$CASE_DIR/herdr/w-HU-1/output" "$DV_STATE/HU-1/log"
   # Already closed workspaces are reported on stderr, and clean stays idempotent.
