@@ -93,7 +93,8 @@ case_appserver_question() {
 }
 case_appserver_auto() {
   repo automatic
-  export DV_AGENT_CMD_codex='' DV_CODEX_MODE=auto DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=2
+  unset DV_CODEX_MODE
+  export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=2
   mkdir -p "$CASE_DIR/server"
   printf 'idle\n' > "$CASE_DIR/server/status"
   dv start "$REPO" AS-1 automatic
@@ -189,13 +190,34 @@ case_appserver_watch() {
   jq -se 'any(.[];.kind=="stalled")' "$DV_HOME/kick.q"
 }
 case_appserver_fallback() {
-  needs_tmux; repo fallback
-  export DV_CODEX_MODE=auto DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive" DV_START_WAIT=2
-  printf 'idle\n' > "$CASE_DIR/codex-startup-mode"
-  dv start "$REPO" AS-1 fallback
-  jq -e '.backend=="tmux"' "$DV_STATE/AS-1/meta"
-  wait_file "$DV_STATE/AS-1/events.log"
+  exec_setup
+  export DV_CODEX_MODE=auto
+  dv start "$REPO" EX-1 fallback
+  exec_wait
+  jq -e '.backend=="exec" and .mode=="exec" and .status=="done"' "$DV_STATE/EX-1/meta"
+  test ! -e "$CASE_DIR/herdr/calls"
+  dv clean EX-1
+}
+case_appserver_exec_override() {
+  exec_setup
+  export DV_CODEX_MODE=appserver
+  dv start "$REPO" EX-1 override --mode exec
+  exec_wait
+  jq -e '.backend=="exec" and .status=="done"' "$DV_STATE/EX-1/meta"
+}
+case_appserver_goal_override() {
+  needs_tmux; repo goal-override
+  export DV_CODEX_MODE=auto DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive"
+  dv start "$REPO" AS-1 override --mode goal
+  wait_file "$DV_STATE/AS-1/done.json"
+  jq -e '.backend=="tmux" and .mode=="goal" and .status=="done"' "$DV_STATE/AS-1/meta"
   dv clean AS-1
+}
+case_appserver_submit_auto() {
+  repo submit-auto
+  export DV_CODEX_MODE=auto DV_MANAGER_HOST="$DV_HOST"
+  dv submit "$REPO" AS-1 automatic --brief "$CASE_DIR/brief"
+  jq -e '.mode=="auto" and .agent=="codex" and .status=="submitted"' "$DV_HOME/submissions/AS-1/task.json"
 }
 case_appserver_exec() {
   needs_tmux; repo exec-fallback

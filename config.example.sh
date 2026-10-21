@@ -8,11 +8,11 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_KICK_HOST:=lina-os}" # host running dv-watch (lina-mac before 10-19)
 : "${DV_KICK:=}" # shell command; receives kind issue message host head as arguments
 : "${DV_CODEX_BIN:=codex}" # ~/node/bin/codex or ~/.opencodex/bin/codex
-: "${DV_CODEX_MODE:=auto}" # auto: existing App Server, otherwise TUI; appserver, tui, exec
+: "${DV_CODEX_MODE:=auto}" # existing App Server, otherwise exec; appserver, exec, goal/tui
 : "${DV_APPSERVER_SOCKET:=}" # empty uses Codex's existing default control socket
 : "${DV_APPSERVER_TIMEOUT:=10}" # bounded JSON-RPC response wait, seconds
 : "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds
-: "${DV_STALL_AFTER:=300}" # active goal without new items, seconds
+: "${DV_STALL_AFTER:=300}" # App Server / exec: seconds without new items or events
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
 : "${DV_CLAUDE_BIN:=claude}"
@@ -28,7 +28,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_AGENT_QUESTIONS:=sion}" # herdr: question tools on; off (always under tmux): disable Codex/Claude question tools
 : "${DV_CODEX_SESSIONS:=${CODEX_HOME:-$HOME/.codex}/sessions}" # question transcripts, read only
 : "${DV_CLAUDE_SESSIONS:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" # question transcripts, read only
-: "${DV_MODE:=goal}"
+: "${DV_MODE:=}" # optional legacy override; --mode takes precedence
 : "${DV_AGENT_CMD_codex:=}" # complete shell command, no extra CLI flags
 : "${DV_AGENT_CMD_claude:=}"
 : "${DV_AGENT_CMD_devin:=}"
@@ -58,6 +58,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_HOSTS=lina-os hx-linux amd-linux go2-linux}" # SSH aliases for status/bidding; add gos-linux explicitly as the last fallback
 : "${DV_MANAGER_HOST:=lina-os}" # submit/queue manager, independent of the local kick host
 : "${DV_MANAGER_AGENT:=hermes}" # persistent per-repository Hermes session
+: "${DV_MANAGER_MAX_WAIT:=120}" # busy seconds before other issues use plain workers
 : "${DV_MAX_JOBS:=}" # host capacity; empty = max(1, floor(logical cores / 8))
 : "${DV_MIN_MEMORY_MB:=512}" # reject bids below this available memory
 : "${DV_REPO_ROOT:=$HOME/code}" # existing clones, or clone destination after an award

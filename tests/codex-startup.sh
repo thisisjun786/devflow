@@ -83,15 +83,13 @@ case_codex_repo_trust() {
   repo 'trust root'; herdr_setup
   dv start "$REPO" HS-1 trust --mode exec
   wait_native HS-1
-  wt=$(jq -r .worktree "$DV_STATE/HS-1/meta")
   # Git resolves /var -> /private/var on macOS and removes duplicate slashes.
-  # Assert the paths Codex actually uses to look up trust, on either OS.
-  local canonical_repo canonical_wt
+  # Exec uses persisted repository trust, not unsupported session overrides.
+  local canonical_repo
   canonical_repo=$(cd "$REPO" && pwd -P)
-  canonical_wt=$(cd "$wt" && pwd -P)
-  jq -e --arg root "projects.$(jq -Rn --arg path "$canonical_repo" '$path').trust_level=\"trusted\"" \
-    --arg wt "projects.$(jq -Rn --arg path "$canonical_wt" '$path').trust_level=\"trusted\"" \
-    'index($root)!=null and index($wt)!=null' "$DV_STATE/HS-1/args.json"
+  grep -Fx "[projects.$(jq -Rn --arg path "$canonical_repo" '$path')]" "$HOME/.codex/config.toml"
+  grep -Fx 'trust_level = "trusted"' "$HOME/.codex/config.toml"
+  jq -e 'all(.[]; startswith("projects.")|not)' "$DV_STATE/HS-1/args.json"
   dv clean HS-1
 }
 case_codex_tmux_startup() {

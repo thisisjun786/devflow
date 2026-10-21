@@ -63,12 +63,11 @@ appserver_probe() {
 }
 appserver_selected() {
   [ "$1" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] || return 1
-  [ "$2" != exec ] || return 1
+  [ "$2" = auto ] || return 1
   case "$DV_CODEX_MODE" in
     appserver) return 0 ;;
-    auto) appserver_available ;;
-    tui|exec) return 1 ;;
-    *) fail 'DV_CODEX_MODE must be auto, appserver, tui or exec' ;;
+    auto|tui|goal|exec) appserver_available ;;
+    *) fail 'DV_CODEX_MODE must be auto, appserver, exec, goal or tui' ;;
   esac
 }
 appserver_atomic() {

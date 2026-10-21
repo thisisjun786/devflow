@@ -74,6 +74,9 @@ bid_active() {
   for path in "$DV_STATE"/*/meta; do
     [ -f "$path" ] || continue
     [ ! -f "$(dirname "$path")/agent.exit" ] || continue
+    if jq -e '.backend=="exec"' "$path" >/dev/null; then
+      codex_exec_alive "$(dirname "$path")" || continue
+    fi
     revived=$(cat "$(dirname "$path")/revive/id" 2>/dev/null) || revived=''
     # Release on this run's completion before its done event wakes scheduling;
     # historical or manual completions must still leave the revival counted.
@@ -127,7 +130,9 @@ cmd_bid() {
     if ! codex_repo_allowed "$root" 2>/dev/null; then trust=false; fi
   fi
   if { [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; } || command -v tmux >/dev/null; then backend=true; fi
-  if appserver_selected "$agent" "$DV_MODE"; then backend=true; fi
+  if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then
+    case "$(codex_default_mode "$agent")" in auto|exec) backend=true ;; esac
+  fi
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
     --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" \
@@ -148,7 +153,8 @@ cmd_submit() {
     shift 2
   done
   [ -f "$brief" ] || fail 'brief file not found'
-  case "$agent:$mode" in codex:goal|codex:exec|claude:goal|devin:goal) ;; *) fail 'invalid agent/mode' ;; esac
+  [ -n "$mode" ] || mode=$(codex_default_mode "$agent")
+  case "$agent:$mode" in codex:auto|codex:goal|codex:exec|claude:goal|devin:goal) ;; *) fail 'invalid agent/mode' ;; esac
   [ -z "$base" ] || git check-ref-format "refs/heads/$base" >/dev/null || fail 'invalid base'
   if [ -d "$repo" ]; then
     repo=$(cd "$repo" && git rev-parse --show-toplevel)
@@ -163,7 +169,7 @@ bid_request_valid() {
   jq -e 'type=="object" and (.issue|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9_-]*$")) and
     (.slug|type=="string" and test("^[a-zA-Z0-9][a-zA-Z0-9-]*$")) and (.repo|type=="string" and length>0 and (startswith("-")|not)) and
     (.brief|type=="string") and (.base|type=="string") and
-    ((.agent=="codex" and (.mode=="goal" or .mode=="exec")) or ((.agent=="claude" or .agent=="devin") and .mode=="goal"))' >/dev/null
+    ((.agent=="codex" and (.mode=="auto" or .mode=="goal" or .mode=="exec")) or ((.agent=="claude" or .agent=="devin") and .mode=="goal"))' >/dev/null
 }
 cmd__submit() {
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || fail 'submit must be received by the manager'
