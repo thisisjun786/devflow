@@ -64,6 +64,7 @@ case "$command" in
   pr-wait) cmd_pr_wait "$@" ;;
   _pr-wait-start) cmd_pr_wait_start "$@" ;;
   _stack-land) cmd_stack_land "$@" ;;
+  _stack-resume) cmd_stack_resume "$@" ;;
   metrics) cmd_metrics "$@" ;;
   _metrics-sample) cmd__metrics_sample "$@" ;;
   _metrics-collect) cmd__metrics_collect "$@" ;;

@@ -207,6 +207,17 @@ case_revive_tmux_retained() {
   wait_file "$DV_STATE/RR-1/revived-input.json"
   jq -e '.args[-1]|startswith("revive retained pane")' "$DV_STATE/RR-1/revived-input.json"
   wait_file "$DV_STATE/RR-1/revive/done"
+  # dv done precedes the exec wrapper's final completion writes. A retained
+  # session stays present after exit, so wait for its pane instead of teardown
+  # killing a live wrapper while it still writes into the fixture directory.
+  for _ in {1..100}; do
+    if [ "$(tmux -L "$DV_TMUX_SOCKET" display-message -p -t dv-RR-1 '#{pane_dead}')" = 1 ]; then
+      test "$(cat "$DV_STATE/RR-1/agent.exit")" = 0
+      return
+    fi
+    sleep 0.05
+  done
+  return 1
 }
 case_revive_tmux_live() {
   needs_tmux; repo revive-live

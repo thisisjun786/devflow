@@ -1725,11 +1725,18 @@ STUB
   mkdir "$DV_STATE/.admission-lock"
   printf '%s\n' "$$" > "$DV_STATE/.admission-lock/pid-$$"
   ln "$DV_STATE/.admission-lock/pid-$$" "$DV_STATE/.admission-lock/owner"
+  export BASH_ENV="$ROOT/tests/fixtures/race-env" DV_TEST_RACE=admission_cancel DV_TEST_ACTOR=cancelled
   if award_request LOCK-3 | bid_limit 1 bid_rpc "$DV_HOST" _award > "$CASE_DIR/live-owner.json"; then return 1; fi
+  test -f "$CASE_DIR/contended-cancelled"
+  unset BASH_ENV DV_TEST_RACE DV_TEST_ACTOR
   test -f "$DV_STATE/.admission-lock/pid-$$"
-  rm "$DV_STATE/.admission-lock/pid-$$"
-  rm "$DV_STATE/.admission-lock/owner"
-  rmdir "$DV_STATE/.admission-lock"
+  test "$(cat "$DV_STATE/.admission-lock/owner")" = "$$"
+  test ! -e "$DV_STATE/LOCK-3"
+  # Cancellation may leave a non-owner candidate. Release only our own claim;
+  # an empty directory is not part of the live-owner protection contract.
+  owned_unlock "$DV_STATE/.admission-lock" "$$"
+  test ! -e "$DV_STATE/.admission-lock/owner"
+  test ! -e "$DV_STATE/.admission-lock/pid-$$"
 }
 bid_without_tmux() {
   cat > "$CASE_DIR/no-tmux-env" <<'NO_TMUX'
@@ -1819,7 +1826,7 @@ for name in disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cach
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in stack_wait stack_chain stack_diamond stack_parallel stack_local_body stack_closed_base stack_api_failure stack_dirty stack_remote stack_reconcile stack_checks stack_push_retry stack_defer stack_missing_base stack_squash_base stack_rebase_base; do
+for name in stack_unfinished_auto_land stack_auto_done_guard stack_auto_done_merge stack_resume_done_episode stack_waiting_without_head stack_waiting_clock stack_safety_local stack_resume_headless stack_stalled stack_resume_guards stack_resume_failed stack_resume_interrupted stack_land_requeue stack_land_retry stack_remote_safety stack_wait stack_chain stack_diamond stack_parallel stack_local_body stack_closed_base stack_api_failure stack_dirty stack_remote stack_reconcile stack_checks stack_push_retry stack_defer stack_missing_base stack_squash_base stack_rebase_base; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
