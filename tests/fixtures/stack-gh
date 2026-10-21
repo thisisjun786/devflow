@@ -2,6 +2,7 @@
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 case "$1 $2" in
+  'pr checks') exit 0 ;;
   'pr view')
     number=${3##*/}; file="$GH_STUB_DIR/pr-$number.json"
     [ ! -f "$GH_STUB_DIR/fail-$number" ] || exit 1
@@ -9,6 +10,10 @@ case "$1 $2" in
       '.headRefOid=$head | if .checked_head==$head then . else .statusCheckRollup=[] end' "$file" ;;
   'pr merge')
     number=${3##*/}; file="$GH_STUB_DIR/pr-$number.json"
+    if [ -f "$GH_STUB_DIR/fail-merge-$number" ]; then
+      touch "$GH_STUB_DIR/merge-failed-$number"
+      exit 1
+    fi
     head=$(git --git-dir="$CASE_DIR/remote.git" rev-parse "refs/heads/stack-$number")
     [ "$5" = --match-head-commit ] && [ "$6" = "$head" ]
     git -C "$REPO" fetch -q origin "stack-$number"
@@ -24,5 +29,6 @@ case "$1 $2" in
   'api repos/test/repo')
     jq -n --arg method "${STACK_TEST_METHOD:-merge}" \
       '{allow_merge_commit:($method=="merge"),allow_squash_merge:($method=="squash"),allow_rebase_merge:($method=="rebase")}' ;;
+  'api --paginate') printf '[]\n' ;;
   *) printf 'Unexpected stack gh: %s\n' "$*" >&2; exit 1 ;;
 esac

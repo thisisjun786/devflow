@@ -143,9 +143,39 @@ cmd__metrics_sample() {
 metrics_queue_events() {
   # Alert delivery/handling is observation, not progress. Do not let our own
   # alerts end the episode they describe. Preserve original event timestamps.
-  jq -Rsc '[split("\n")[] | fromjson? | select(type=="object" and .kind!="idle" and (.time|type)=="number")|{host,issue,id,time}] |
+  jq -Rsc '[split("\n")[] | fromjson? | select(type=="object" and .kind!="idle" and .kind!="stalled" and (.time|type)=="number")|{host,issue,id,time}] |
     group_by([.host,.issue]) | map(max_by(.time))' "$DV_HOME/kick.q"
 }
+metrics_stall_notify() (
+  local kind=$1 issue=$2 message=$3 host=$4 head=$5 id=$6 token=$7
+  local dir stall=null sample=null same idle_id time
+  dir=$(metrics_job_dir "$host" "$issue")
+  mkdir -p "$dir" || return 1
+  # The collector and status scan run independently. Serialize their shared
+  # alert decision, while retaining each detector's measurements and recovery.
+  owned_lock "$dir/.alert-lock" "$$" || return 1
+  trap 'owned_unlock "$dir/.alert-lock" "$$"' EXIT
+  time=$(now)
+  if [ -f "$DV_HOME/stalls.json" ]; then
+    stall=$(jq -c --arg host "$host" --arg issue "$issue" '.[[ $host,$issue ]|tojson] // null' "$DV_HOME/stalls.json") || return 1
+  fi
+  [ ! -f "$dir/snapshot.json" ] || sample=$(cat "$dir/snapshot.json")
+  same=$(jq -n --argjson stall "$stall" --argjson sample "$sample" \
+    --argjson time "$time" --argjson gap "$((DV_METRICS_INTERVAL * 2 + DV_BID_TIMEOUT + 5))" '
+    ($stall.generation // "null" | fromjson) as $generation |
+    $stall.since!=null and $stall.expires >= $time and $stall.observed <= $time and
+    $sample!=null and $sample.observed_at <= $time and $time-$sample.observed_at <= $gap and
+    $generation[0]==$sample.started and ($generation[1] // "")==($sample.token // "")') || return 1
+  if [ "$same" = true ]; then
+    # A current status episode owns the alert. If metrics already announced
+    # this idle episode, acknowledge it without preventing stall recovery.
+    [ "$kind" != idle ] || return 0
+    idle_id=$(printf '%s\n' "$sample" | jq -r '[.host,.issue,"idle",(.started|tostring),(.idle_since|tostring)]|join(":")')
+    if jq -Rse --arg id "$idle_id" 'any(split("\n")[] | fromjson?; .id==$id)' "$DV_HOME/kick.q" >/dev/null 2>&1; then return 0; fi
+  fi
+  if jq -Rse --arg id "$id" 'any(split("\n")[] | fromjson?; .id==$id)' "$DV_HOME/kick.q" >/dev/null 2>&1; then return 0; fi
+  "$DV_ROOT/bin/dv-kick" "$kind" "$issue" "$message" "$host" "$head" "$id" "$token" "$time"
+)
 metrics_collector_alive() {
   metrics_pid=$(cat "$DV_HOME/metrics.pid" 2>/dev/null) || return 1
   [[ "$metrics_pid" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -198,10 +228,9 @@ metrics_collect() {
       id=$(printf '%s\n' "$row" | jq -r '[.host,.issue,"idle",(.started|tostring),(.idle_since|tostring)]|join(":")')
       # Generated alerts do not reset activity. Replays/restarts retain one ID
       # per episode, even after the corresponding worker has finished.
-      if jq -se --arg id "$id" 'any(.[]; .id==$id)' "$DV_HOME/kick.q" >/dev/null 2>&1; then continue; fi
       head=$(printf '%s\n' "$row" | jq -r .head); token=$(printf '%s\n' "$row" | jq -r .token)
-      "$DV_ROOT/bin/dv-kick" idle "$issue" "No file or event change for ${idle}s" \
-        "$(printf '%s\n' "$row" | jq -r .host)" "$head" "$id" "$token"
+      metrics_stall_notify idle "$issue" "No file or event change for ${idle}s" \
+        "$(printf '%s\n' "$row" | jq -r .host)" "$head" "$id" "$token" || continue
     done < <(printf '%s\n' "$rows" | jq -c '.[] | select(
       (.host|type)=="string" and (.issue|type)=="string" and
       (.observed_at|type)=="number" and (.idle_seconds|type)=="number" and (.records|type)=="array")')

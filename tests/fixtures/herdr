@@ -17,6 +17,7 @@ error() {
 if [ -f "$stub/fail" ] && [ "$(cat "$stub/fail")" = "$1 $2" ]; then exit 1; fi
 if [ "$1 $2" != 'workspace create' ]; then
   id=${3%%:*}; dir="$stub/$id"
+  if [ "$1 $2" = 'pane process-info' ]; then id=${4%%:*}; dir="$stub/$id"; fi
   if [ ! -f "$dir/workspace" ]; then
     if [ "$1" = agent ]; then error agent_not_found "agent target $3 not found"
     else error "${1}_not_found" "$1 $3 not found"; fi
@@ -241,5 +242,12 @@ case "$1 $2" in
     agent_reply agent_info ;;
   'pane get')
     pane_json | jq -c '{id:"cli:pane:get",result:{pane:.,type:"pane_info"}}' ;;
+  'pane process-info')
+    test "$3" = --pane
+    if [ -f "$dir/process-info" ]; then cat "$dir/process-info"
+    else
+      jq -cn --arg pane "$id:p1" '{result:{type:"pane_process_info",process_info:{pane_id:$pane,
+        shell_pid:123,foreground_process_group_id:123,foreground_processes:[{pid:123,name:"bash"}]}}}'
+    fi ;;
   *) printf 'Unexpected herdr call\n' >&2; exit 1 ;;
 esac
