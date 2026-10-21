@@ -36,7 +36,8 @@ stall_reconcile() {
         else . end |
         .[$key].seq=($row.agent_state_seq // .[$key].seq) |
         .[$key].session=($row.agent_session // .[$key].session) |
-        .[$key].observed=$time | .[$key].row=($row|{issue,head,start_head,award_token,goal_stalled,agent_dead}) |
+        .[$key].observed=$time | .[$key].expires=($time+$gap) |
+        .[$key].row=($row|{issue,head,start_head,award_token,goal_stalled,agent_dead}) |
         .[$key].host=$host | .[$key].source=$source
       end)' "$tmp" > "$tmp.next"; then
     rm -f "$tmp" "$tmp.next"; return 1
@@ -51,10 +52,8 @@ stall_reconcile() {
     head=$(printf '%s\n' "$row" | jq -r '.row.head // .row.start_head // ""')
     token=$(printf '%s\n' "$row" | jq -r '.row.award_token // ""')
     id=$(printf '%s\n' "$row" | jq -r .id)
-    if ! jq -se --arg id "$id" 'any(.[]; .id==$id)' "$DV_HOME/kick.q" >/dev/null 2>&1; then
-      "$DV_ROOT/bin/dv-kick" stalled "$issue" "Agent idle, absent, Goal stalled or model at capacity for at least $DV_STALL_AFTER seconds; inspect the current pane and log" \
-        "$event_host" "$head" "$id" "$token" || continue
-    fi
+    metrics_stall_notify stalled "$issue" "Agent idle, absent, Goal stalled or model at capacity for at least $DV_STALL_AFTER seconds; inspect the current pane and log" \
+      "$event_host" "$head" "$id" "$token" || continue
     tmp=$(mktemp "$DV_HOME/.stalls.XXXXXX") || return 1
     if ! jq --arg id "$id" 'with_entries(if .value.id==$id then .value.emitted=true else . end)' "$state" > "$tmp" ||
       ! mv "$tmp" "$state"; then rm -f "$tmp"; return 1; fi

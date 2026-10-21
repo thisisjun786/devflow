@@ -25,7 +25,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_CLAUDE_SESSIONS:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" # question transcripts, read only
 : "${DV_CODEX_MODE:=exec}" # exec (background JSONL) or goal (interactive terminal)
 : "${DV_MODE:=}" # optional legacy override; --mode takes precedence
-: "${DV_STALL_AFTER:=600}" # exec JSON silence or terminal idle / dead agent / stalled goal seconds
+: "${DV_STALL_AFTER:=600}" # exec silence, file/event idle, dead agent or stalled goal seconds
 : "${DV_AGENT_CMD_codex:=}" # complete shell command, no extra CLI flags
 : "${DV_AGENT_CMD_claude:=}"
 : "${DV_AGENT_CMD_devin:=}"
@@ -50,6 +50,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
 : "${DV_MAX_WORKERS:=4}" # 1..4
 : "${DV_RECONCILE_INTERVAL:=1800}" # status safety net seconds; capped at min(DV_STALL_AFTER, 60)
+: "${DV_METRICS_INTERVAL:=60}" # file/event activity sampling by dv-watch, seconds
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)
 : "${DV_PULL_RETRY:=15}" # seconds between restarts of an ended pull stream
 : "${DV_HOSTS=lina-os hx-linux amd-linux go2-linux}" # SSH aliases for status/bidding; add gos-linux explicitly as the last fallback

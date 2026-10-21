@@ -100,6 +100,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv review ISSUE` | 로컬 리뷰 출력과 횟수 저장 |
 | `dv land ISSUE` | PR 허용 방식 선택 / 로컬 시험 후 병합, worktree 정리 |
 | `dv status [ISSUE] [--json]` | 상태, 에이전트, 호스트, 경과, backend·생존·에이전트 상태, 마지막 로그 |
+| `dv metrics [--since 6h] [--json]` | 작업별 유휴 분, 이벤트 처리 지연, 완료→병합 지연, revive/resume 횟수 |
 | `dv send ISSUE 'text'` | 실행 중이면 입력 전달; 종료가 확인되면 같은 작업을 한 번 자동 재시작 |
 | `dv clean ISSUE` | 깨끗한 worktree·herdr/tmux 정리; 병합된 로컬 브랜치만 삭제 |
 | `dv kick KIND ISSUE [msg]` | 완료 알림 전송, 실패 로그 보관 |
@@ -107,6 +108,16 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv-watch` | 로컬 큐 소비, 최대 4개 시온 작업자, 느린 상태 점검 |
 | `dv manager start REPO [--agent hermes]` | 저장소별 Hermes 초기 프롬프트 실행·세션 ID 저장, 재호출 시 재사용 |
 | `dv manager status [REPO] [--json]` / `dv manager stop REPO` | 등록·세션·실행 상태 조회 / 관리자 라우팅 중지 |
+
+`dv metrics`는 로컬 기록과 감시자가 수집한 원격 기록을 호스트·이슈별로 합칩니다. `--since`는 `30m`, `6h`, `7d`처럼 초(s)·분(m)·시간(h)·일(d)을 받습니다. 유휴 시간은 조회 구간과 겹치는 관측 구간만 합산하고, 이벤트 지연은 그 구간에 성공 처리가 끝난 이벤트의 평균 초입니다. `--json`에는 처리 건수·최대 지연·마지막 관측 시각(`observed_at`)·현재 유휴 초도 나옵니다. 완료→병합은 조회 구간 안의 마지막 병합과 **같은 head**의 마지막 완료 사이 초이며, 완료가 조회 구간 전이어도 연결합니다. 아직 관측하거나 완료하지 못한 값은 표에서 `-`, JSON에서 `null`입니다.
+
+기존 `dv-watch`가 `DV_HOSTS`를 `DV_METRICS_INTERVAL`초(기본 60)마다 수집합니다. 각 호스트에도 이 기능을 지원하는 dv가 필요합니다. Git의 추적 파일·무시되지 않은 새 파일의 내용/속성, HEAD, 작업 상태·이벤트가 두 관측 사이 같으면 그 구간을 유휴 시간으로 셉니다. 무시된 빌드 산출물과 터미널 화면 재출력은 진행으로 세지 않습니다. 첫 관측 이전과 관측 사이에 바뀌었다가 원상복구된 내용은 알 수 없으며, 긴 수집 간격에서는 근사값입니다. `DV_STALL_AFTER`초(기본 600)를 **초과**하면 에이전트가 working·idle·종료 중 어느 상태든 `idle` 이벤트를 보냅니다. 파일/이벤트가 바뀌기 전까지 재시작 후에도 한 번만 알립니다. 병합·취소·정리한 작업은 알리지 않습니다.
+
+같은 작업의 현재 정체 구간을 상태 점검도 관측하면 `idle`과 `stalled` 알림을 하나로 합칩니다. 상태 점검이 먼저 관측한 구간은 `stalled`로 알리며, 이미 `idle`을 보냈다면 추가 알림 없이 기존 stall 복구를 계속합니다. 두 알림 자체는 파일·이벤트 진행으로 세지 않습니다.
+
+revive는 자동 재시작/exec 재시도 횟수, resume은 살아 있는 에이전트에 성공적으로 전달한 후속 입력, Codex exec resume 시도, 관리자 세션 재개 시도의 합입니다. JSON은 `agent_resume_count`와 `manager_resume_count`도 구분합니다. exec의 JSON 이벤트도 유휴 관측을 갱신합니다. 이벤트는 큐 등록이 아니라 작업자·관리자 성공 종료 때 처리된 것으로 기록하며, 실패·재시도·전송·관리자 대기 시간도 지연에 포함합니다. 중복 이벤트 ID는 한 번만 집계합니다. GitHub에서 직접 병합한 PR도 수집 때 서버의 `mergedAt`으로 확인합니다.
+
+지표는 작업 호스트의 `$DV_STATE/ISSUE/metrics/`와 감시 호스트의 `$DV_HOME/metrics/`에 별도로 보존합니다. 기존 meta·설정은 교체하지 않습니다. 조회는 읽기 전용이며, 연결 불가·시간 초과인 호스트는 마지막 관측을 유지하므로 `observed_at`의 신선도를 확인하세요. 수집은 감시자의 자식 프로세스 하나가 호스트별 `DV_BID_TIMEOUT` 한도 안에서 실행하여 큐 처리를 기다리게 하지 않습니다. 감시자 재시작 때 살아 있는 수집자를 재사용하고, 정상 종료 때 수집자와 하위 프로세스를 종료합니다. 오류는 `metrics.log`에 남깁니다. 도입 전 이벤트·재개 횟수는 소급하지 않습니다.
 
 상태는 `$DV_STATE/ISSUE/`의 `meta`(JSON), `brief.md`, `log`, `report.md`, `done.json`, 리뷰·PR 결과입니다. GitHub의 done은 현재 head의 CI 성공과 리뷰 처리 기록을 확인하고 ready로 바꿉니다. done.json에 checks=green, review=handled를 기록하며 완료 이벤트 메시지에도 담습니다. pr-wait는 결과를 pr-ready.json에 저장하지만 관리자에게 pr-ready를 보내지 않습니다. land는 빈 체크·skipped·pending·실패·head 불일치를 모두 거절합니다. 원격 브랜치를 지우지 않으며 squash 후 로컬 브랜치도 조상이 아니면 보존합니다.
 
@@ -154,7 +165,7 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 감시 호스트의 `$DV_HOME/kick.q`와 `events.log`는 JSON Lines입니다. 이벤트 ID(host/issue/kind/head)로 중복을 무시하며, 작업자 로그·프롬프트는 `workers/`에 남습니다. 3초 간격은 로컬 파일 읽기이며 원격 안전망은 `ssh HOST dv status --json`입니다(감시 호스트 자신은 ssh 없이). 점검 간격은 `DV_RECONCILE_INTERVAL`, `DV_STALL_AFTER`, 60초 중 최솟값입니다. 원격 개발 호스트는 감시 호스트의 dv-watch가 `DV_PULL_HOSTS`에 적힌 호스트마다 `dv-kick-pull <host>`를 띄워, 그 호스트의 `kick.q`를 ssh 한 줄기로 `tail -f` 해 받아 옵니다(끊기면 dv-watch가 다시 띄움, 별도 데몬 없음). 개발 호스트에서 감시 호스트로 가는 ssh 키가 필요 없고, 폴링 없이 쓰는 즉시 도착하며, 줄 위치와 파일 inode를 이 쪽 큐에 쓴 뒤에만 저장해, 전달 실패·재접속·큐 교체 때도 빠짐없이 이어 받습니다. 원격 쪽은 그 호스트의 devflow 설정(DV_HOME)을 읽습니다. 그 호스트의 `DV_KICK_HOST`는 자기 자신(로컬 큐)으로 둡니다. `$DV_HOME/stop`을 만들면 새 작업을 멈추고 실행 중인 작업자를 기다립니다. 재시작할 때 stop 파일을 지우세요. 비정상 종료의 잠금은 PID와 실제 프로세스를 확인한 뒤 사람이 지웁니다.
 
-`DV_STALL_AFTER`는 양의 정수 초이며 기본값은 600입니다. `DV_HOSTS`의 `running` 작업에서 `idle`, 현재 Codex 화면의 `Goal stalled`·`model is at capacity`, 또는 `unknown`이면서 에이전트 종료가 확인된 상태를 이 시간 이상 관측하면 `stalled` 이벤트를 보냅니다. 화면 기록이나 로그의 옛 문구는 사용하지 않으며, 현재의 명시적 정체 배너는 herdr의 `working`보다 우선합니다. 마지막 배너가 `Pursuing goal` 또는 `Working`이면 활동 중으로 보호합니다. 현재 화면에 여러 문구가 남아 있으면 마지막 goal 상태·capacity 문구를 사용합니다. `dv status --json`은 `goal_stalled`, `goal_active`, `agent_dead`, `agent_state_seq`, `agent_session`도 제공합니다. `agent_dead`는 단순한 감지 실패와 구별되는 종료 증거입니다. 첫 정체 관측부터 시간을 재므로 알림에는 점검 주기와 호스트 조회 시간이 추가될 수 있습니다. tmux에서는 명시적인 정체 화면이나 종료된 pane·세션으로 감지하고 `Pursuing goal`·`Working`으로 활동 재개를 확인합니다.
+`DV_STALL_AFTER`는 0 이상의 정수 초이며 기본값은 600입니다. `DV_HOSTS`의 `running` 작업에서 `idle`, 현재 Codex 화면의 `Goal stalled`·`model is at capacity`, 또는 `unknown`이면서 에이전트 종료가 확인된 상태를 이 시간 이상 관측하면 `stalled` 이벤트를 보냅니다. 화면 기록이나 로그의 옛 문구는 사용하지 않으며, 현재의 명시적 정체 배너는 herdr의 `working`보다 우선합니다. 마지막 배너가 `Pursuing goal` 또는 `Working`이면 활동 중으로 보호합니다. 현재 화면에 여러 문구가 남아 있으면 마지막 goal 상태·capacity 문구를 사용합니다. `dv status --json`은 `goal_stalled`, `goal_active`, `agent_dead`, `agent_state_seq`, `agent_session`도 제공합니다. `agent_dead`는 단순한 감지 실패와 구별되는 종료 증거입니다. 첫 정체 관측부터 시간을 재므로 알림에는 점검 주기와 호스트 조회 시간이 추가될 수 있습니다. tmux에서는 명시적인 정체 화면이나 종료된 pane·세션으로 감지하고 `Pursuing goal`·`Working`으로 활동 재개를 확인합니다.
 
 정체 구간과 고유 이벤트 ID는 watcher의 `$DV_HOME/stalls.json`에 보관합니다. 같은 구간은 watcher 재시작 후에도 한 번만 알리고, 활동이 확인되면 새 구간으로 계산합니다. 명시적인 정체 화면이 계속되는 동안은 재개 시도에 따른 herdr 상태 번호 변경만으로 구간을 초기화하지 않습니다. 종료 증거 없는 상태 불명·통신 실패에서는 타이머를 멈추고, 긴 점검 공백 뒤에는 다시 시간을 잽니다. `done`·`landed` 등 실행 중이 아닌 작업과 완료·정리 기록이 있는 작업은 제외합니다.
 
