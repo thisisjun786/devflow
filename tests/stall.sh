@@ -76,9 +76,9 @@ case_stall_episodes() {
   STALL_TIME=1600; stall_scan; stall_count 1
   stall_tick; stall_count 1
   # Activity resets both the clock and deduplication, even at the same head.
-  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_status="working" | .goal_stalled=true')
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_status="working" | .goal_stalled=false | .goal_active=true')
   stall_scan; stall_tick; stall_count 1
-  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_status="idle" | .goal_stalled=false')
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_status="idle" | .goal_active=false')
   stall_scan; stall_count 1; stall_tick; stall_count 2
   # Work can start and finish between polls: the herdr sequence exposes it.
   STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.agent_state_seq=3')
@@ -229,8 +229,10 @@ case_stall_resume_guards() {
   stall_fixture; stall_functions; stall_recovery_functions
   cmd__stall_recover ST-1 episode-1 stale-token
   printf 'working\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  printf '› \n' > "$CASE_DIR/herdr/w-ST-1/output"
   cmd__stall_recover ST-1 episode-1 round-1
   printf 'blocked\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  printf 'Goal stalled\n› \n' > "$CASE_DIR/herdr/w-ST-1/output"
   cmd__stall_recover ST-1 episode-1 round-1
   printf 'idle\n' > "$CASE_DIR/herdr/w-ST-1/status"
   printf 'Goal stalled\nPursuing goal\n' > "$CASE_DIR/herdr/w-ST-1/output"
@@ -314,4 +316,49 @@ case_stall_recovery_host() {
   # pending episode to host B just because their observation times match.
   stall_reconcile alias-b '[]' 60
   test "$(cat "$CASE_DIR/recovery-hosts")" = alias-a
+}
+case_stall_working_banner_detection() {
+  stall_fixture; stall_functions
+  printf 'working\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  local banner count=0
+  for banner in 'Selected model is at capacity' 'Goal stalled'; do
+    printf '• Working\n%s\n› \n' "$banner" > "$CASE_DIR/herdr/w-ST-1/output"
+    STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
+    stall_scan; stall_tick 9; stall_count "$count"
+    stall_tick 1; count=$((count + 1)); stall_count "$count"
+    stall_tick; stall_count "$count"
+    # A newer activity banner ends this episode despite old stalled text.
+    printf '%s\n• Pursuing goal\n› \n' "$banner" > "$CASE_DIR/herdr/w-ST-1/output"
+    STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
+    stall_scan; stall_tick; stall_count "$count"
+  done
+}
+case_stall_working_banner_resume() {
+  stall_fixture; stall_functions; stall_recovery_functions
+  local banner count=0
+  for banner in 'Selected model is at capacity' 'Goal stalled'; do
+    printf 'working\n' > "$CASE_DIR/herdr/w-ST-1/status"
+    printf '• Pursuing goal\n%s\n› \n' "$banner" > "$CASE_DIR/herdr/w-ST-1/output"
+    count=$((count + 1))
+    cmd__stall_recover ST-1 "working-banner-$count" round-1
+    stall_resume_count "$count"
+    cmd__stall_recover ST-1 "working-banner-$count" round-1
+    stall_resume_count "$count"
+  done
+}
+case_stall_latest_activity() {
+  stall_fixture; stall_functions; stall_recovery_functions
+  local activity status
+  for status in working idle; do
+    printf '%s\n' "$status" > "$CASE_DIR/herdr/w-ST-1/status"
+    for activity in 'Pursuing goal' 'Working' 'Working (2s • esc to interrupt)' 'Working...'; do
+      printf 'Goal stalled\nSelected model is at capacity\n• %s\n› \n' "$activity" > "$CASE_DIR/herdr/w-ST-1/output"
+      STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
+      printf '%s\n' "$STALL_ROW" | jq -e '.goal_active and (.goal_stalled|not)'
+      stall_scan; stall_tick; stall_count 0
+      cmd__stall_recover ST-1 working-banner round-1
+      stall_resume_count 0
+    done
+  done
+  test ! -f "$DV_STATE/ST-1/stall-recovery.json"
 }

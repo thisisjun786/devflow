@@ -400,7 +400,7 @@ cmd_status() {
         goal_state=$(printf '%s\n' "$screen" | awk '
           /[Mm]odel is at capacity/ { state="stalled" }
           /^[[:space:]│┃]*([•*][[:space:]]+)?Goal stalled([[:space:]:]|$)/ { state="stalled" }
-          /^[[:space:]│┃]*([•*][[:space:]]+)?Pursuing goal([[:space:]:]|$)/ { state="active" }
+          /^[[:space:]│┃]*([•*][[:space:]]+)?(Pursuing goal|Working)([[:space:]:.]|$)/ { state="active" }
           END { print state }')
         case "$goal_state" in stalled) goal_stalled=true ;; active) goal_active=true ;; esac
       fi

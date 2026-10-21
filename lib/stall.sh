@@ -20,7 +20,8 @@ stall_reconcile() {
       ([$row.started,$row.award_token,$row.herdr_pane]|tojson) as $generation |
       if ($row.issue|type)!="string" or ($row.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")|not) then .
       elif $row.status!="running" or $row.done_at!=null or $row.cleaned_at!=null or $row.goal_active==true or
-           ($row.agent_status=="working" or $row.agent_status=="blocked" or $row.agent_status=="done") then del(.[$key])
+           ($row.agent_status=="working" and $row.goal_stalled!=true) or
+           ($row.agent_status=="blocked" or $row.agent_status=="done") then del(.[$key])
       elif ($row.alive!=true and $row.agent_dead!=true) or
            ($row.agent_status!="idle" and $row.goal_stalled!=true and $row.agent_dead!=true) then
         if .[$key]!=null then .[$key].since=null else . end
@@ -86,10 +87,13 @@ cmd__stall_recover() (
   row=$(cmd_status "$ISSUE" --json | jq -c '.[0]') || return 1
   # Revalidate on the issue host, including token, completion and current
   # activity, before sending input or touching the existing revive path.
+  # A current stalled banner can outlast herdr's working state; the most recent
+  # activity banner still wins via goal_active, as it does in stall_reconcile.
   printf '%s\n' "$row" | jq -e --arg token "$token" '
     .status=="running" and .done_at==null and .cleaned_at==null and
     (.award_token // "")==$token and .goal_active!=true and .question_pending!=true and
-    (.agent_status!="working" and .agent_status!="blocked" and .agent_status!="done")' >/dev/null || return 0
+    (.agent_status!="working" or .goal_stalled==true) and
+    (.agent_status!="blocked" and .agent_status!="done")' >/dev/null || return 0
   if printf '%s\n' "$row" | jq -e '.agent_dead==true' >/dev/null; then
     agent_gone || return 0
     revive_agent "Continue the existing goal after the agent exited. Preserve unfinished work and complete the brief."
