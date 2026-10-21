@@ -102,6 +102,7 @@ codex_exec_run() {
         args+=(resume --json --dangerously-bypass-approvals-and-sandbox "$session")
         metrics_note resume
       else args+=(--json --dangerously-bypass-approvals-and-sandbox); fi
+      [ "${KIND:-code}" != task ] || args+=(--skip-git-repo-check)
       export DV_AGENT_INSTRUCTION="$instruction"
       "${args[@]}" "$instruction" >> "$S/agent.jsonl" 2>> "$S/agent.stderr" < /dev/null & exec_child=$!
       printf '%s\n' "$exec_child" > "$S/exec/$run/pid"

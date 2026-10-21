@@ -2,6 +2,29 @@
 
 시온이 Linear 이슈를 잡고, 코딩 에이전트 하나가 worktree 하나에서 개발하는 작은 bash 도구입니다. 개발·자기 시험 → 리뷰 한 번 → P0·P1 수정 한 번 → CI/시험 통과 후 병합. 완료는 SSH 이벤트로 알립니다.
 
+## 개발 외 task 작업
+
+Git이 없는 조사·문서·분석 폴더도 백그라운드 작업으로 제출할 수 있습니다.
+
+```bash
+dv submit --kind task /path/to/workspace TK-1 summary --brief /path/to/brief.md
+# Claude Code: 위 명령 끝에 --agent claude
+dv status TK-1 --json
+dv send TK-1 '출처를 보완하고 같은 작업을 마무리하세요'
+```
+
+브리프에는 한 줄짜리 `Destination: /absolute/path`와 완료 조건을 씁니다. task는 제출한 호스트에서 실행하고 같은 호스트의 목적지로 전달합니다. 호스트 입찰·원격 파일 전송은 하지 않으며, GitHub 이슈 없이 브리프와 `TK-<n>` 식별자만으로 실행할 수 있습니다. 기존 코드 제출은 그대로입니다(`--kind code`도 가능).
+
+새 임시 작업 폴더와 빈 `out/`를 만들고 원래 workspace는 참고용 입력으로 안내합니다. 이는 파일시스템 샌드박스가 아닙니다. Codex는 코드 작업과 같은 모드 선택을 사용합니다: 기본 auto는 연결 가능한 App Server를 사용하고 없으면 JSON exec로 실행합니다. App Server는 Git 없는 작업 폴더를 thread의 cwd로 전달하며 사용자 설정을 다시 쓰지 않습니다. exec는 `--skip-git-repo-check`와 기존 stall/재시도를 사용하고, `DV_CODEX_MODE=exec`로 명시할 수 있습니다. goal/tui, Claude와 사용자 지정 명령은 기존 herdr/tmux 경로를 사용합니다. Codex의 원래 workspace는 `DV_TRUSTED_REPOS`에 등록되어 있어야 하며, exec/TUI에서는 해당 작업 폴더에만 신뢰를 이어 줍니다. 같은 로컬 수용량, 상태·경과 시간·파일 수와 완료 이벤트를 사용합니다. 로컬 슬롯이 없으면 제출을 거절하며, task 상태는 `dv status`에서 봅니다(`dv queue`는 호스트 입찰용).
+
+에이전트는 `out/`에 일반 파일을 만들고 `$DV_STATE/<ISSUE>/report.md`에 산출물·출처·미해결 사항을 쓴 뒤 `dv done <ISSUE>`를 실행합니다. 빈 산출물, 누락/빈 보고서, 심볼릭 링크·특수 파일은 완료를 거절합니다. done은 `out/`과 보고서를 revision별 스냅샷으로 보존하고 복사 전후 내용이 같은지 확인합니다. done의 head는 산출물 경로·내용과 보고서의 SHA-256이며 수정되면 다시 완료·확인해야 합니다. land는 확인된 스냅샷만 전달하며, 스냅샷이 없거나 훼손됐으면 거절합니다.
+
+herdr/tmux 작업도 land 전에 저장된 래퍼 PID의 종료와 `agent.exit=0`이 확인되어야 합니다. 살아 있거나 실패한 실행, 종료 증거가 없는 실행은 거절합니다. 정상 종료 후와 전달 후에 산출물을 다시 읽어 확인한 head와 비교하고, 전달 중 변경되면 landed로 기록하지 않습니다. 작업·상태 폴더와 목적지는 물리 경로로 비교하므로 심볼릭 경로를 거쳐도 `out/`이나 스냅샷 하위로 재귀 복사하지 않습니다.
+
+App Server task의 done은 산출물 검사 후 goal 완료 응답을 확인합니다. land는 thread를 새로 조회해 진행 중인 turn이나 미응답 질문이 없는 성공한 idle 상태를 요구한 다음 manifest를 다시 비교합니다. 실패·불명·사라진 thread는 전달하지 않습니다. clean은 idle 상태에서 클라이언트만 종료하고 task 파일을 보존합니다.
+
+관리자는 브리프의 완료 조건과 실제 파일·보고서를 확인한 뒤 `dv land TK-1 --checked <done.json의 head>`를 실행합니다. 이 인자는 확인한 버전을 기록하는 것으로, 내용의 품질 판단은 관리자가 합니다. 결과는 `Destination/TK-1/`로 복사하며 기존 이름(링크 포함)이 있으면 `TK-1-v2/`, `-v3/` 순서로 새 폴더를 만듭니다. 복사 후 내용도 대조하고 `landed_path`를 기록합니다. 성공한 land 재호출은 같은 경로를 반환합니다. 실패/중단된 복사 폴더는 보존하며 다음 시도는 새 이름을 사용합니다. manager worker가 완료 후 Telegram에 한 줄 알리고, PR이나 CI는 실행하지 않습니다. `dv clean`은 터미널만 닫고 작업 파일과 보고서를 보존합니다.
+
 ## 설치
 
 ```bash
