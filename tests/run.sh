@@ -818,9 +818,14 @@ case_herdr_undetected() {
     cat "$CASE_DIR/undetected-status.json" "$CASE_DIR/herdr/w-HU-1/output"
     return 1
   fi
+  # Keep this send check about a live, undetected wrapper. A confirmed dead
+  # wrapper now revives once (covered separately by the recovery cases).
+  cp "$DV_STATE/HU-1/agent.pid" "$CASE_DIR/original-agent.pid"
+  printf '%s\n' "$$" > "$DV_STATE/HU-1/agent.pid"
   if dv send HU-1 hello > "$CASE_DIR/send.out" 2> "$CASE_DIR/send.err"; then return 1; fi
   grep -F agent_not_found "$CASE_DIR/send.err"
   test ! -s "$CASE_DIR/send.out"
+  mv "$CASE_DIR/original-agent.pid" "$DV_STATE/HU-1/agent.pid"
   dv 'done' HU-1
   cmp "$CASE_DIR/herdr/w-HU-1/output" "$DV_STATE/HU-1/log"
   # Already closed workspaces are reported on stderr, and clean stays idempotent.
@@ -1605,6 +1610,8 @@ source "$ROOT/tests/bidding-edge.sh"
 source "$ROOT/tests/bidding-order.sh"
 # shellcheck source=tests/manager.sh
 source "$ROOT/tests/manager.sh"
+# shellcheck source=tests/revive.sh
+source "$ROOT/tests/revive.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
@@ -1614,6 +1621,14 @@ for name in stall_watch stall_status stall_episodes stall_inactive stall_observa
     result=$?
     if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
     else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+  fi
+done
+for name in revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
 for name in manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do

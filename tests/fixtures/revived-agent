@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+if [ "$(jq -r '.agent+":"+.mode' "$state/meta")" = codex:goal ]; then
+  printf 'dv-ready>\n'
+  for _ in {1..100}; do
+    [ ! -f "$state/goal-input" ] || break
+    sleep 0.05
+  done
+  test -f "$state/goal-input"
+fi
+jq -n --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" > "$state/revived-input.json"
+printf 'started\n' >> "$state/revived-runs"
+trap 'rm -f "$CASE_DIR/herdr/w-$DV_ISSUE/detected"' EXIT
+if [ "${DV_REVIVE_TEST_FAIL:-0}" = 1 ]; then exit 1; fi
+if [ "${DV_REVIVE_TEST_NO_DONE:-0}" = 1 ]; then exit 0; fi
+dv 'done' "$DV_ISSUE"
