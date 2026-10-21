@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# A goal that waits for an intentional stop; replacements remain alive together.
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+if [ ! -f "$CASE_DIR/stall-recover" ]; then
+  printf 'Goal stalled\n'
+  printf '%s\n' "$$" > "$state/held.pid"
+  trap 'exit 0' TERM
+  while :; do sleep 0.05; done
+fi
+printf '%s\n' "$$" >> "$state/recovery-runs"
+printf '%s\n' "$DV_AGENT_INSTRUCTION" > "$state/recovery-input-$$"
+trap 'touch "$state/recovery-exit-$$"' EXIT
+trap 'exit 0' TERM
+while [ ! -f "$CASE_DIR/recovery-release" ]; do sleep 0.05; done
+dv 'done' "$DV_ISSUE"
