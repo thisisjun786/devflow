@@ -114,6 +114,30 @@ case_revive_missing_pane() {
   jq -se '[.[]|select(.[0:2]==["workspace","create"])]|length==2' "$CASE_DIR/herdr/calls"
   revive_preserved
 }
+case_revive_missing_pane_live() {
+  revive_setup; revive_dead
+  rm -rf "$CASE_DIR/herdr/w-RV-1"
+  printf '%s\n' "$$" > "$RV_STATE/agent.pid"
+  if dv send RV-1 'do not duplicate surviving wrapper'; then return 1; fi
+  test ! -d "$RV_STATE/revive"
+  test ! -f "$RV_STATE/revived-runs"
+}
+case_revive_missing_pane_unknown() {
+  revive_setup; revive_dead
+  rm -rf "$CASE_DIR/herdr/w-RV-1"
+  rm "$RV_STATE/agent.pid" "$RV_STATE/agent.exit"
+  if dv send RV-1 'unknown wrapper must not be duplicated'; then return 1; fi
+  test ! -d "$RV_STATE/revive"
+  test ! -f "$RV_STATE/revived-runs"
+}
+case_revive_legacy_exit() {
+  revive_setup; revive_dead
+  rm -rf "$CASE_DIR/herdr/w-RV-1"
+  rm "$RV_STATE/agent.pid"
+  dv send RV-1 'legacy wrapper has exited'
+  revive_wait
+  revive_preserved
+}
 case_revive_start_failure() {
   revive_setup; revive_dead
   printf 'pane run\n' > "$CASE_DIR/herdr/fail"

@@ -408,14 +408,16 @@ agent_gone() {
   if pane=$(herdr_cmd pane get "$HERDR_PANE" 2>&1); then
     printf '%s\n' "$pane" | jq -e '.result.pane.pane_id!=null' >/dev/null 2>&1 || return 1
     REVIVE_PANE_EXISTS=1
-    if [ -f "$S/agent.pid" ]; then
-      pid=$(cat "$S/agent.pid")
-      [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-      ! kill -0 "$pid" 2>/dev/null
-    else [ -f "$S/agent.exit" ]; fi
   else
-    printf '%s\n' "$pane" | jq -e '.error.code=="pane_not_found"' >/dev/null 2>&1
+    printf '%s\n' "$pane" | jq -e '.error.code=="pane_not_found"' >/dev/null 2>&1 || return 1
   fi
+  # A removed pane can leave its wrapper alive. Require process evidence for
+  # both pane paths; terminal disappearance alone cannot authorize a duplicate.
+  if [ -f "$S/agent.pid" ]; then
+    pid=$(cat "$S/agent.pid")
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    ! kill -0 "$pid" 2>/dev/null
+  else [ -f "$S/agent.exit" ]; fi
 }
 revive_blocked() {
   # Both the startup helper and the wrapper can observe the same failure.
