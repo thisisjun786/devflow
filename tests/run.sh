@@ -153,6 +153,9 @@ case_late_review_rule() {
   grep -Fq '이것은 차단 사유가 아닙니다' "$ROOT/templates/rules.md"
   grep -Fq '자동 재리뷰가 단 새 P0·P1' "$ROOT/templates/worker-prompt.md"
   grep -Fq '두 번째 수정 요청이나 재리뷰는 보내지 않습니다' "$ROOT/templates/worker-prompt.md"
+  # Recovery goes back through the work session so dv done evidence exists.
+  grep -Fq 'late-review.sent' "$ROOT/templates/worker-prompt.md"
+  grep -F '자동 재리뷰가 단 새 P0·P1' "$ROOT/templates/worker-prompt.md" | grep -Fq 'dv done <ISSUE>'
 }
 case_clean() {
   needs_tmux; repo remote remote; start T-5; wait_done T-5
