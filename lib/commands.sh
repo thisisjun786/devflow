@@ -336,6 +336,7 @@ accept_devin_trust() {
 cmd_done() {
   [ "$#" -ge 1 ] || fail 'usage: dv done ISSUE [--note TEXT]'
   load_issue "$1"; shift; local note='' head files tmp episode own_revive=0 pr_complete=false
+  if [ "$(jq -r '.kind // empty' "$S/meta")" = qa ]; then qa_done "$ISSUE"; return; fi
   if [ "$#" -gt 0 ]; then
     if [ "$#" -ne 2 ] || [ "$1" != --note ]; then fail 'expected --note TEXT'; fi
     note=$2
@@ -426,6 +427,9 @@ cmd_status() {
         if codex_exec_alive "$(dirname "$path")"; then alive=true; fi
         agent_status=$(codex_exec_status "$(dirname "$path")")
         last=$(tail -n 1 "$(dirname "$path")/agent.jsonl" 2>/dev/null | tail -c 200 || true)
+      elif [ "$backend" = qa ]; then
+        if codex_exec_alive "$(dirname "$path")"; then alive=true; fi
+        agent_status=$(jq -r .status "$path")
       elif [ "$backend" = herdr ]; then
         pane=$(jq -r '.herdr_pane // empty' "$path")
         if [ -n "$pane" ]; then

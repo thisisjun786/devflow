@@ -199,9 +199,16 @@ cmd_pr_wait() {
   if [[ "$pr" =~ ^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$ ]]; then
     endpoint="repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/pulls/${BASH_REMATCH[3]}/comments"
   else fail 'invalid PR URL'; fi
-  comments=$(gh api --paginate "$endpoint" | jq -s 'add // []')
+  comments=$(mktemp "$S/.pr-comments.XXXXXX")
+  if ! gh api --paginate "$endpoint" | jq -s 'add // []' > "$comments"; then
+    rm -f "$comments"
+    return 1
+  fi
   tmp=$(mktemp "$S/.pr-snapshot.XXXXXX")
-  jq --argjson comments "$comments" '. + {inline_comments:$comments}' "$S/pr-snapshot.json" > "$tmp"
+  # Inline comments include diff hunks; a normal review can exceed the OS
+  # per-argument limit. Pass the data as a file, never as one argv entry.
+  jq --slurpfile comments "$comments" '. + {inline_comments:$comments[0]}' "$S/pr-snapshot.json" > "$tmp"
+  rm "$comments"
   mv "$tmp" "$S/pr-snapshot.json"
   if [ "$green" = false ]; then
     loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.failed_heads |= (. + [$head] | unique)')

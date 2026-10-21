@@ -181,3 +181,10 @@ case_pr_worker_native_exec() {
   test "$(cat "$DV_STATE/EX-1/stub-count")" = 2
   test ! -d "$DV_STATE/EX-1/revive"
 }
+case_pr_worker_large_comments() {
+  pr_fixture
+  head -c 200000 /dev/zero | tr '\0' x > "$CASE_DIR/review-body"
+  jq -n --rawfile body "$CASE_DIR/review-body" '[{body:$body,path:"qa.sh",line:1}]' > "$GH_STUB_DIR/comments"
+  dv pr-wait P-1 --foreground > "$CASE_DIR/snapshot"
+  jq -e '.green and (.snapshot.inline_comments[0].body|length)==200000' "$CASE_DIR/snapshot"
+}

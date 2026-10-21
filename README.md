@@ -192,3 +192,54 @@ shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fix
 실제 에이전트·GitHub·SSH·Hermes를 시험에서 부르지 않습니다. 임시 bare 원격과 실제 tmux를 쓰며 tmux가 없을 때만 해당 시험을 skip합니다. `DV_TEST_TMP=/scratch/...`로 임시 위치를 지정할 수 있습니다. 큐·worker 기록은 운영자가 보관 주기를 정하고, worktree는 `dv clean`으로 정리하세요.
 
 실제 herdr 연결 시험은 `DV_HERDR=1 tests/herdr-live.sh`로 별도 실행합니다. herdr가 없으면 skip하고, 있으면 임시 저장소와 `echo SMOKE-OK; sleep 15`만 실행하여 start·status·clean을 확인합니다. 사용자 설정은 읽거나 바꾸지 않습니다. 이 스크립트의 정적 검사는 `shellcheck tests/herdr-live.sh`로 실행합니다.
+
+## 병합 후 실사용 QA
+
+`DV_QA=1`을 호스트 설정 또는 저장소의 `.devflow`에 두면 `landed` 뒤에
+새 QA 작업이 실행됩니다. 기본값은 `0`입니다. QA는 최신 merged base를 별도
+임시 clone으로 가져와 그 revision의 `.devflow`를 읽습니다. 소유자의 checkout과
+설정은 바꾸지 않습니다. QA 설정은 `DV_QA=1`, `DV_QA_AGENT=claude` 같은
+literal 대입만 읽으며 `.devflow`의 shell 코드를 실행하지 않습니다.
+`DV_QA_AGENT=codex`는 새 Codex exec 세션,
+`claude`는 새 Claude Code 세션입니다. `DV_QA_AGENT_CMD`는 prompt 파일을
+받는 명령으로 시험 또는 별도 실행기에 쓸 수 있습니다.
+
+QA 저장소의 승인 기준은 watcher가 보관한 작업 기록입니다. 로컬 landed meta
+또는 원래 제출의 repo·host·head·발급 token과 맞는 이벤트만 받으며, 원격 호스트의
+status/origin 응답으로 저장소를 선택하지 않습니다. 기록 없는 원격 수동 작업은
+QA를 시작하지 않으므로 해당 watcher를 통해 `dv submit`으로 배정하세요.
+
+watcher가 저장소마다 한 작업만 실행하고, 실행 중 들어온 병합은 다음 최신
+head 작업 하나로 합칩니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이고
+repo identifier에는 owner, 안전한 repo 이름과 구분용 checksum이 들어갑니다.
+같은 head는 다시 실행하지 않습니다. 개발 task backend와 독립적인 로컬 작업이며
+watcher의 worker 슬롯을 씁니다. `dv qa status --json`은 저장소별 pending/running을,
+`dv status`는 시작한 QA 작업과 결과를 보여 줍니다.
+
+QA는 `docs/qa.md`, 없으면 AGENTS.md의 QA 절, README·milestone·설계 문서에서
+여정을 읽습니다. 제품 실행은 임시 HOME·상태 디렉터리와 합성 자료·provider stub만
+사용합니다. 실제 계정·사용자 데이터·배포는 사용하지 않고 코드를 고치지 않습니다.
+발견은 현재 milestone에 `qa`와 `bug` 또는 `feature`로 기록합니다. merged PR의
+milestone을 우선하고, 없으면 그 PR이 닫는 이슈들의 공통 milestone을 씁니다.
+정보가 없거나 모호하면 잘못된 milestone에 쓰지 않고 blocked로 남습니다.
+
+```sh
+dv qa search QA-owner-repo-sha 'conversation input'
+dv qa finding QA-owner-repo-sha finding.json
+dv done QA-owner-repo-sha
+```
+
+finding JSON에는 `title`, `kind` (`bug`/`feature`), `steps`, `expected`, `actual`,
+`evidence` 문자열을 넣습니다. 검색한 기존 이슈가 같은 문제면 숫자 `match`를
+추가합니다. 등록 명령은 열린 이슈를 다시 확인하고, 같은 제목 또는 지정한 match에는
+댓글을 달며 새 이슈를 중복 생성하지 않습니다. `report.md`를 쓴 뒤 `dv done`을
+실행하면 merged PR에 여정·발견 링크·시험 head를 요약한 댓글 하나를 남깁니다.
+manager는 현재 milestone의 열린 `qa` 이슈를 먼저 제출하고, 이들이 닫히고
+pending/running QA가 끝나기 전까지 milestone 완료와 다음 milestone 시작을 보류합니다.
+
+예약·로그는 `$DV_HOME/qa/`, 작업 meta·발견 영수증·보고서는 `$DV_STATE/QA-*/`에
+남습니다. watcher 재시작은 살아 있는 QA를 중복 실행하지 않습니다. 실패한 QA는
+자동 재실행하지 않으며 로그와 임시 clone을 보존합니다. 관리자는 blocked 원인을
+확인해야 합니다. 다음 병합은 새 head를 대상으로 실행할 수 있습니다. QA prompt는
+데이터 격리를 지시하지만 OS sandbox는 아닙니다. 실제 agent/provider QA 품질은
+stub 시험이 보증하지 않습니다.
