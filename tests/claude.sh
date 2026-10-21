@@ -151,6 +151,7 @@ case_claude_stale_server() {
   wait_done CS-1
   local path
   path=$(jq -r .worktree "$DV_STATE/CS-1/meta")
+  path=$(cd "$path" && pwd -P)
   jq -cn --arg path "$path" --slurpfile profile "$CLAUDE_CONFIG_DIR/.claude.json" --slurpfile default "$HOME/.claude.json" \
     '{selected_profile_trusted:($profile[0].projects[$path].hasTrustDialogAccepted==true),default_profile_trusted:($default[0].projects[$path].hasTrustDialogAccepted==true)}'
   jq -e --arg path "$path" '.projects[$path].hasTrustDialogAccepted==true' "$CLAUDE_CONFIG_DIR/.claude.json"
@@ -169,6 +170,7 @@ case_claude_stale_server_empty() {
   dv start "$REPO" CS-2 trust --agent claude
   wait_done CS-2
   path=$(jq -r .worktree "$DV_STATE/CS-2/meta")
+  path=$(cd "$path" && pwd -P)
   jq -cn --arg path "$path" --slurpfile stale "$stale_profile/.claude.json" --slurpfile default "$HOME/.claude.json" \
     '{stale_profile_trusted:($stale[0].projects[$path].hasTrustDialogAccepted==true),default_profile_trusted:($default[0].projects[$path].hasTrustDialogAccepted==true)}'
   jq -e --arg path "$path" '.projects[$path].hasTrustDialogAccepted==true' "$HOME/.claude.json"
