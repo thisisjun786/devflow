@@ -9,7 +9,8 @@ if [ "$(jq -r '.agent+":"+.mode' "$state/meta")" = codex:goal ]; then
   done
   test -f "$state/goal-input"
 fi
-jq -n --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" > "$state/revived-input.json"
+# A terminal may enter through the physical path even if metadata kept an alias.
+jq -n --arg cwd "$(pwd -P)" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" > "$state/revived-input.json"
 printf 'started\n' >> "$state/revived-runs"
 trap 'rm -f "$CASE_DIR/herdr/w-$DV_ISSUE/detected"' EXIT
 if [ "${DV_REVIVE_TEST_HOLD:-0}" = 1 ]; then
