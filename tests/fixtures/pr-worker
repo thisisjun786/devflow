@@ -4,6 +4,9 @@ set -euo pipefail
 state="$DV_STATE/$DV_ISSUE"
 if [ "${DV_PR_EARLY_EXIT:-0}" = 1 ] && [ ! -d "$state/revive" ]; then
   dv pr "$DV_ISSUE"
+  if [ "${DV_PR_EXIT_GATE:-0}" = 1 ]; then
+    while [ ! -f "$state/exit-release" ]; do sleep 0.05; done
+  fi
   exit "${DV_PR_EXIT_CODE:-0}"
 fi
 printf '%s\n' "${DV_AGENT_INSTRUCTION:-foreground worker}" > "$state/worker-input"

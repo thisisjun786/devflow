@@ -223,15 +223,20 @@ cmd_pr_wait() {
     return 1
   fi
   if [ "$foreground" = true ]; then cat "$S/pr-ready.json"; return; fi
-  if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
   # Recovery uses the existing one-shot revival, only with positive exit
-  # evidence. Keep status=pr so reconciliation can re-arm this safety net.
+  # evidence. Release ownership BEFORE observing the worker: a later exit can
+  # then start a successor. If its wrapper already observed our lock, agent.exit
+  # was published first; wait for that wrapper to finish its handoff instead.
+  pr_wait_unlock; trap - EXIT
   local pid
   pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
-  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then return 0; fi
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+    [ -f "$S/agent.exit" ] || return 0
+    while kill -0 "$pid" 2>/dev/null; do sleep "$DV_POLL_INTERVAL"; done
+  fi
+  [ "$(jq -r '.head // empty' "$S/meta")" = "$head" ] || return 0
+  if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
   if agent_gone; then
-    # Release before starting a replacement that may immediately wait again.
-    pr_wait_unlock; trap - EXIT
     "$DV_ROOT/bin/dv" send "$ISSUE" "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI, reviews and inline findings. Fix P0/P1 review findings once (preserve review-fix.sent) and fix CI within 3 rounds. After handling the findings, acknowledge with dv pr-wait $ISSUE --foreground --review-handled before the next push. Commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground until green. Do not request another review. Only run dv done $ISSUE after green CI and review handling."
   fi
 }

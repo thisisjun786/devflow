@@ -179,20 +179,30 @@ run_agent() {
   printf '%s\n' "$rc" > "$S/agent.exit"
   if [ "$revived" = 1 ]; then
     if [ "$rc" -ne 0 ]; then revive_blocked "revived agent exited $rc"
-    elif [ "$mode" = exec ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
+    elif [ "$mode" = exec ]; then agent_exec_done 1 || rc=1
     elif [ "$(cat "$S/revive/done" 2>/dev/null)" != "$DV_REVIVE_ID" ]; then revive_blocked 'revived goal agent exited without dv done'; fi
   elif jq -e '.status=="pr"' "$S/meta" >/dev/null; then
     # The PR remains the worker's responsibility, including an early nonzero
     # exit. Let the existing safety net revive it with CI/review context.
     "$DV_ROOT/bin/dv" _pr-wait-start "$ISSUE"
   elif [ "$mode" = exec ]; then
-    if [ "$rc" -eq 0 ]; then "$DV_ROOT/bin/dv" 'done' "$ISSUE"
+    if [ "$rc" -eq 0 ]; then agent_exec_done 0 || rc=1
     else "$DV_ROOT/bin/dv" kick failed "$ISSUE" "agent exited $rc"; fi
   # Startup failures already emitted failed through agent_start_failed.
   elif [ ! -f "$S/done.json" ] && ! jq -e '.status=="start-failed"' "$S/meta" >/dev/null; then
     "$DV_ROOT/bin/dv" kick failed "$ISSUE" "goal agent exited $rc without dv done"
   fi
   return "$rc"
+}
+agent_exec_done() {
+  if "$DV_ROOT/bin/dv" 'done' "$ISSUE"; then return 0; fi
+  # A rejected completion is an execution failure, not an abandoned running
+  # issue. Keep the scheduler's exit evidence and the manager event consistent.
+  printf '1\n' > "$S/agent.exit"
+  meta_set '.status="failed" | .failure_reason="exec completion rejected; see log"'
+  if [ "$1" = 1 ]; then revive_blocked 'revived exec completion rejected'
+  else cmd_kick failed "$ISSUE" 'exec completion rejected; see log'; fi
+  return 1
 }
 stop_question_sentinel() {
   if [ -n "$sentinel" ]; then

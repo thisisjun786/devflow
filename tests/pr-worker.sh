@@ -103,6 +103,12 @@ case_pr_worker_revive() {
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]\n' > "$GH_STUB_DIR/checks"
   printf '[{"body":"P1: fix the write","path":"file.sh","line":3}]\n' > "$GH_STUB_DIR/comments"
   dv start "$REPO" PW-1 worker --mode "${DV_PR_TEST_MODE:-goal}"
+  if [ "${DV_PR_EXIT_GATE:-0}" = 1 ]; then
+    wait_file "$DV_STATE/PW-1/live-checked"
+    touch "$DV_STATE/PW-1/exit-release"
+    wait_file "$CASE_DIR/herdr/w-PW-1/exit"
+    touch "$DV_STATE/PW-1/waiter-release"
+  fi
   wait_file "$DV_STATE/PW-1/agent.exit"
   wait_file "$DV_STATE/PW-1/revive/done"
   wait_file "$CASE_DIR/herdr/w-PW-1/exit"
@@ -132,4 +138,33 @@ case_pr_worker_no_rereview() {
 case_pr_worker_revive_exec() {
   export DV_PR_EXIT_CODE=1 DV_PR_TEST_MODE=exec
   case_pr_worker_revive
+}
+case_pr_worker_exit_race() {
+  cat > "$CASE_DIR/waiter-race-env" <<'STUB'
+DV_RACE_WAITER=0
+[ "${1:-}" != pr-wait ] || DV_RACE_WAITER=1
+kill() {
+  builtin kill "$@" || return $?
+  if [ "$DV_RACE_WAITER" = 1 ] && [ "$#" = 2 ] && [ "$1" = -0 ] &&
+    [ "$2" = "$(cat "$DV_STATE/PW-1/agent.pid" 2>/dev/null)" ] &&
+    [ -f "$DV_STATE/PW-1/pr-ready.json" ] && mkdir "$DV_STATE/PW-1/race-once" 2>/dev/null; then
+    touch "$DV_STATE/PW-1/live-checked"
+    while [ ! -f "$DV_STATE/PW-1/waiter-release" ]; do sleep 0.05; done
+  fi
+  return 0
+}
+STUB
+  export BASH_ENV="$CASE_DIR/waiter-race-env" DV_PR_EXIT_GATE=1
+  case_pr_worker_revive
+}
+case_pr_worker_exec_missing_pr() {
+  repo missing-pr remote
+  herdr_setup
+  export DV_AGENT_CMD_codex=true
+  dv start "$REPO" PW-2 missing-pr --mode exec
+  wait_file "$DV_STATE/PW-2/agent.exit"
+  wait_file "$CASE_DIR/herdr/w-PW-2/exit"
+  jq -e '.status=="failed" and (.failure_reason|contains("completion"))' "$DV_STATE/PW-2/meta"
+  jq -se 'any(.[]; .kind=="failed") and all(.[]; .kind!="done")' "$DV_HOME/kick.q"
+  test "$(cat "$DV_STATE/PW-2/agent.exit")" = 1
 }
