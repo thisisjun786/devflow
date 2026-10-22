@@ -548,6 +548,28 @@ case_reconcile() {
   test "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" = 1
 }
 
+case_reconcile_slow_host() {
+
+  # A slow remote status (seconds per host) must not hold queue dispatch:
+  # reconcile is a safety net, not the delivery path.
+  export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1 DV_RECONCILE_INTERVAL=1 DV_HOSTS='test-box'
+  printf '[]' > "$CASE_DIR/remote-status"
+  printf '8\n' > "$CASE_DIR/remote-status-delay"
+  dv-watch & watcher=$!
+  sleep 1.5 # the first reconcile is now waiting on the slow host
+  dv-kick 'done' SLOW-1 hello host abc
+  # The slow host answers 8 s after the first reconcile began; dispatch must
+  # not wait for it.
+  local delivered=false
+  for _ in {1..40}; do
+    if [ "$(find "$DV_HOME/workers" -name '*.finished' 2>/dev/null | wc -l | tr -d ' ')" = 1 ]; then delivered=true; break; fi
+    sleep 0.1
+  done
+  touch "$DV_HOME/stop"; wait "$watcher"
+  [ "$delivered" = true ]
+  grep -l 'SLOW-1' "$DV_HOME/workers/"*.prompt.md
+}
+
 case_kick_pull() {
   export SSH_FIXTURE_EXEC=1
   # The remote host's own config moves its queue: the stream must load it.
@@ -1999,7 +2021,7 @@ for name in disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cach
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in stack_unfinished_auto_land stack_auto_done_guard stack_auto_done_merge stack_resume_done_episode stack_waiting_without_head stack_waiting_clock stack_safety_local stack_resume_headless stack_stalled stack_resume_guards stack_resume_failed stack_resume_interrupted stack_land_requeue stack_land_retry stack_remote_safety stack_wait stack_chain stack_diamond stack_parallel stack_local_body stack_closed_base stack_api_failure stack_dirty stack_remote stack_reconcile stack_checks stack_push_retry stack_defer stack_dependencies_present stack_dependencies_present_conflict stack_missing_base stack_squash_base stack_rebase_base; do
+for name in stack_unfinished_auto_land stack_auto_done_guard stack_auto_done_merge stack_resume_done_episode stack_waiting_without_head stack_waiting_clock stack_safety_local stack_resume_headless stack_stalled stack_resume_guards stack_resume_failed stack_resume_interrupted stack_land_requeue stack_land_retry stack_remote_safety stack_wait stack_chain stack_diamond stack_parallel stack_local_body stack_closed_base stack_api_failure stack_dirty stack_remote stack_reconcile stack_queue_concurrent stack_checks stack_push_retry stack_defer stack_dependencies_present stack_dependencies_present_conflict stack_missing_base stack_squash_base stack_rebase_base; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
@@ -2071,7 +2093,7 @@ for name in claude_stale_server claude_stale_server_empty claude_profile_onboard
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
-for name in stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
+for name in stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

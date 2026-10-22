@@ -37,7 +37,12 @@ if [ -n "${SSH_POLISH_PATH:-}" ]; then
 fi
 # Default: a remote `dv status --json`. With SSH_FIXTURE_EXEC=1, run the remote command
 # locally as the "remote host", whose DV_HOME is $CASE_DIR/remote-home.
-if [ "${SSH_FIXTURE_EXEC:-0}" != 1 ]; then cat "$CASE_DIR/remote-status"; exit; fi
+if [ "${SSH_FIXTURE_EXEC:-0}" != 1 ]; then
+  case "${*: -1}" in
+    "dv status --json") [ ! -f "$CASE_DIR/remote-status-delay" ] || sleep "$(cat "$CASE_DIR/remote-status-delay")" ;;
+  esac
+  cat "$CASE_DIR/remote-status"; exit
+fi
 while [ "$#" -gt 0 ]; do
   case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac
 done

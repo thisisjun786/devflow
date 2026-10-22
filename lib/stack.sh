@@ -235,7 +235,7 @@ stack_deferred() {
   rm -f "$record" "$slot.pid" "$slot.exit" "$slot.retry"
 }
 stack_queue_host() {
-  local host=$1 rows=$2 row issue head event id slot key kind
+  local host=$1 rows=$2 row issue head event id slot key kind tmp
   while IFS= read -r row; do
     issue=$(printf '%s\n' "$row" | jq -er .issue) || return 1
     kind=stack-land; id=''
@@ -255,13 +255,39 @@ stack_queue_host() {
     key=$(printf '%s\n' "$id" | cksum | awk '{print $1 "-" $2}')
     slot="$DV_HOME/pending/stack-$key"
     [ ! -f "$slot.json" ] || continue
-    printf '%s\n' "$event" > "$slot.json.tmp" || return 1
-    mv "$slot.json.tmp" "$slot.json" || return 1
+    # Reconciliation and landed scans run beside each other: write a private
+    # temp file and publish with a no-clobber link, so one producer wins and
+    # an event already consumed (seen) is not recreated.
+    tmp=$(mktemp "$slot.json.XXXXXX") || return 1
+    printf '%s\n' "$event" > "$tmp" || { rm -f "$tmp"; return 1; }
+    if ! grep -Fxq -- "$id" "$DV_HOME/seen"; then ln "$tmp" "$slot.json" 2>/dev/null || true; fi
+    rm -f "$tmp"
   done < <(printf '%s\n' "$rows" | jq -c '.[] | select(.status=="waiting-base" or
     (.stack_head!=null and .status=="ready"))')
 }
 stack_landed_event() {
   case "$(printf '%s\n' "$1" | jq -r .kind)" in landed|done) ;; *) return 0 ;; esac
+  # Remote status takes seconds to minutes per host. The scan only enqueues
+  # durable stack slots (deduplicated by id), so run it beside the queue
+  # instead of holding the cursor; status reconciliation remains the backstop.
+  # One scan at a time; an event during a scan asks for one more pass.
+  touch "$DV_HOME/stack-scan.again"
+  # A lock left by a killed watcher has no live owner; take it over. The owner
+  # pid is written just after the fork, so a lock without one is still fresh.
+  if [ -f "$DV_HOME/stack-scan.lock/pid" ] && ! kill -0 "$(cat "$DV_HOME/stack-scan.lock/pid" 2>/dev/null || echo 0)" 2>/dev/null; then
+    rm -rf "$DV_HOME/stack-scan.lock"
+  fi
+  if mkdir "$DV_HOME/stack-scan.lock" 2>/dev/null; then
+    (
+      trap 'rm -rf "$DV_HOME/stack-scan.lock"' EXIT
+      while rm "$DV_HOME/stack-scan.again" 2>/dev/null; do stack_landed_scan || true; done
+    ) >> "$DV_HOME/stack.log" 2>&1 &
+    # Bash 3.2 has no BASHPID: the parent records the scan owner.
+    printf '%s\n' "$!" > "$DV_HOME/stack-scan.lock/pid" 2>/dev/null || true
+  fi
+  return 0
+}
+stack_landed_scan() {
   local host rows result=0
   # Scan each configured host; dependency PRs are always resolved in the
   # candidate's own repository. Unrelated landed events cannot bypass a base.
