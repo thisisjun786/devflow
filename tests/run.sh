@@ -2298,7 +2298,9 @@ main() {
         [ "$shard" -le "$total" ] || { runner_error 'shard index exceeds shard count'; return 2; }
         shift 2 ;;
       --changed-files)
-        [ "$#" -ge 2 ] && [ -n "$2" ] || { runner_error 'expected --changed-files NUL_DELIMITED_FILE'; return 2; }
+        if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+          runner_error 'expected --changed-files NUL_DELIMITED_FILE'; return 2
+        fi
         changes=$2; shift 2 ;;
       *) runner_error "unknown option: $1"; return 2 ;;
     esac
