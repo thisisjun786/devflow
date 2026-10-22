@@ -217,9 +217,9 @@ reconcile() {
   for host in $(printf '%s\n' "$DV_HOST $DV_HOSTS" | tr ' ' '\n' | sort -u); do
     # The watcher's own host needs no ssh (and may have no key to itself).
     if [ "$host" = "$DV_HOST" ]; then
-      rows=$(dv status --json 2>> "$DV_HOME/reconcile.log") || continue
+      rows=$(timeout "${DV_STATUS_TIMEOUT:-15}" dv status --json 2>> "$DV_HOME/reconcile.log") || continue
     else
-      rows=$(ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" 'dv status --json' 2>> "$DV_HOME/reconcile.log") || continue
+      rows=$(timeout "${DV_STATUS_TIMEOUT:-15}" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" 'dv status --json' 2>> "$DV_HOME/reconcile.log") || continue
     fi
     if true; then
       if ! printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null 2>&1; then continue; fi
