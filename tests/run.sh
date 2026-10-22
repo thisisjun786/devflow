@@ -2110,7 +2110,7 @@ case_task_mixed_files() {
   printf 'keep\n' > "$CASE_DIR/destination/TK-1/existing.txt"
   dv land TK-1 --checked "$head"
   landed=$(jq -r .landed_path "$s/meta")
-  test "$landed" = "$CASE_DIR/destination/TK-1-v2"
+  test "$landed" = "$(cd "$CASE_DIR/destination/TK-1-v2" && pwd -P)"
   test "$(cat "$CASE_DIR/destination/TK-1/existing.txt")" = keep
   test -f "$landed/empty.txt" && test ! -s "$landed/empty.txt"
   test -f "$landed/nested/empty.txt" && test ! -s "$landed/nested/empty.txt"
@@ -2152,7 +2152,7 @@ for name in screen_locale_c screen_locale_utf8; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in appserver_reader_legacy appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race; do
+for name in symlink_send_branch_exec symlink_task_mixed_files appserver_reader_legacy appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
