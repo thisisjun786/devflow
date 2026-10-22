@@ -286,7 +286,8 @@ case_appserver_states() {
 case_appserver_read_partial() {
   # A JSON-RPC line split by a pause longer than one read timeout must be
   # assembled, not dropped (devflow#139). Independent of host speed.
-  DV_ENTRY="$ROOT/bin/dv" bash -s <<'READ_PARTIAL'
+  # Keep the script off stdin: its background decoder also manages pipe input.
+  cat > "$CASE_DIR/read-partial.sh" <<'READ_PARTIAL'
 set -euo pipefail
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/appserver.sh"
@@ -310,6 +311,7 @@ appserver_read_line 10
 [ "$AS_LINE" = '{"id":"c","ok":1}' ]
 wait "$decoder"
 READ_PARTIAL
+  DV_ENTRY="$ROOT/bin/dv" bash "$CASE_DIR/read-partial.sh"
 }
 case_appserver_large_reply() {
   # A multi-MB thread/read reply arrives over many one-second reads. It must be
