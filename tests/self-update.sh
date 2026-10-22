@@ -129,13 +129,15 @@ date() {
 sleep() {
   if [ "${0##*/}" = dv-watch ] && [ "$*" = 0.1 ]; then
     local tick
+    # Observe the completed background scan before advancing the fake clock.
+    [ -z "${reconcile_pid:-}" ] || wait "$reconcile_pid" 2>/dev/null || true
     tick=$(date +%s)
     touch "$CASE_DIR/tick-$tick"
     while [ "$(date +%s)" = "$tick" ] && [ ! -e "$DV_HOME/stop" ]; do command sleep 0.02; done
   fi
   command sleep "$@"
 }
-if [ "${0##*/}" = dv ] && [ "${1:-}" = status ]; then touch "$CASE_DIR/scan-$(date +%s)"; fi
+if [ "${0##*/}" = dv ] && [ "${1:-}" = status ]; then command sleep 0.2; touch "$CASE_DIR/scan-$(date +%s)"; fi
 CONFIG
   "$UPDATE_ROOT/bin/dv-watch" > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_file "$CASE_DIR/tick-10000"
