@@ -528,6 +528,9 @@ cmd_status() {
       if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$agent_status" = unknown ] && jq -e '.status=="running"' "$path" >/dev/null &&
         (load_issue "$(jq -r .issue "$path")"; agent_gone); then
         agent_dead=true
+        # Process absence alone can be a recoverable interruption. A recorded
+        # nonzero exit confirms failure; keep metadata intact for revival.
+        if [[ "$(cat "$(dirname "$path")/agent.exit" 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then agent_status=failed; fi
       fi
       if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" or .status=="waiting-capacity"' "$path" >/dev/null; then
         screen=''
@@ -556,7 +559,8 @@ cmd_status() {
       if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
       row=$(printf '%s\n' "$row" | jq -c '.capacity_retry_at=(.capacity.next_try_at // null) |
         if .status=="waiting-capacity" then .agent_status="waiting-capacity" else . end')
-      if [ "$backend" = exec ] && [ "$alive" = false ] && [ "$agent_status" = failed ]; then
+      if [ "$agent_status" = failed ] &&
+        { [ "$agent_dead" = true ] || { [ "$backend" = exec ] && [ "$alive" = false ]; }; }; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
       fi
       if [ "$json" = 1 ]; then printf '%s\n' "$row"

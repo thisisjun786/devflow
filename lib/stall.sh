@@ -19,7 +19,9 @@ stall_reconcile() {
       ([$host,$row.issue]|tojson) as $key |
       ([$row.started,$row.award_token,$row.herdr_pane]|tojson) as $generation |
       if ($row.issue|type)!="string" or ($row.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")|not) then .
-      elif $row.status!="running" or $row.capacity_detected==true or $row.done_at!=null or $row.cleaned_at!=null or $row.goal_active==true or
+      elif (($row.status=="running" or ($row.status=="failed" and $row.agent_dead==true and
+             ($row.backend=="tmux" or $row.backend=="herdr")))|not) or
+           $row.capacity_detected==true or $row.done_at!=null or $row.cleaned_at!=null or $row.goal_active==true or
            ($row.agent_status=="working" and $row.goal_stalled!=true) or
            ($row.agent_status=="blocked" or $row.agent_status=="done") then del(.[$key])
       elif ($row.alive!=true and $row.agent_dead!=true) or
@@ -115,8 +117,10 @@ cmd__stall_recover() (
   # activity, before sending input or touching the existing revive path.
   # A current stalled banner can outlast herdr's working state; the most recent
   # activity banner still wins via goal_active, as it does in stall_reconcile.
+  # Confirmed terminal failures are still eligible for the existing revival.
   printf '%s\n' "$row" | jq -e --arg token "$token" '
-    .status=="running" and .done_at==null and .cleaned_at==null and
+    (.status=="running" or (.status=="failed" and .agent_dead==true and
+      (.backend=="tmux" or .backend=="herdr"))) and .done_at==null and .cleaned_at==null and
     (.award_token // "")==$token and .goal_active!=true and .question_pending!=true and
     (.agent_status!="working" or .goal_stalled==true) and
     (.agent_status!="blocked" and .agent_status!="done")' >/dev/null || return 0
