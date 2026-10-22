@@ -144,7 +144,7 @@ case_pr_worker_exit_race() {
 mkdir() {
   if [ "${DV_PR_STALE_SEND:-0}" = 1 ] && [ "${command:-}" = send ] &&
     [ "$#" = 1 ] && [ "$1" = "$DV_STATE/PW-1/.operation" ] &&
-    command mkdir "$DV_STATE/PW-1/stale-send-once" 2>/dev/null; then
+    env mkdir "$DV_STATE/PW-1/stale-send-once" 2>/dev/null; then
     printf '%s\n' "$$" > "$DV_STATE/PW-1/stale-send.pid"
     # The other waiter finishes recovery while this send is descheduled before
     # acquiring the issue lock. Resume only after the new wrapper has exited.
@@ -153,7 +153,7 @@ mkdir() {
       sleep 0.05
     done
   fi
-  command mkdir "$@"
+  env mkdir "$@"
 }
 kill() {
   builtin kill "$@" || return $?
