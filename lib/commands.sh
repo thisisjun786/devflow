@@ -17,7 +17,7 @@ cmd_start() {
   REPO=$(cd "$1" && git rev-parse --show-toplevel); ISSUE=$2; local slug=$3
   shift 3; valid_issue "$ISSUE"
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || fail 'invalid slug'
-  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref lower start_sha
+  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref lower start_sha source_issue=''
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || fail "missing value for $1"
     case "$1" in
@@ -80,11 +80,16 @@ cmd_start() {
   cat "$DV_ROOT/templates/rules.md" > "$S/brief.md"
   printf '\nIssue: %s\nWorktree: %s\nReport: %s/report.md\n\n' "$ISSUE" "$WT" "$S" >> "$S/brief.md"
   if [ -n "$brief" ]; then cat "$brief" >> "$S/brief.md"; else printf 'Complete issue %s.\n' "$ISSUE" >> "$S/brief.md"; fi
+  # Only an exact header for this job supplies explicit GitHub issue metadata.
+  source_issue=$(sed -n "s/^# $ISSUE = GitHub issue #\([1-9][0-9]*\)\([[:space:]].*\)\{0,1\}$/\1/p" "$S/brief.md" | sort -u)
+  [[ "$source_issue" =~ ^[1-9][0-9]*$ ]] || source_issue=''
   jq -n --arg issue "$ISSUE" --arg repo "$REPO" --arg worktree "$WT" --arg branch "$BRANCH" \
     --arg base "$base" --arg start_head "$start_sha" --arg agent "$agent" --arg mode "$mode" --arg slug "$slug" \
     --arg host "$DV_HOST" --arg backend "$BACKEND" --arg token "${DV_AWARD_TOKEN:-}" --argjson started "$(now)" \
+    --arg source_issue "$source_issue" \
     '{issue:$issue,repo:$repo,worktree:$worktree,branch:$branch,base:$base,start_head:$start_head,agent:$agent,mode:$mode,slug:$slug,host:$host,started:$started,backend:$backend,status:"running"} +
-    (if $token=="" then {} else {award_token:$token} end)' > "$S/meta"
+    (if $token=="" then {} else {award_token:$token} end) +
+    (if $source_issue=="" then {} else {source_issue:($source_issue|tonumber)} end)' > "$S/meta"
   : > "$S/log"
   if ! launch_agent; then
     meta_set '.status="start-failed"'

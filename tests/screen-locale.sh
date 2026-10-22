@@ -47,15 +47,18 @@ case_screen_goal_markers() {
   local marker
   BACKEND=tmux
   DV_START_WAIT=1
-  # This tests screen markers, not wall-clock scheduling. A one-second real
-  # deadline can expire before the first screen read on a busy runner.
-  printf '1000\n' > "$CASE_DIR/screen-clock"
-  now() { cat "$CASE_DIR/screen-clock"; }
-  sleep() { printf '%s\n' "$(( $(now) + 1 ))" > "$CASE_DIR/screen-clock"; }
+  # Marker recognition should not depend on crossing a wall-clock second.
+  # A nonmatch advances to the deadline after exactly one polling interval.
+  now() { cat "$CASE_DIR/goal-clock"; }
+  sleep() { printf '2\n' > "$CASE_DIR/goal-clock"; }
   codex_screen() { printf '%s\n' "$marker Pursuing goal"; }
   codex_start_failed() { :; }
-  for marker in '•' '*'; do wait_codex_goal test; done
+  for marker in '•' '*'; do
+    printf '0\n' > "$CASE_DIR/goal-clock"
+    wait_codex_goal test
+  done
   marker='¢'
+  printf '0\n' > "$CASE_DIR/goal-clock"
   if wait_codex_goal test; then
     printf 'A non-bullet character acknowledged goal startup\n' >&2
     return 1

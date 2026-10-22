@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Sourced by run.sh. No real model, daemon, provider or remote repository.
 # shellcheck disable=SC2154,SC2016
-case_teardown_wait_client() {
-  local fixture="$CASE_DIR/teardown" pid stopped=false
-  mkdir -p "$fixture/state/T-1/appserver" "$fixture/home"
+teardown_wait_fixture() {
+  local fixture="$CASE_DIR/teardown" pidpath=$1 pid stopped=false
+  mkdir -p "$fixture/${pidpath%/*}" "$fixture/home"
   cat > "$CASE_DIR/late-client" <<'CLIENT'
 #!/usr/bin/env bash
 trap 'sleep 0.3; touch "$CASE_DIR/client-stopped"; exit 0' TERM
@@ -11,14 +11,18 @@ touch "$CASE_DIR/client-ready"
 while :; do sleep 0.1; done
 CLIENT
   bash "$CASE_DIR/late-client" & pid=$!
-  printf '%s\n' "$pid" > "$fixture/state/T-1/appserver/client.pid"
+  printf '%s\n' "$pid" > "$fixture/$pidpath"
   wait_file "$CASE_DIR/client-ready"
   CASE_DIR="$fixture" DV_STATE="$fixture/state" DV_HOME="$fixture/home" DV_TEST_KEEP=0 teardown
   [ ! -f "$CASE_DIR/client-stopped" ] || stopped=true
+  # Clean up even on red, while asserting teardown itself waited for shutdown.
+  if [ "$stopped" = false ]; then kill "$pid" 2>/dev/null || true; fi
   wait "$pid" || true
   test "$stopped" = true
   test ! -e "$fixture"
 }
+case_teardown_wait_client() { teardown_wait_fixture state/T-1/appserver/client.pid; }
+case_teardown_wait_host_agent() { teardown_wait_fixture hosts/test-host/state/T-1/agent.pid; }
 case_teardown_preserve_live_client() {
   local fixture="$CASE_DIR/teardown" pid refused=false
   mkdir -p "$fixture/state/T-1/appserver" "$fixture/home"
