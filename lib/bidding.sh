@@ -13,7 +13,11 @@ bid_stop_tree() {
   done
   kill -KILL "$pid" 2>/dev/null || true
 }
-bid_limit() {
+bid_limit() (
+  # A fast probe can cancel the timer before its TERM trap is installed.
+  # Isolate inherited EXIT cleanup before forking either child, so a timer's
+  # early termination cannot remove its caller's state or release its lock.
+  trap - EXIT
   local seconds=$1 pid timer rc=0; shift
   "$@" <&0 & pid=$!
   (
@@ -26,7 +30,7 @@ bid_limit() {
   kill "$timer" 2>/dev/null || true
   wait "$timer" 2>/dev/null || true
   return "$rc"
-}
+)
 bid_rpc() (
   local host=$1; shift
   if [ "$host" = "$DV_HOST" ]; then exec "$DV_ROOT/bin/dv" "$@"

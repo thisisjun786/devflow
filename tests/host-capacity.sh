@@ -87,3 +87,13 @@ case_capacity_launch_reservation() {
   (cmd_start "$REPO" CAP-4 reservation --mode exec --brief "$CASE_DIR/brief")
   test ! -d "$DV_STATE/.admission-lock"
 }
+case_capacity_probe_cleanup() (
+  capacity_fixture
+  printf 'owned by caller\n' > "$CASE_DIR/owner"
+  trap 'rm -f "$CASE_DIR/owner"' EXIT
+  local attempt
+  for attempt in {1..100}; do
+    bid_limit 1 true
+    test -f "$CASE_DIR/owner" || { printf 'fast probe ran caller cleanup\n'; return 1; }
+  done
+)

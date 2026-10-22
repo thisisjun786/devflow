@@ -2011,7 +2011,7 @@ for name in learned_percentile learned_active_floor learned_window learned_reado
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in capacity_load capacity_memory capacity_award capacity_start capacity_headroom capacity_task capacity_launch_reservation autofill_submit autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence autofill_cancel_event autofill_label_event qa_merge_commit_event; do
+for name in capacity_load capacity_memory capacity_award capacity_start capacity_headroom capacity_task capacity_launch_reservation capacity_probe_cleanup autofill_submit autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence autofill_cancel_event autofill_label_event qa_merge_commit_event; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
