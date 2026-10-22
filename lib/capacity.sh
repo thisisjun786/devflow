@@ -104,16 +104,33 @@ capacity_terminal_screen() {
   if [ "$BACKEND" = herdr ]; then herdr_cmd pane read "$HERDR_PANE" --source visible 2>/dev/null
   else tmux_dv capture-pane -p -t "$SESSION:0.0" 2>/dev/null; fi
 }
+capacity_terminal_pause() {
+  local ticks=5
+  # Keep screen polling at one second, but publish fast process exits before
+  # the startup/admission caller decides that the worker is still running.
+  while [ "$ticks" -gt 0 ]; do
+    kill -0 "$capacity_child" 2>/dev/null || return 0
+    sleep 0.2
+    ticks=$((ticks - 1))
+  done
+}
 capacity_terminal_run() {
-  local rc=0 screen='' poll_rc line output capacity_child='' provider provider_mode
+  local mark_started=$1 rc=0 screen='' poll_rc line output capacity_child='' provider provider_mode
+  shift
   provider=$(jq -r .agent "$S/meta"); provider_mode=$(jq -r .mode "$S/meta")
   touch "$S/log"
   line=$(wc -l < "$S/log")
   # Explicit stdin keeps the existing TTY for interactive CLIs in this
   # non-job-control shell while the wrapper supervises provider waits.
   "$@" <&0 & capacity_child=$!
+  if [ "$mark_started" = 1 ] && [ -n "${DV_AWARD_TOKEN:-}" ]; then
+    # Reject immediate launcher failures before acknowledging admission. The
+    # setup above must not publish success before the command even executes.
+    sleep 0.1
+    if kill -0 "$capacity_child" 2>/dev/null; then touch "$S/agent.started"; fi
+  fi
   while kill -0 "$capacity_child" 2>/dev/null; do
-    if jq -e '.status=="done" or .status=="ready" or .status=="landed" or .status=="cancelled"' "$S/meta" >/dev/null; then sleep 1; continue; fi
+    if jq -e '.status=="done" or .status=="ready" or .status=="landed" or .status=="cancelled"' "$S/meta" >/dev/null; then capacity_terminal_pause; continue; fi
     screen=$(capacity_terminal_screen) || screen=''
     if printf '%s\n' "$screen" | capacity_screen_error; then
       poll_rc=0; capacity_poll || poll_rc=$?
@@ -127,7 +144,7 @@ capacity_terminal_run() {
     elif [ -n "$screen" ] && jq -e '.capacity!=null' "$S/meta" >/dev/null; then
       capacity_clear
     fi
-    sleep 1
+    capacity_terminal_pause
   done
   wait "$capacity_child" || rc=$?; capacity_child=''
   # An exited CLI may have emitted its error between two visible snapshots.
@@ -136,10 +153,12 @@ capacity_terminal_run() {
   screen=$(capacity_terminal_screen) || screen=''
   if capacity_output_error "$output" "$rc" || { [ ! -f "$S/done.json" ] && printf '%s\n' "$screen" | capacity_screen_error; }; then
     rm "$output"
+    [ "$mark_started" != 1 ] || [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
     capacity_wait || return 1
     return 75 # caller relaunches with an explicit continuation in the same WT
   fi
   rm "$output"
   capacity_clear
+  [ "$rc" != 0 ] || [ "$mark_started" != 1 ] || [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
   return "$rc"
 }

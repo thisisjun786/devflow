@@ -172,8 +172,7 @@ run_agent() {
   while :; do
   rc=0
   if [ -n "$override" ]; then
-    [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
-    capacity_terminal_run bash -c "$override" || rc=$?
+    capacity_terminal_run 1 bash -c "$override" || rc=$?
   else
     local args=()
     case "$agent" in
@@ -199,13 +198,12 @@ run_agent() {
         if [ "$BACKEND" = tmux ] && [ "$DV_CODEX_DISABLE_HOOKS" = 1 ]; then args+=(--disable hooks); fi
         [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
         if [ "$mode" = exec ]; then
-          [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
           args+=(exec)
           [ "$KIND" != task ] || args+=(--skip-git-repo-check)
-          capacity_terminal_run "${args[@]}" "$instruction" || rc=$?
+          capacity_terminal_run 1 "${args[@]}" "$instruction" || rc=$?
         else
           inject_goal "$instruction" & helper=$!
-          capacity_terminal_run "${args[@]}" || rc=$?
+          capacity_terminal_run 0 "${args[@]}" || rc=$?
           stop_question_sentinel
           wait "$helper" || true
         fi ;;
@@ -215,15 +213,13 @@ run_agent() {
         elif ! claude_onboarding | jq -e '.hasCompletedOnboarding and .skipDangerousModePermissionPrompt' >/dev/null; then
           agent_start_failed 'Claude onboarding incomplete: 기기에서 claude를 한 번 대화형으로 실행해 온보딩을 끝내라 (--dangerously-skip-permissions 경고 포함)' ''; rc=1
         else
-          [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
           args=("$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions)
           [ "$DV_AGENT_QUESTIONS" != off ] || args+=(--disallowedTools AskUserQuestion)
-          capacity_terminal_run "${args[@]}" -- "$instruction" || rc=$?
+          capacity_terminal_run 1 "${args[@]}" -- "$instruction" || rc=$?
         fi ;;
       devin)
-        [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
         accept_devin_trust & helper=$!
-        capacity_terminal_run "$DV_DEVIN_BIN" --model "$DV_DEVIN_MODEL" --permission-mode dangerous -- "$instruction" || rc=$?
+        capacity_terminal_run 1 "$DV_DEVIN_BIN" --model "$DV_DEVIN_MODEL" --permission-mode dangerous -- "$instruction" || rc=$?
         stop_question_sentinel
         wait "$helper" || true ;;
     esac
