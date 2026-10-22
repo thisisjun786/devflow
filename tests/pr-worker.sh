@@ -141,6 +141,20 @@ case_pr_worker_revive_exec() {
 }
 case_pr_worker_exit_race() {
   cat > "$CASE_DIR/waiter-race-env" <<'STUB'
+mkdir() {
+  if [ "${DV_PR_STALE_SEND:-0}" = 1 ] && [ "${command:-}" = send ] &&
+    [ "$#" = 1 ] && [ "$1" = "$DV_STATE/PW-1/.operation" ] &&
+    command mkdir "$DV_STATE/PW-1/stale-send-once" 2>/dev/null; then
+    printf '%s\n' "$$" > "$DV_STATE/PW-1/stale-send.pid"
+    # The other waiter finishes recovery while this send is descheduled before
+    # acquiring the issue lock. Resume only after the new wrapper has exited.
+    for _ in {1..200}; do
+      if [ -f "$DV_STATE/PW-1/revive/done" ] && [ -f "$CASE_DIR/herdr/w-PW-1/exit" ]; then break; fi
+      sleep 0.05
+    done
+  fi
+  command mkdir "$@"
+}
 kill() {
   builtin kill "$@" || return $?
   # Bash 3.2 has not populated script arguments while sourcing BASH_ENV.
@@ -156,6 +170,19 @@ kill() {
 STUB
   export BASH_ENV="$CASE_DIR/waiter-race-env" DV_PR_EXIT_GATE=1
   case_pr_worker_revive
+}
+case_pr_worker_stale_recovery() {
+  export DV_PR_STALE_SEND=1
+  case_pr_worker_exit_race
+  wait_file "$DV_STATE/PW-1/stale-send.pid"
+  local pid _
+  pid=$(cat "$DV_STATE/PW-1/stale-send.pid")
+  for _ in {1..100}; do
+    if ! kill -0 "$pid" 2>/dev/null; then break; fi
+    sleep 0.1
+  done
+  ! kill -0 "$pid" 2>/dev/null
+  jq -se 'all(.[]; .kind=="done") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
 }
 case_pr_worker_exec_missing_pr() {
   repo missing-pr remote
