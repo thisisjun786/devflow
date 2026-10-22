@@ -665,6 +665,16 @@ revive_agent() {
 cmd_send() {
   [ "$#" -eq 2 ] || fail 'usage: dv send ISSUE text'
   load_issue "$1"; issue_lock; require_worktree
+  if [ -n "${DV_PR_RECOVERY_HEAD:-}" ]; then
+    # A background waiter may be descheduled before taking this issue lock.
+    # Another waiter can meanwhile revive or finish the job. Revalidate here
+    # so the stale automatic send cannot fail an already completed revival.
+    [ "$(jq -r '.head // empty' "$S/meta")" = "$DV_PR_RECOVERY_HEAD" ] || return 0
+    [ "$(cat "$S/revive/id" 2>/dev/null || true)" = "${DV_PR_RECOVERY_EPISODE:-}" ] || return 0
+    if jq -e --arg head "$DV_PR_RECOVERY_HEAD" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
+    # These are for this one handoff, not the newly launched worker's calls.
+    unset DV_PR_RECOVERY_HEAD DV_PR_RECOVERY_EPISODE
+  fi
   if [ "$BACKEND" = appserver ]; then appserver_request send "$2"; return; fi
   if [ "$BACKEND" = exec ]; then codex_exec_send "$2"; return; fi
   # tmux can accept paste/Enter even when remain-on-exit retained a dead pane.
