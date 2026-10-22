@@ -4,24 +4,111 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '23 3 * * *'
 permissions:
   contents: read
 jobs:
-  shell:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      count: ${{ steps.select.outputs.count }}
+      shards: ${{ steps.select.outputs.shards }}
+      os: ${{ steps.select.outputs.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select cases and validate mapping
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bash tests/run.sh --case runner_mapping
+          args=()
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only -z --no-renames "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changes"
+            args=(--changed-files "$RUNNER_TEMP/changes")
+          fi
+          bash tests/run.sh --list "${args[@]}" > "$RUNNER_TEMP/cases"
+          count=$(wc -l < "$RUNNER_TEMP/cases" | tr -d ' ')
+          printf 'count=%s\n' "$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" = 0 ]; then
+            # A successful no-op keeps the required check usable for docs PRs.
+            echo 'shards=[1]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'shards=[1,2,3,4,5,6]' >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$EVENT" = pull_request ]; then
+            echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+          fi
+          printf 'Selected %s cases\n' "$count"
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Shellcheck
+        run: shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fixtures/*
+  tests:
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.plan.outputs.count != '0'
         run: sudo apt-get update && sudo apt-get install -y shellcheck tmux jq acl netcat-openbsd util-linux
       - name: Dependencies (Mac)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && needs.plan.outputs.count != '0'
         run: brew install shellcheck tmux jq flock
-      - name: Shellcheck
-        run: shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fixtures/*
       - name: Tests
-        run: bash tests/run.sh
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SHARD: ${{ matrix.shard }}
+          CASE_COUNT: ${{ needs.plan.outputs.count }}
+          DV_AUTO_UPDATE: '0'
+        run: |
+          if [ "$CASE_COUNT" = 0 ]; then
+            echo 'Documentation-only change: pass=0 skip=0 fail=0'
+            exit 0
+          fi
+          args=()
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only -z --no-renames "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changes"
+            args=(--changed-files "$RUNNER_TEMP/changes")
+          fi
+          ./bin/dv heavy -- bash tests/run.sh --shard "$SHARD/6" "${args[@]}"
+  # Branch protection requires only "ci". Matrix jobs stay independent so
+  # gh run rerun --failed reruns failed shards without repeating successful ones.
+  ci:
+    if: always()
+    needs: [plan, shellcheck, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require all jobs to succeed
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          LINT_RESULT: ${{ needs.shellcheck.result }}
+          TEST_RESULT: ${{ needs.tests.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          test "$LINT_RESULT" = success
+          test "$TEST_RESULT" = success
