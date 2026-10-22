@@ -313,24 +313,38 @@ set -euo pipefail
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/appserver.sh"
 AS_LINE=''
-exec 8< <(printf '{"id":"a","result":{"x":"'; sleep 2.5; printf 'tail"}}\n'; printf '{"id":"b"}\n')
+decoder=''
+trap 'if [ -n "$decoder" ]; then kill "$decoder" 2>/dev/null || true; wait "$decoder" 2>/dev/null || true; fi' EXIT
+AS_IO="$CASE_DIR/read-records"; mkdir "$AS_IO"
+mkfifo "$AS_IO/wake" "$AS_IO/ack"
+exec 8<> "$AS_IO/wake" 5<> "$AS_IO/ack"
+(
+  trap - EXIT
+  { printf '{"id":"a","result":{"x":"'; sleep 2.5; printf 'tail"}}'; } > "$AS_IO/pending"
+  mv "$AS_IO/pending" "$AS_IO/receive-record"; printf '.' >&8
+  IFS= read -r -n 1 ack <&5
+  printf '{"id":"b"}' > "$AS_IO/pending"
+  mv "$AS_IO/pending" "$AS_IO/receive-record"; printf '.' >&8
+  IFS= read -r -n 1 ack <&5
+) & decoder=$!
 appserver_read_line 10
 [ "$AS_LINE" = '{"id":"a","result":{"x":"tail"}}' ]
 appserver_read_line 5
 [ "$AS_LINE" = '{"id":"b"}' ]
+wait "$decoder"; decoder=''
 # A remote frame split across the deadline is buffered by the decoder.
 AS_IO="$CASE_DIR/partial-frame"; mkdir "$AS_IO"
 # Bash 3.2 cannot wait for a process substitution. Use an explicit child so
 # teardown waits until the decoder has consumed the close frame as well.
-mkfifo "$AS_IO/decoded"
-{ printf '\201\021{"id":"c",'; sleep 2.5; printf '"ok":1}\210\000'; } | appserver_ws_receive 0 > "$AS_IO/decoded" &
+mkfifo "$AS_IO/decoded" "$AS_IO/ack"
+exec 8<> "$AS_IO/decoded" 5<> "$AS_IO/ack"
+{ printf '\201\021{"id":"c",'; sleep 2.5; printf '"ok":1}\210\000'; } | appserver_ws_receive 0 "$AS_IO/receive-record" > "$AS_IO/decoded" &
 decoder=$!
-exec 8< "$AS_IO/decoded"
 if appserver_read_line 1; then exit 1; fi
 [ -z "$AS_LINE" ]
 appserver_read_line 10
 [ "$AS_LINE" = '{"id":"c","ok":1}' ]
-wait "$decoder"
+wait "$decoder"; decoder=''
 READ_PARTIAL
   DV_ENTRY="$ROOT/bin/dv" bash "$CASE_DIR/read-partial.sh"
 }
@@ -490,10 +504,14 @@ appserver_wait_reconnected() {
 }
 case_appserver_watch_dead_client() {
   DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
-  local state="$DV_STATE/AS-1/appserver" client replacement watcher
+  local state="$DV_STATE/AS-1/appserver" client replacement watcher proxy_file proxy_pid
+  cp "$CASE_DIR/server/proxy.pid" "$CASE_DIR/initial-proxy.pid"
   client=$(cat "$state/client.pid")
   cp "$DV_STATE/AS-1/meta" "$CASE_DIR/meta.before"
   kill -KILL "$client"
+  # nc does not close its socket at stdin EOF on every platform. This fake
+  # proxy belongs to the killed client, not to the daemon being recovered.
+  teardown_stop_pidfile "$CASE_DIR/server/proxy.pid"
   export DV_HOSTS=test-host DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   appserver_wait_reconnected
@@ -506,10 +524,17 @@ case_appserver_watch_dead_client() {
   test ! -f "$state/recoveries.json"
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
   kill -KILL "$replacement"
+  teardown_stop_pidfile "$CASE_DIR/server/proxy.pid"
   dv _appserver-watch
   dv _appserver-watch
   jq -se '[.[]|select(.method=="thread/resume")]|length==1' "$CASE_DIR/server/requests"
   ! grep -q 'unbound variable' "$DV_STATE/AS-1/log"
+  for proxy_file in "$CASE_DIR/initial-proxy.pid" "$CASE_DIR/server/proxy.pid"; do
+    proxy_pid=$(cat "$proxy_file")
+    if kill -0 "$proxy_pid" 2>/dev/null; then
+      printf 'Fixture proxy %s outlived its client\n' "$proxy_pid"; return 1
+    fi
+  done
 }
 case_appserver_daemon_lost_turn() {
   DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
@@ -766,6 +791,56 @@ appserver_sender_legacy() (
 )
 case_appserver_sender_legacy_idle() { appserver_sender_legacy idle; }
 case_appserver_sender_legacy_partial() { appserver_sender_legacy partial; }
+case_appserver_reader_preempt() {
+  export BASH_ENV="$ROOT/tests/fixtures/legacy-read-env" DV_TEST_READ_PREEMPT=appserver_read_line
+  appserver_setup
+  test -f "$CASE_DIR/read-preempted"
+  dv status AS-1 --json | jq -e '.[0].appserver.thread.id=="thread-1"'
+}
+case_appserver_sender_preempt() (
+  source "$ROOT/tests/fixtures/legacy-read-env"
+  export DV_TEST_READ_PREEMPT=appserver_ws_send
+  case_appserver_sender_partial
+  test -f "$CASE_DIR/read-preempted"
+)
+case_appserver_upgrade_partial() {
+  cat > "$CASE_DIR/partial-upgrade-env" <<'ENV'
+printf() {
+  case "$1" in
+    'HTTP/1.1 101 '*)
+      local header
+      # shellcheck disable=SC2059
+      builtin printf -v header "$@"
+      builtin printf '%s' "${header:0:6}"
+      sleep 2
+      builtin printf '%s' "${header:6}"
+      touch "$CASE_DIR/upgrade-split" ;;
+    *)
+      # shellcheck disable=SC2059
+      builtin printf "$@" ;;
+  esac
+}
+ENV
+  export BASH_ENV="$CASE_DIR/partial-upgrade-env"
+  appserver_setup
+  test -f "$CASE_DIR/upgrade-split"
+}
+case_appserver_upgrade_timeout() (
+  source "$ROOT/lib/appserver-transport.sh"
+  AS_IO="$CASE_DIR/upgrade"; mkdir "$AS_IO"
+  mkfifo "$AS_IO/response"
+  exec 6<> "$AS_IO/response" 7> "$AS_IO/request"
+  DV_APPSERVER_TIMEOUT=1
+  appserver_ws_upgrade_headers() {
+    sh -c 'printf "%s\n" "$PPID"' > "$CASE_DIR/header-reader.pid"
+    IFS= read -r _unfinished <&6
+  }
+  if appserver_ws_upgrade; then return 1; fi
+  # A stalled header must not leave an untimed reader behind after the deadline.
+  if [ -f "$CASE_DIR/header-reader.pid" ]; then
+    ! kill -0 "$(cat "$CASE_DIR/header-reader.pid")" 2>/dev/null
+  fi
+)
 case_appserver_active_error_send() {
   appserver_setup
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"active"},"turns":[{"id":"turn-1","status":"inProgress","items":[],"error":{"message":"transient capacity error"}}]}}' > "$CASE_DIR/server/thread.json"
@@ -1127,17 +1202,7 @@ case_appserver_stale_done_recover() {
   jq -se '[.[]|select(.method=="turn/start")]|length==2' "$CASE_DIR/server/requests"
 }
 
-case_appserver_reader_legacy() {
-  BASH_ENV="$ROOT/tests/fixtures/legacy-read-env" DV_ENTRY="$ROOT/bin/dv" bash -s <<'READ_LEGACY'
-set -euo pipefail
-source "$ROOT/lib/common.sh"
-source "$ROOT/lib/appserver.sh"
-AS_LINE=''
-# The decoder has the complete frame, but its local pipe write is descheduled.
-exec 8< <(printf '{"id":"a","result":{"x":"'; sleep 2; printf 'tail"}}\n'; printf '{"id":"b"}\n')
-appserver_read_line 10
-[ "$AS_LINE" = '{"id":"a","result":{"x":"tail"}}' ]
-appserver_read_line 5
-[ "$AS_LINE" = '{"id":"b"}' ]
-READ_LEGACY
-}
+case_appserver_reader_legacy() (
+  export BASH_ENV="$ROOT/tests/fixtures/legacy-read-env"
+  case_appserver_read_partial
+)

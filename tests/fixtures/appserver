@@ -43,6 +43,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 143' TERM
+printf '%s\n' "$$" > "$CASE_DIR/server/proxy.pid"
 for _ in {1..100}; do [ ! -S "$socket_dir/socket" ] || break; sleep 0.01; done
 (cd "$socket_dir" && exec nc -U socket) <&0 6>&- 7>&- & client=$!
 touch "$CASE_DIR/server/socket-used"

@@ -13,7 +13,7 @@ appserver_open() {
   [[ "$DV_APPSERVER_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || return 1
   command -v openssl >/dev/null || return 1
   AS_IO=$(mktemp -d "${TMPDIR:-/tmp}/dv-appserver.XXXXXX") || return 1
-  mkfifo "$AS_IO/in" "$AS_IO/out" "$AS_IO/raw-in" "$AS_IO/raw-out" || { appserver_close; return 1; }
+  mkfifo "$AS_IO/in" "$AS_IO/out" "$AS_IO/receive-ack" "$AS_IO/raw-in" "$AS_IO/raw-out" || { appserver_close; return 1; }
   AS_SEND='' AS_RECEIVE=''
   appserver_proxy < "$AS_IO/raw-in" > "$AS_IO/raw-out" & AS_PID=$!
   exec 7> "$AS_IO/raw-in" 6< "$AS_IO/raw-out"
@@ -21,12 +21,13 @@ appserver_open() {
   if ! (appserver_ws_upgrade); then appserver_close; return 1; fi
   appserver_ws_send 1 < "$AS_IO/in" >&7 6>&- 7>&- & AS_SEND=$!
   exec 9> "$AS_IO/in"
-  appserver_ws_receive 0 <&6 > "$AS_IO/out" 6>&- 7>&- 9>&- & AS_RECEIVE=$!
+  exec 5<> "$AS_IO/receive-ack"
+  appserver_ws_receive 0 "$AS_IO/receive-record" <&6 > "$AS_IO/out" 5< "$AS_IO/receive-ack" 6>&- 7>&- 9>&- & AS_RECEIVE=$!
   exec 8< "$AS_IO/out" 6>&- 7>&-
 }
 appserver_close() {
   local pid
-  exec 6>&- 7>&- 8>&- 9>&-
+  exec 5>&- 6>&- 7>&- 8>&- 9>&-
   for pid in "${AS_WRITER:-}" "${AS_PID:-}" "${AS_SEND:-}" "${AS_RECEIVE:-}"; do
     [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
   done
@@ -174,18 +175,18 @@ appserver_questions() {
   done
 }
 appserver_read_line() {
-  # The decoder publishes only complete WebSocket messages (max 16 MiB).
-  # Time out waiting for the first byte, then drain that local record without
-  # a timer: Bash 3.2 discards consumed bytes on a timed read. A slow/partial
-  # remote frame stays in the decoder and cannot block this drain.
-  local deadline=$(( $(now) + $1 )) first rest
+  # Time only the wakeup. Even a one-byte read can consume its byte and then
+  # time out before Bash 3.2 assigns it. The decoder retains the full bounded
+  # record until this consumer acknowledges it; partial remote frames stay
+  # in the decoder and still obey the existing RPC deadline.
+  local deadline=$(( $(now) + $1 )) _wake
   AS_LINE=''
   while :; do
-    first=''
-    if IFS= read -r -n 1 -t 1 first <&8; then
-      rest=''
-      if [ -n "$first" ]; then IFS= read -r rest <&8 || return 1; fi
-      AS_LINE=$first$rest
+    IFS= read -r -n 1 -t 1 _wake <&8 || true
+    if [ -f "$AS_IO/receive-record" ]; then
+      AS_LINE=$(cat "$AS_IO/receive-record") || return 1
+      rm "$AS_IO/receive-record"
+      printf '.' >&5
       return 0
     fi
     if { [ -n "${AS_PID:-}" ] && ! appserver_connected; } || [ "$(now)" -ge "$deadline" ]; then
