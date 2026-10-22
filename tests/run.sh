@@ -1252,8 +1252,12 @@ case_herdr_disabled_legacy() {
 herdr_isolated_path() {
   # Exclude user PATH and ~/.local/bin so native tests cannot reach real herdr.
   mkdir -p "$CASE_DIR/path" "$CASE_DIR/empty-home"
-  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed tail wc grep rm touch awk ln; do
+  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed tail wc grep rm touch awk ln getconf df; do
     ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"
+  done
+  # Host admission samples memory/load on macOS through these standard tools.
+  for tool in sysctl vm_stat; do
+    if command -v "$tool" >/dev/null; then ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"; fi
   done
   if [ "${1:-}" = tmux ]; then ln -s "$(command -v tmux)" "$CASE_DIR/path/tmux"; fi
   export PATH="$ROOT/bin:$CASE_DIR/path"
