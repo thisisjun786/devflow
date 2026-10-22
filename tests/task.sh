@@ -394,7 +394,7 @@ case_task_appserver() {
   test ! -e "$CASE_DIR/Desk project/.git"
   cmp "$HOME/.codex/config.toml" "$CASE_DIR/original-config"
   jq -se --arg wt "$wt" 'any(.[]; .method=="thread/start" and .params.cwd==$wt) and any(.[]; .method=="thread/goal/set" and .params.status=="complete")' "$CASE_DIR/server/requests"
-  dv status TK-1 --json | jq -e '.[0] | .agent_status=="goal-complete" and .status=="done" and .done_head==.head'
+  dv status TK-1 --live --json | jq -e '.[0] | .agent_status=="goal-complete" and .status=="done" and .done_head==.head'
   dv land TK-1 --checked "$head"
   cmp "$wt/out/summary.txt" "$CASE_DIR/destination/TK-1/summary.txt"
   dv clean TK-1

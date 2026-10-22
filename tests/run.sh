@@ -418,7 +418,7 @@ clean_resume_appserver() {
   dv send TK-1 'Revise the summary' > "$CASE_DIR/resume-receipt" || rc=$?
   jq -e --arg outcome "$outcome" '.outcome==$outcome' "$CASE_DIR/resume-receipt"
   if [ "$outcome" = accepted ]; then test "$rc" = 0; else test "$rc" != 0; fi
-  dv status TK-1 --json | jq -e '.[0] | .alive and .agent_status=="working"'
+  dv status TK-1 --live --json | jq -e '.[0] | .alive and .agent_status=="working"'
   resume_capacity_rejected
   resume_capacity_observed TK-1
   test -f "$wt/out/summary.txt"
