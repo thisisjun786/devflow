@@ -63,8 +63,12 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_MANAGER_HOST:=lina-os}" # submit/queue manager, independent of the local kick host
 : "${DV_MANAGER_AGENT:=hermes}" # persistent per-repository Hermes session
 : "${DV_MANAGER_MAX_WAIT:=120}" # busy seconds before other issues use plain workers
-: "${DV_MAX_JOBS:=}" # host capacity; empty = max(1, floor(logical cores / 8))
-: "${DV_MIN_MEMORY_MB:=512}" # reject bids below this available memory
+: "${DV_AUTOFILL_REPOS=}" # manager: space-separated owner/repo allowlist; empty disables
+# DV_AUTOFILL_BRIEF_owner_repo=/path/brief.md (lowercase; / . - become _).
+# Default template: enabled repo's .devflow/brief.md on its default branch.
+: "${DV_MAX_JOBS:=}" # host ceiling; empty = max(1, floor(logical cores / 8))
+: "${DV_TARGET_LOAD:=1.2}" # load5/cores budget; reserve one core per effective slot
+: "${DV_MIN_MEMORY_MB:=512}" # available memory reserved per effective slot; 0 disables
 : "${DV_MIN_DISK_GB:=15}" # work/cache free GiB; reject either below this, penalize below 2x
 : "${DV_CACHE_TRIM_DAYS:=2}" # trim Go build files not accessed for this many days
 : "${DV_DISK_INTERVAL:=1800}" # dv-watch disk safety pass, seconds

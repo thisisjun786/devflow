@@ -56,16 +56,11 @@ task_submit() {
   if [ "$BACKEND" = tmux ]; then
     ! tmux_dv has-session -t "=$SESSION" 2>/dev/null || fail 'tmux session already exists'
   fi
-  capacity=$DV_MAX_JOBS
-  if [ -z "$capacity" ]; then
-    capacity=$(( $(bid_cores) / 8 ))
-    [ "$capacity" != 0 ] || capacity=1
-  fi
-  [[ "$capacity" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
   # Share admission/capacity with code starts awarded by the scheduler.
   owned_lock "$DV_STATE/.admission-lock" "$$" || fail 'host admission busy'
   trap 'owned_unlock "$DV_STATE/.admission-lock" "$$"' EXIT
-  [ "$(bid_active)" -lt "$capacity" ] || fail 'host has no free task slots'
+  capacity=$(bid_capacity "$(bid_resources)" "$(bid_active)") || return 1
+  jq -e '.free_slots>0' <<< "$capacity" >/dev/null || fail 'host has no free task slots'
   mkdir "$S" || fail 'issue was started concurrently'
   WT=$(mktemp -d "$DV_WORK/task-$ISSUE.XXXXXX")
   WT=$(cd "$WT" && pwd -P)

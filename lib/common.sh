@@ -112,6 +112,12 @@ event_json() {
     # PR is open). Without the reason in the ID the later event is dropped as
     # already seen. Identical retransmissions still share one ID.
     if [ "$1" = blocked ]; then id="$id:m$(printf '%s' "$3" | cksum | cut -d' ' -f1)"; fi
+    case "$1" in
+      bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|pr-opened|pr-closed)
+        # Several findings or open/close episodes can share a job/head. A
+        # receipt carries this ID through retries; subsequent mutations differ.
+        id="$id:$(now):$$:$RANDOM" ;;
+    esac
   fi
   jq -cn --arg kind "$1" --arg issue "$2" --arg message "$3" --arg host "$4" --arg head "$5" \
     --arg id "$id" --arg token "$token" --argjson time "${9:-$(now)}" \

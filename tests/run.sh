@@ -17,6 +17,9 @@ setup() {
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
   export DV_AUTO_UPDATE=0
+  # Unrelated tests must not depend on the runner's current CPU/memory pressure.
+  # Capacity cases override these budgets and supply synthetic host samples.
+  export DV_MAX_JOBS=8 DV_TARGET_LOAD=1000000 DV_MIN_MEMORY_MB=0 DV_AUTOFILL_REPOS=''
   export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5 DV_APPSERVER_TIMEOUT=1
   unset DV_MODE
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF
@@ -1912,6 +1915,10 @@ case_bid_rejections_no_tmux() { bid_without_tmux bid_rejections; }
 # runner was reading its tail previously produced a truncated `e` command.
 # shellcheck source=tests/host.sh
 source "$ROOT/tests/host.sh"
+# shellcheck source=tests/autofill.sh
+source "$ROOT/tests/autofill.sh"
+# shellcheck source=tests/capacity.sh
+source "$ROOT/tests/capacity.sh"
 # shellcheck source=tests/delivery.sh
 source "$ROOT/tests/delivery.sh"
 # shellcheck source=tests/pr-body.sh
@@ -1963,6 +1970,10 @@ source "$ROOT/tests/task.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in capacity_load capacity_memory capacity_award capacity_start capacity_headroom capacity_task autofill_submit autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence qa_merge_commit_event; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
 for name in land_merged land_merged_recorded_pr land_merged_recorded_done land_merged_mismatch land_merged_base_mismatch land_merged_cleanup_retry land_merged_dirty land_merged_checks land_worker_rule appserver_land_merged_active appserver_land_merged_timeout appserver_land_merged_failed appserver_land_merged_system_error; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi

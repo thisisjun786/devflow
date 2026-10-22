@@ -13,6 +13,8 @@ source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/manager.sh
 source "$DV_ROOT/lib/manager.sh"
+# shellcheck source=lib/autofill.sh
+source "$DV_ROOT/lib/autofill.sh"
 # shellcheck source=lib/stall.sh
 source "$DV_ROOT/lib/stall.sh"
 # shellcheck source=lib/stack.sh
@@ -274,6 +276,7 @@ watch_stall() {
     "$DV_HOST:watcher-stuck:$$:$cursor:$stall_started"; then stall_reported=1; fi
 }
 while [ ! -e "$DV_HOME/stop" ]; do
+  autofill_sweep=0
   reap
   qa_recover
   pulls
@@ -300,7 +303,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   fi
   # Frequent stall scans must not shorten the self-update safety interval.
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then
-    last_scan=$(now); update_requested=1
+    last_scan=$(now); update_requested=1; autofill_sweep=1
   fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   available=$(wc -l < "$DV_HOME/kick.q")
@@ -312,18 +315,21 @@ while [ ! -e "$DV_HOME/stop" ]; do
     if ! id=$(printf '%s\n' "$line" | jq -er '.id | select(type=="string")'); then
       printf 'invalid queue line %s\n' "$((cursor + 1))" >> "$DV_HOME/watch.log"
     elif ! grep -Fxq -- "$id" "$DV_HOME/seen" && ! pending_event "$id"; then
+      # Existing queue receipts release slots before filling them again.
+      if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then stall_reason='bid_event failed'; break; fi
       if [ "$(jq -r .kind <<< "$line")" = landed ]; then
         if ! qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1; then stall_reason='qa_enqueue failed'; break; fi
       fi
-      # Deterministic scheduling is driven by this existing queue, never a bid poll.
-      if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then stall_reason='bid_event failed'; break; fi
+      autofill_event "$line" >> "$DV_HOME/autofill.log" 2>&1 || true
       if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then stall_reason='stack_landed_event failed'; break; fi
-      if [ "$(printf '%s\n' "$line" | jq -r .kind)" = submitted ]; then
+      case "$(jq -r .kind <<< "$line")" in
+      submitted|bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|pr-opened|pr-closed)
         metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
         continue
-      fi
+        ;;
+      esac
       prompt="$DV_HOME/workers/$(now)-$$-$cursor.prompt.md"
       cat "$DV_ROOT/templates/worker-prompt.md" > "$prompt"
       # Literal Markdown fences.
@@ -359,6 +365,9 @@ while [ ! -e "$DV_HOME/stop" ]; do
   retry_pending
   manager_dispatch
   qa_dispatch
+  # One existing, slow reconciliation sweep backs up committed event hooks.
+  # Idle queue ticks do not query GitHub or hosts for autofill.
+  if [ "$autofill_sweep" = 1 ]; then autofill_tick >> "$DV_HOME/autofill.log" 2>&1 || true; fi
   # All events have durable cursor/pending state. Never run EXIT cleanup here:
   # workers, manager turns, QA and pull streams keep their existing handles.
   if [ ! -e "$DV_HOME/stop" ]; then

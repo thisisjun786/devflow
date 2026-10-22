@@ -109,10 +109,32 @@ bid_settings() {
   [[ "$DV_BID_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_BID_TIMEOUT must be a positive integer'
   [[ "$DV_AWARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_AWARD_TIMEOUT must be a positive integer'
   [[ "$DV_MIN_MEMORY_MB" =~ ^[0-9]+$ ]] || fail 'DV_MIN_MEMORY_MB must be a nonnegative integer'
+  [[ "$DV_TARGET_LOAD" =~ ^[0-9]+([.][0-9]+)?$ ]] &&
+    jq -en --argjson target "$DV_TARGET_LOAD" '$target>0' >/dev/null || fail 'DV_TARGET_LOAD must be positive'
+}
+bid_capacity() {
+  local resources=$1 active=$2 ceiling=$DV_MAX_JOBS
+  bid_settings
+  [ -n "$ceiling" ] || ceiling=$(jq '[1,(.cores/8|floor)]|max' <<< "$resources")
+  [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
+  # Reserve against measured headroom, including admitted slots whose load or
+  # memory usage may not have appeared in the host sample yet. Never kill jobs
+  # when a later sample lowers capacity below the existing active count.
+  jq --argjson ceiling "$ceiling" --argjson active "$active" --argjson target "$DV_TARGET_LOAD" \
+    --argjson memory "$DV_MIN_MEMORY_MB" '
+    . + {max_jobs:$ceiling,active:$active,target_load:$target,
+      load_slots:([0,(.cores*$target-.load5|floor)]|max),
+      memory_slots:(if $memory==0 then $ceiling else (.memory_available_mb/$memory|floor) end)} |
+    .effective_slots=([.max_jobs,.load_slots,.memory_slots]|min) |
+    .capacity=.effective_slots | .free_slots=([0,(.capacity-.active)]|max) |
+    .capacity_reason=(if .memory_available_mb<$memory then "low memory"
+      elif .active>=.max_jobs then "full"
+      elif .load_slots<=.active then "high load"
+      elif .memory_slots<=.active then "low memory" else "" end)' <<< "$resources"
 }
 cmd_bid() {
   bid_settings
-  local repo='' agent=$DV_AGENT json=0 resources capacity active ready=false backend=false trust=true root
+  local repo='' agent=$DV_AGENT json=0 resources ready=false backend=false trust=true root
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -122,10 +144,7 @@ cmd_bid() {
     esac
   done
   case "$agent" in codex|claude|devin) ;; *) fail 'unknown agent' ;; esac
-  resources=$(bid_resources); capacity=$DV_MAX_JOBS
-  [ -n "$capacity" ] || capacity=$(printf '%s' "$resources" | jq '[1,(.cores/8|floor)]|max')
-  [[ "$capacity" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
-  active=$(bid_active)
+  resources=$(bid_capacity "$(bid_resources)" "$(bid_active)") || return 1
   bid_repo "$repo"
   [ -n "$repo" ] || BID_REPO_OK=true
   if bid_agent "$agent"; then ready=true; fi
@@ -140,12 +159,12 @@ cmd_bid() {
   fi
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
-    --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" --argjson min_disk "$DV_MIN_DISK_GB" \
-    '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready,capacity:$capacity,active:$active,free_slots:([0,($capacity-$active)]|max)} |
+    --argjson min_disk "$DV_MIN_DISK_GB" \
+    '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready} |
     ([.disk_available_gb,.cache_disk_available_gb]|map(select(.!=null))|min) as $disk |
-    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
+    .reason=(if .free_slots==0 then .capacity_reason elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
     .status=(if .reason=="" then "submitted" else "rejected" end) |
-    .score=(100*.free_slots/.capacity - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
+    .score=(100*.free_slots/([1,.capacity]|max) - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
       (if $min_disk>0 and $disk!=null then [0,20*(2*$min_disk-$disk)/$min_disk]|max else 0 end))' |
     if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason]|@tsv'; fi
 }
@@ -194,6 +213,7 @@ cmd__submit() {
 }
 cmd_queue() {
   if [ "$DV_HOST" != "$DV_MANAGER_HOST" ]; then bid_rpc "$DV_MANAGER_HOST" queue "$@"; return; fi
+  if [ "${1:-}" = --summary ]; then shift; autofill_summary "$@"; return; fi
   local issue='' json=0 arg path
   for arg in "$@"; do case "$arg" in --json) json=1 ;; *) [ -z "$issue" ] || fail 'one issue only'; valid_issue "$arg"; issue=$arg ;; esac; done
   { for path in "$DV_HOME"/submissions/*/task.json; do
@@ -292,7 +312,7 @@ cmd__award() (
   [ -z "$base" ] || args+=(--base "$base")
   if [ "$rc" = 0 ] && [ "$(now)" -lt "$deadline" ]; then
     # The wrapper writes agent.started only after startup has been confirmed.
-    DV_AWARD_TOKEN="$token" "$DV_ROOT/bin/dv" "${args[@]}" >&2 || rc=$?
+    DV_ADMISSION_OWNER="$$" DV_AWARD_TOKEN="$token" "$DV_ROOT/bin/dv" "${args[@]}" >&2 || rc=$?
   else rc=1; fi
   while [ "$rc" = 0 ] && [ "$(now)" -lt "$deadline" ]; do
     if [ -f "$DV_STATE/$issue/agent.exit" ]; then
@@ -336,6 +356,19 @@ bid_hosts() {
     case "$host" in gos|gos-linux) printf '%s\n' "$host" ;; esac
   done
 }
+bid_publish_change() {
+  [ -n "$DV_AUTOFILL_REPOS" ] || return 0
+  local repo=$1 bids=$2 dir="$DV_HOME/autofill/bids" key tmp
+  mkdir -p "$dir"
+  key=$(printf '%s' "$repo" | cksum | awk '{print $1 "-" $2}')
+  tmp=$(mktemp "$dir/.bid.XXXXXX") || return 1
+  jq 'map({host,status,capacity:(.effective_slots // .capacity),active,free_slots,reason}) | sort_by(.host)' "$bids" > "$tmp" || { rm -f "$tmp"; return 1; }
+  if [ -f "$dir/$key.json" ] && cmp -s "$tmp" "$dir/$key.json"; then rm "$tmp"; return 0; fi
+  mv "$tmp" "$dir/$key.json"
+  # A committed change to schedulable capacity is an event. Scores/load noise
+  # alone cannot form a feedback loop, and the public bid command stays read-only.
+  "$DV_ROOT/bin/dv-kick" bid-changed FLEET "$repo" "$DV_HOST"
+}
 bid_schedule_one() {
   local dir=$1 host repo agent bids rows row token deadline reply rc status rank hosts
   bid_settings
@@ -373,6 +406,7 @@ bid_schedule_one() {
   # Keep scores within each group, but never let gos outrank the manager.
   jq -s 'sort_by((if .host=="gos" or .host=="gos-linux" then 2 else .manager end),-(.score//0),.rank,.host)' "$bids" > "$dir/bids.json" || return
   rm "$bids"
+  bid_publish_change "$repo" "$dir/bids.json" || return
   rows=$(jq -c '.[]|select(.status=="submitted")' "$dir/bids.json")
   while IFS= read -r row; do
     [ -n "$row" ] || continue

@@ -17,7 +17,7 @@ cmd_start() {
   REPO=$(cd "$1" && git rev-parse --show-toplevel); ISSUE=$2; local slug=$3
   shift 3; valid_issue "$ISSUE"
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || fail 'invalid slug'
-  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref lower start_sha
+  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref lower start_sha capacity own_admission=0
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || fail "missing value for $1"
     case "$1" in
@@ -76,6 +76,19 @@ cmd_start() {
   start_sha=$(git -C "$REPO" rev-parse --verify "$ref^{commit}")
   lower=$(printf '%s' "$ISSUE" | tr '[:upper:]' '[:lower:]')
   BRANCH="$agent/$lower-$slug"; WT="$DV_WORK/$(basename "$REPO")-$ISSUE"
+  # An award holds admission across clone/start. A direct start must take the
+  # same lock; a token alone cannot bypass it. Recheck after the Git fetch.
+  if [ -n "${DV_AWARD_TOKEN:-}" ] && [ -n "${DV_ADMISSION_OWNER:-}" ] &&
+    [ "$(cat "$DV_STATE/.admission-lock/owner" 2>/dev/null)" = "$DV_ADMISSION_OWNER" ] &&
+    jq -e --arg token "$DV_AWARD_TOKEN" '.token==$token' "$DV_STATE/.awards/$ISSUE/request.json" >/dev/null 2>&1; then
+    own_admission=0
+  else
+    owned_lock "$DV_STATE/.admission-lock" "$$" || fail 'host admission busy'
+    own_admission=1
+    trap 'owned_unlock "$DV_STATE/.admission-lock" "$$"' EXIT
+  fi
+  capacity=$(bid_capacity "$(bid_resources)" "$(bid_active)") || return 1
+  jq -e '.free_slots>0' <<< "$capacity" >/dev/null || fail "host has no free slots: $(jq -r .capacity_reason <<< "$capacity")"
   start_worktree "$start_sha"
   cat "$DV_ROOT/templates/rules.md" > "$S/brief.md"
   printf '\nIssue: %s\nWorktree: %s\nReport: %s/report.md\n\n' "$ISSUE" "$WT" "$S" >> "$S/brief.md"
@@ -85,6 +98,7 @@ cmd_start() {
     --arg host "$DV_HOST" --arg backend "$BACKEND" --arg token "${DV_AWARD_TOKEN:-}" --argjson started "$(now)" \
     '{issue:$issue,repo:$repo,worktree:$worktree,branch:$branch,base:$base,start_head:$start_head,agent:$agent,mode:$mode,slug:$slug,host:$host,started:$started,backend:$backend,status:"running"} +
     (if $token=="" then {} else {award_token:$token} end)' > "$S/meta"
+  if [ "$own_admission" = 1 ]; then owned_unlock "$DV_STATE/.admission-lock" "$$"; trap - EXIT; fi
   : > "$S/log"
   if ! launch_agent; then
     meta_set '.status="start-failed"'
