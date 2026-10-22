@@ -4,6 +4,12 @@ mkdir "$CASE_DIR/qa-active" || { touch "$CASE_DIR/qa-overlap"; exit 1; }
 trap 'rmdir "$CASE_DIR/qa-active"' EXIT
 jq -cn --args '{args:$ARGS.positional}' -- "$@" > "$CASE_DIR/qa-command"
 jq -c '{head,issue,worktree}' "$DV_STATE/$DV_ISSUE/meta" >> "$CASE_DIR/qa-runs"
+if [ "${DV_QA_CAPACITY:-0}" = always ] || { [ "${DV_QA_CAPACITY:-0}" = 1 ] && [ ! -f "$CASE_DIR/qa-capacity-seen" ]; }; then
+  touch "$CASE_DIR/qa-capacity-seen"
+  printf '{"type":"thread.started","thread_id":"qa-thread"}\n'
+  printf '{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again at Oct 27th, 2026 3:34 PM."}}\n'
+  exit 1
+fi
 while [ ! -f "$CASE_DIR/qa-release" ]; do sleep 0.1; done
 if [ "${DV_QA_FINDING:-0}" = 1 ]; then
   printf '{"title":"Cannot start a conversation","kind":"bug","steps":"Open the TUI and type hello","expected":"A response","actual":"No response","evidence":"Synthetic transcript: no response"}\n' > "$DV_STATE/$DV_ISSUE/finding.json"
