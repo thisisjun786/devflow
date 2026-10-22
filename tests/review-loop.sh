@@ -317,3 +317,140 @@ case_review_summary_complete_low() {
   jq -e '.review.clean and .review.id==1 and (.review.low|length)==1' "$CASE_DIR/result"
   test -f "$GH_STUB_DIR/followup"
 }
+
+review_receipt_set() {
+  local head=$1
+  jq -n --arg head "$head" '[{id:20,user:{login:"chatgpt-codex-connector[bot]"},
+    created_at:"2026-10-22T04:00:00Z",updated_at:"2026-10-22T04:00:00Z",
+    body:("<!-- codex-review-receipt:v1 -->\nCodex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `"+$head+"`")} ]' > "$GH_STUB_DIR/receipt"
+}
+review_receipt_parse() (
+  local head=$1
+  jq -n --slurpfile reviews "$GH_STUB_DIR/reviews" --slurpfile comments "$GH_STUB_DIR/issue-comments" \
+    --slurpfile inline "$GH_STUB_DIR/comments" \
+    '{reviews:$reviews[0],issue_comments:$comments[0],inline_comments:$inline[0]}' > "$CASE_DIR/snapshot"
+  DV_REVIEW_BOTS=codex
+  source "$ROOT/lib/pr-review.sh"
+  review_parse "$CASE_DIR/snapshot" "$head" > "$CASE_DIR/result"
+  cat "$CASE_DIR/result"
+)
+case_review_receipt() {
+  # Synthetic version of the receipt-only PR #188 at head 2a4c2d9.
+  local head=2a4c2d9000000000000000000000000000000000000 length
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
+  printf '[]\n' > "$GH_STUB_DIR/comments"
+  for length in 7 10 40; do
+    review_receipt_set "${head:0:length}"
+    cp "$GH_STUB_DIR/receipt" "$GH_STUB_DIR/issue-comments"
+    review_receipt_parse "$head"
+    jq -e '.exists and .clean and .source=="receipt" and .high==[]' "$CASE_DIR/result"
+    # Unresolved flags and inline comments carried from an older head cannot
+    # hide a newer clean receipt for this head.
+    review_summary_set "$head" completed true
+    jq -s 'add' "$GH_STUB_DIR/issue-comments" "$GH_STUB_DIR/receipt" > "$CASE_DIR/comments"
+    mv "$CASE_DIR/comments" "$GH_STUB_DIR/issue-comments"
+    printf '[{"id":101,"commit_id":"old-head","pull_request_review_id":1,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"[P1] Old head"}]\n' > "$GH_STUB_DIR/comments"
+    review_receipt_parse "$head"
+    jq -e '.exists and .clean and .source=="receipt" and .findings==[]' "$CASE_DIR/result"
+  done
+}
+case_review_receipt_guards() {
+  local head=2a4c2d9000000000000000000000000000000000000 variant
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
+  printf '[]\n' > "$GH_STUB_DIR/comments"
+  for variant in old short long suffix human other_bot marker message commit timestamp finding; do
+    review_receipt_set "${head:0:7}"
+    case "$variant" in
+      old) review_receipt_set deadbee ;;
+      short) review_receipt_set "${head:0:6}" ;;
+      long) review_receipt_set "${head}0" ;;
+      suffix) review_receipt_set "${head:0:7}z" ;;
+      human) jq '.[0].user.login="codex-user"' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt" ;;
+      other_bot) jq '.[0].user.login="devin-ai-integration[bot]"' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt" ;;
+      marker) jq '.[0].body|=sub("codex-review-receipt:v1";"unrelated")' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt" ;;
+      message) jq '.[0].body|=sub("major issues";"review completed")' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt" ;;
+      commit) jq '.[0].body|=sub("Reviewed commit";"Previous commit")' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt" ;;
+      timestamp) jq '.[0]|=del(.created_at,.updated_at)' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt" ;;
+      finding) jq '.[0].body+="\n[P1] Unresolved blocker"' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt" ;;
+    esac
+    if [ -f "$CASE_DIR/receipt" ]; then mv "$CASE_DIR/receipt" "$GH_STUB_DIR/receipt"; fi
+    cp "$GH_STUB_DIR/receipt" "$GH_STUB_DIR/issue-comments"
+    review_receipt_parse "$head"
+    jq -e '(.exists|not) and (.clean|not)' "$CASE_DIR/result"
+  done
+}
+case_review_receipt_findings() {
+  review_fixture
+  local head source severity time
+  head=$(git -C "$REPO" rev-parse HEAD)
+  for source in rest inline summary; do
+    for severity in P0 P1; do
+      # Real current-head findings remain visible even with a newer receipt.
+      for time in 2026-10-22T02:00:00Z 2026-10-22T05:00:00Z; do
+        review_set 1 ''
+        review_summary_set "$head" completed true
+        case "$source" in
+          rest) jq --arg p "$severity" '.[0].body="["+$p+"] Current head blocker"' "$GH_STUB_DIR/reviews" > "$CASE_DIR/reviews"; mv "$CASE_DIR/reviews" "$GH_STUB_DIR/reviews" ;;
+          inline) review_set 1 "$severity" ;;
+          summary) jq --arg p "$severity" '.[0].body+="\n["+$p+"] Current head blocker"' "$GH_STUB_DIR/issue-comments" > "$CASE_DIR/comments"; mv "$CASE_DIR/comments" "$GH_STUB_DIR/issue-comments" ;;
+        esac
+        jq '.[0].submitted_at="2026-10-22T03:00:00Z"' "$GH_STUB_DIR/reviews" > "$CASE_DIR/reviews"
+        mv "$CASE_DIR/reviews" "$GH_STUB_DIR/reviews"
+        review_receipt_set "${head:0:7}"
+        jq --arg time "$time" '.[0].created_at=$time | .[0].updated_at=$time' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt"
+        jq -s 'add' "$GH_STUB_DIR/issue-comments" "$CASE_DIR/receipt" > "$CASE_DIR/comments"
+        mv "$CASE_DIR/comments" "$GH_STUB_DIR/issue-comments"
+        review_receipt_parse "$head"
+        jq -e --arg p "$severity" '.exists and (.clean|not) and .high[0].severity==$p' "$CASE_DIR/result"
+      done
+    done
+  done
+  # A newer incomplete or opaque summary cannot be satisfied by an old receipt.
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
+  printf '[]\n' > "$GH_STUB_DIR/comments"
+  for source in completed running; do
+    review_summary_set "$head" "$source" true
+    review_receipt_set "${head:0:7}"
+    jq '.[0] |= (.created_at="2026-10-22T02:00:00Z" | .updated_at=.created_at)' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt"
+    jq -s 'add' "$GH_STUB_DIR/issue-comments" "$CASE_DIR/receipt" > "$CASE_DIR/comments"
+    mv "$CASE_DIR/comments" "$GH_STUB_DIR/issue-comments"
+    review_receipt_parse "$head"
+    jq -e '(.exists|not) and (.clean|not)' "$CASE_DIR/result"
+  done
+}
+case_review_receipt_wait() {
+  review_fixture
+  local head
+  head=$(git -C "$REPO" rev-parse HEAD)
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
+  review_summary_set "$head" completed true
+  review_receipt_set "${head:0:7}"
+  jq -s 'add' "$GH_STUB_DIR/issue-comments" "$GH_STUB_DIR/receipt" > "$CASE_DIR/comments"
+  mv "$CASE_DIR/comments" "$GH_STUB_DIR/issue-comments"
+  dv pr-wait P-1 --foreground > "$CASE_DIR/result" || { cat "$CASE_DIR/result"; return 1; }
+  jq -e '.green and .review.clean and .review_handled and (.review_timed_out|not) and (.blocked|not)' "$CASE_DIR/result"
+  ! grep -q '^pr comment ' "$GH_STUB_DIR/calls"
+  dv 'done' P-1
+  jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/P-1/done.json"
+}
+case_review_receipt_arrives() {
+  review_fixture
+  local head waiter attempt
+  head=$(git -C "$REPO" rev-parse HEAD)
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
+  review_summary_set "$head" completed true
+  DV_REVIEW_WAIT=30 dv pr-wait P-1 --foreground > "$CASE_DIR/result" & waiter=$!
+  # Publish only after the waiter has observed the missing review and persisted
+  # its first deadline. An atomic rename keeps the gh snapshot well-formed.
+  for attempt in {1..100}; do
+    if [ -s "$DV_STATE/P-1/pr-loop.json" ]; then break; fi
+    sleep 0.1
+  done
+  review_receipt_set "${head:0:7}"
+  jq -s 'add' "$GH_STUB_DIR/issue-comments" "$GH_STUB_DIR/receipt" > "$CASE_DIR/comments"
+  mv "$CASE_DIR/comments" "$GH_STUB_DIR/issue-comments"
+  wait "$waiter" || { cat "$CASE_DIR/result"; return 1; }
+  jq -e --arg head "$head" '.requests[$head].retried==false and .review_handled' "$DV_STATE/P-1/pr-loop.json"
+  jq -e '.green and .review.clean and (.review_timed_out|not) and (.blocked|not)' "$CASE_DIR/result"
+  ! grep -q '^pr comment ' "$GH_STUB_DIR/calls"
+}

@@ -44,6 +44,14 @@ review_parse() {
       (try ((.body | capture("<!-- codex-review-state:v1 (?<json>.*?) -->";"s").json | fromjson).code_review) catch empty) as $state |
       select($state!=null and $state.commit_sha==$head) | {comment:$comment,state:$state}] |
     sort_by(.comment.updated_at,.comment.id) | last as $summary |
+    [$snapshot.issue_comments[]? | select((.user.login // "" | bot) and
+      ((.body // "") | contains("<!-- codex-review-receipt:v1 -->") and
+        contains("Codex Review: Didn\u0027t find any major issues"))) |
+      . as $comment | (.body | split("\n")[] |
+        capture("^\\*\\*Reviewed commit:\\*\\*[[:blank:]]+`(?<sha>[0-9a-fA-F]{7,40})`[[:space:]]*$").sha) as $sha |
+      select($head | startswith($sha | ascii_downcase)) |
+      $comment | select((.updated_at // .created_at // "")!="" and ([findings("receipt")]|length)==0)] |
+    sort_by((.updated_at // .created_at),.id) | last as $receipt |
     ($summary!=null and ($rest==null or ($summary.comment.updated_at // "")>=($rest.submitted_at // ""))) as $fresh |
     (if $fresh and $summary.state.status=="completed" and $summary.state.has_any_findings==true and
        ($summary.state.has_unresolved_findings|type)=="boolean" then
@@ -62,9 +70,17 @@ review_parse() {
     [($review | select(.!=null) | findings("summary")),
      ($snapshot.inline_comments[]? | select($review!=null and .commit_id==$head and .pull_request_review_id==$review.id and
        .user.login==$review.user.login) | findings("inline"))] as $findings |
+    # Clean receipts fill the REST gap only after the latest review activity.
+    # Keep actual current-head findings; stale summary flags alone are not findings.
+    (if $receipt!=null and ($findings|length)==0 and
+        ($receipt.updated_at // $receipt.created_at)>($rest.submitted_at // "") and
+        ($receipt.updated_at // $receipt.created_at)>($summary.comment.updated_at // "") then
+       $receipt + {id:("receipt-"+($receipt.id|tostring)),source:"receipt"}
+     else $review end) as $review |
     {id:($review.id // null),head:$head,
      exists:($review!=null and
-       (($fresh and $summary.state.has_any_findings==true and ($findings|length)==0)|not)),
+       ($review.source=="receipt" or
+         (($fresh and $summary.state.has_any_findings==true and ($findings|length)==0)|not))),
      source:($review.source // "review"),summary:($review.body // $summary.comment.body // ""),findings:$findings,
      high:[$findings[] | select(.severity=="P0" or .severity=="P1")],
      low:[$findings[] | select(.severity=="P2" or .severity=="P3")]} |
