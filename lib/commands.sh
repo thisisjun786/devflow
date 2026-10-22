@@ -109,15 +109,32 @@ launch_agent() {
       if [ "${1:-}" = --revived ]; then herdr_clean || return 1; fi
       herdr_start "$launcher"
     fi
-  elif [ "${1:-}" = --revived ] && tmux_dv has-session -t "=$SESSION" 2>/dev/null; then
-    # A retained dead pane needs no kill/force option.
-    tmux_dv respawn-pane -t "$SESSION:0.0" -c "$WT" "$launcher"
-  else tmux_dv new-session -d -s "$SESSION" -c "$WT" "$launcher"; fi
+  else
+    if [ "${1:-}" = --revived ] && tmux_dv has-session -t "=$SESSION" 2>/dev/null; then
+      # A retained dead pane needs no kill/force option.
+      tmux_dv respawn-pane -t "$SESSION:0.0" -c "$WT" "$launcher" || return 1
+    else
+      tmux_dv new-session -d -s "$SESSION" -c "$WT" "$launcher" || return 1
+    fi
+    # tmux can return zero even when its server could not create the socket.
+    tmux_dv has-session -t "=$SESSION" 2>/dev/null || {
+      # A fast wrapper may already have completed and closed its session.
+      # Revivals retain old done.json, so require this revival's completion.
+      if [ "$(cat "$S/agent.exit" 2>/dev/null)" = 0 ] && [ -s "$S/done.json" ]; then
+        if [ "${1:-}" != --revived ] ||
+          { [ -s "$S/revive/id" ] && cmp -s "$S/revive/id" "$S/revive/done"; }; then
+          return 0
+        fi
+      fi
+      printf 'dv: tmux session %s is missing after startup\n' "$SESSION" >&2
+      return 1
+    }
+  fi
 }
 run_agent() {
   load_issue "$1"; require_worktree; cd "$WT" || exit
   export DV_ISSUE="$ISSUE"
-  local agent mode override instruction rc=0 sentinel='' helper='' revived=0
+  local agent mode override instruction rc=0 sentinel='' helper='' revived=0 original_instruction
   [ "${2:-}" != --revived ] || revived=1
   [ "$BACKEND" = exec ] || printf '%s\n' "$$" > "$S/agent.pid"
   agent=$(jq -r .agent "$S/meta"); mode=$(jq -r .mode "$S/meta")
@@ -142,13 +159,20 @@ run_agent() {
   else
     [[ "$DV_BLOCKED_GRACE" =~ ^[1-9][0-9]*$ ]] || fail 'DV_BLOCKED_GRACE must be a positive integer'
     herdr_question_sentinel >> "$S/question.log" 2>&1 & sentinel=$!
-    trap 'stop_question_sentinel' EXIT
+    trap 'capacity_terminal_stop; stop_question_sentinel' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
   fi
+  # Preserve terminal input/output and supervise waits without consuming revive.
+  trap 'capacity_terminal_stop; stop_question_sentinel' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  original_instruction=$instruction
+  printf '%s\n' "$$" > "$S/capacity-supervisor.pid"
+  while :; do
+  rc=0
   if [ -n "$override" ]; then
-    [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
-    bash -c "$override" || rc=$?
+    capacity_terminal_run 1 bash -c "$override" || rc=$?
   else
     local args=()
     case "$agent" in
@@ -174,13 +198,12 @@ run_agent() {
         if [ "$BACKEND" = tmux ] && [ "$DV_CODEX_DISABLE_HOOKS" = 1 ]; then args+=(--disable hooks); fi
         [ "$DV_CODEX_DISABLE_CRW" != 1 ] || args+=(-c 'plugins."crw@crw".enabled=false')
         if [ "$mode" = exec ]; then
-          [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
           args+=(exec)
           [ "$KIND" != task ] || args+=(--skip-git-repo-check)
-          "${args[@]}" "$instruction" || rc=$?
+          capacity_terminal_run 1 "${args[@]}" "$instruction" || rc=$?
         else
           inject_goal "$instruction" & helper=$!
-          "${args[@]}" || rc=$?
+          capacity_terminal_run 0 "${args[@]}" || rc=$?
           stop_question_sentinel
           wait "$helper" || true
         fi ;;
@@ -190,22 +213,26 @@ run_agent() {
         elif ! claude_onboarding | jq -e '.hasCompletedOnboarding and .skipDangerousModePermissionPrompt' >/dev/null; then
           agent_start_failed 'Claude onboarding incomplete: 기기에서 claude를 한 번 대화형으로 실행해 온보딩을 끝내라 (--dangerously-skip-permissions 경고 포함)' ''; rc=1
         else
-          [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
           args=("$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --effort "$DV_CLAUDE_EFFORT" --dangerously-skip-permissions)
           [ "$DV_AGENT_QUESTIONS" != off ] || args+=(--disallowedTools AskUserQuestion)
-          "${args[@]}" -- "$instruction" || rc=$?
+          capacity_terminal_run 1 "${args[@]}" -- "$instruction" || rc=$?
         fi ;;
       devin)
-        [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
         accept_devin_trust & helper=$!
-        "$DV_DEVIN_BIN" --model "$DV_DEVIN_MODEL" --permission-mode dangerous -- "$instruction" || rc=$?
+        capacity_terminal_run 1 "$DV_DEVIN_BIN" --model "$DV_DEVIN_MODEL" --permission-mode dangerous -- "$instruction" || rc=$?
         stop_question_sentinel
         wait "$helper" || true ;;
     esac
   fi
+  [ "$rc" = 75 ] || break
+  instruction="Continue the interrupted request in this worktree. Preserve existing changes. The original request follows:
+$original_instruction"
+  export DV_AGENT_INSTRUCTION="$instruction"
+  done
   stop_question_sentinel
   trap - EXIT INT TERM
   printf '%s\n' "$rc" > "$S/agent.exit"
+  if jq -e '.status=="blocked" and .capacity!=null' "$S/meta" >/dev/null; then return "$rc"; fi
   if [ "$KIND" = task ] && [ "$mode" = exec ] && [ "$rc" = 0 ]; then
     task_exec_done "$revived"; return
   fi
@@ -293,7 +320,7 @@ wait_codex_goal() {
           retried=1
           session_enter || true
         fi
-      elif printf '%s\n' "$screen" | grep -Eq '(^|[•*][[:space:]]+)Pursuing goal([[:space:]]|$)'; then
+      elif printf '%s\n' "$screen" | grep -Eq '(^|(•|[*])[[:space:]]+)Pursuing goal([[:space:]]|$)'; then
         [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
         return 0
       elif [ "$BACKEND" = herdr ] && agent=$(herdr_cmd agent get "$HERDR_PANE" 2>/dev/null) &&
@@ -399,6 +426,7 @@ cmd_done() {
     run=$(jq -r '.exec_run // empty' "$S/meta")
     [ -z "$run" ] || touch "$S/exec/$run/done"
   fi
+  capacity_clear
   meta_set --arg head "$head" --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" '.head=$head | .done_at=$done_at |
     (if $episode!="" then .done_episode=$episode else . end) |
     if $pr_complete then .status="ready"
@@ -439,7 +467,7 @@ cmd_kick() {
 }
 cmd_status() {
   local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
-  local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead
+  local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead provider_capacity
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   {
@@ -449,11 +477,20 @@ cmd_status() {
       alive=false; tmux_alive=false; agent_status=unknown; question_pending=false
       agent_dead=false
       goal_stalled=false; goal_active=false; agent_state_seq=null; agent_session=null
+      provider_capacity=false
       backend=$(jq -r '.backend // "tmux"' "$path")
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
       if [ "$backend" = appserver ]; then
-        info=$(appserver_status "$(jq -r .issue "$path")")
+        # A landed or cancelled job with no client is finished. Its thread no
+        # longer matters, and opening an App Server connection per old job made
+        # dv status (and the watcher's reconcile) grow with history.
+        if jq -e '.status=="landed" or .status=="cancelled"' "$path" >/dev/null &&
+          ! appserver_client_alive_at "$(dirname "$path")" "$(jq -r .issue "$path")"; then
+          info='{"agent_status":"gone","alive":false,"question_pending":false}'
+        else
+          info=$(appserver_status "$(jq -r .issue "$path")")
+        fi
         agent_status=$(printf '%s\n' "$info" | jq -r .agent_status)
         alive=$(printf '%s\n' "$info" | jq -r .alive)
         question_pending=$(printf '%s\n' "$info" | jq -r .question_pending)
@@ -492,7 +529,7 @@ cmd_status() {
         (load_issue "$(jq -r .issue "$path")"; agent_gone); then
         agent_dead=true
       fi
-      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" and .agent=="codex"' "$path" >/dev/null; then
+      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" or .status=="waiting-capacity"' "$path" >/dev/null; then
         screen=''
         if [ "$backend" = herdr ]; then
           screen=$(herdr_cmd pane read "$pane" --source visible 2>/dev/null) || screen=''
@@ -501,26 +538,29 @@ cmd_status() {
         fi
         # The most recent visible goal banner wins if the old one is still on
         # screen. Explicit activity also resets a tmux stall (no herdr hooks).
+        # Keep multibyte markers outside bracket expressions for LC_ALL=C.
         goal_state=$(printf '%s\n' "$screen" | awk '
-          /[Mm]odel is at capacity/ { state="stalled" }
-          /^[[:space:]│┃]*([•*][[:space:]]+)?Goal stalled([[:space:]:]|$)/ { state="stalled" }
-          /^[[:space:]│┃]*([•*][[:space:]]+)?(Pursuing goal|Working)([[:space:]:.]|$)/ { state="active" }
+          /^([[:space:]]|│|┃)*((•|[*])[[:space:]]+)?Goal stalled([[:space:]:]|$)/ { state="stalled" }
+          /^([[:space:]]|│|┃)*((•|[*])[[:space:]]+)?(Pursuing goal|Working)([[:space:]:.]|$)/ { state="active" }
           END { print state }')
         case "$goal_state" in stalled) goal_stalled=true ;; active) goal_active=true ;; esac
+        if printf '%s\n' "$screen" | capacity_screen_error; then provider_capacity=true; goal_stalled=true; goal_active=false; fi
       fi
       elapsed=$(( $(now) - $(jq -r .started "$path") ))
       # done_at can describe an earlier PR revision. Read the completion head
       # without changing metadata or the bidding code's historical done_at.
       done_head=$(jq -r '.head | select(type=="string")' "$(dirname "$path")/done.json" 2>/dev/null) || done_head=''
       row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" \
-        --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" --argjson agent_dead "$agent_dead" \
-        '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session}' "$path")
+        --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" --argjson agent_dead "$agent_dead" --argjson provider_capacity "$provider_capacity" \
+        '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session,capacity_detected:$provider_capacity}' "$path")
       if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
+      row=$(printf '%s\n' "$row" | jq -c '.capacity_retry_at=(.capacity.next_try_at // null) |
+        if .status=="waiting-capacity" then .agent_status="waiting-capacity" else . end')
       if [ "$backend" = exec ] && [ "$alive" = false ] && [ "$agent_status" = failed ]; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
       fi
       if [ "$json" = 1 ]; then printf '%s\n' "$row"
-      else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none") else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
+      else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none") else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
     done
   } | if [ "$json" = 1 ]; then jq -s .; else cat; fi
 }
@@ -629,14 +669,25 @@ cmd_send() {
 }
 cmd_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean ISSUE'; load_issue "$1"; issue_lock
-  clean_worktree
+  clean_worktree idle
   meta_set --argjson time "$(now)" '.cleaned_at=$time'
 }
 clean_worktree() {
   if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; fi
   if [ "$BACKEND" = appserver ]; then
-    appserver_require_idle
+    if [ "${1:-}" = merged-pr ]; then appserver_require_stopped
+    else appserver_require_idle; fi
     if appserver_alive; then kill "$(cat "$S/appserver/client.pid")"; fi
+    if [ "${1:-}" = merged-pr ]; then
+      local deadline
+      deadline=$(( $(now) + DV_APPSERVER_TIMEOUT ))
+      while appserver_alive; do
+        [ "$(now)" -lt "$deadline" ] || fail 'App Server client did not stop; worktree retained'
+        sleep 0.1
+      done
+      # The client may have written files after the initial clean check.
+      if [ -d "$WT" ]; then require_clean "$WT"; fi
+    fi
   elif [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'exec is still running; worktree retained'
   elif [ "$BACKEND" = herdr ]; then

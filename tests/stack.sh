@@ -244,11 +244,59 @@ case_stack_push_retry() {
   test "$(git -C "$DV_WORK/stack-2" rev-parse HEAD)" = "$(git --git-dir="$CASE_DIR/remote.git" rev-parse stack-2)"
   stack_green 2; dv land S-2
 }
+case_stack_dependencies_present() {
+  # A PR that already contains its merged dependencies lands as is. Merging a
+  # busy base on every attempt resets CI and the PR never lands.
+  stack_fixture; stack_pr 1 dev; dv land S-1
+  stack_pr 2 dev 'Depends on #1'
+  local before; before=$(git --git-dir="$CASE_DIR/remote.git" rev-parse stack-2)
+  printf 'unrelated\n' > "$REPO/unrelated"
+  git -C "$REPO" add unrelated; git -C "$REPO" commit -qm 'advance base'
+  git -C "$REPO" push -q origin dev
+  dv land S-2
+  test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
+  test "$(git --git-dir="$CASE_DIR/remote.git" rev-parse stack-2)" = "$before"
+}
+case_stack_dependencies_present_conflict() {
+  # Dependencies already present, but the base now conflicts: the conflict must
+  # still reach the agent instead of an unmergeable PR waiting forever.
+  needs_tmux
+  stack_fixture; stack_pr 1 dev; dv land S-1
+  stack_pr 2 dev 'Depends on #1'
+  printf 'base edit\n' > "$REPO/base"
+  git -C "$REPO" commit -qam 'advance base'
+  git -C "$REPO" push -q origin dev
+  printf 'child edit\n' > "$DV_WORK/stack-2/base"
+  git -C "$DV_WORK/stack-2" commit -qam 'conflicting child'
+  git -C "$DV_WORK/stack-2" push -q origin stack-2
+  local head; head=$(git -C "$DV_WORK/stack-2" rev-parse HEAD)
+  jq --arg head "$head" '.head=$head' "$DV_STATE/S-2/meta" > "$CASE_DIR/meta"; mv "$CASE_DIR/meta" "$DV_STATE/S-2/meta"
+  jq --arg head "$head" '.head=$head' "$DV_STATE/S-2/done.json" > "$CASE_DIR/done"; mv "$CASE_DIR/done" "$DV_STATE/S-2/done.json"
+  stack_green 2
+  jq '.backend="tmux"' "$DV_STATE/S-2/meta" > "$CASE_DIR/meta"; mv "$CASE_DIR/meta" "$DV_STATE/S-2/meta"
+  tmux -L "$DV_TMUX_SOCKET" new-session -d -s dv-S-2 'sleep 60'
+  if dv land S-2; then return 1; fi
+  wait_file "$DV_STATE/S-2/stack-conflict.sent"
+  git -C "$DV_WORK/stack-2" rev-parse --verify MERGE_HEAD
+  test "$(cat "$GH_STUB_DIR/order")" = 1
+}
 case_stack_defer() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 dev; stack_pr 3 stack-1 $'Depends on #1\nDepends on #2'
   stack_waiting 3; dv land S-1; stack_watch
-  sleep 2
-  local record
+  # A fixed sleep can inspect the initial enqueue before the worker has run.
+  # Wait for an actual stack attempt and its removal by the reaper instead.
+  local record prompt attempt attempted=false pending=true
+  for attempt in {1..200}; do
+    for prompt in "$DV_HOME"/workers/*.prompt.md; do
+      [ -f "$prompt" ] || continue
+      if grep -Fq '"kind":"stack-resume"' "$prompt" && [ -f "${prompt%.prompt.md}.log" ]; then attempted=true; fi
+    done
+    pending=false
+    for record in "$DV_HOME"/pending/stack-*.json; do [ ! -f "$record" ] || pending=true; done
+    if [ "$attempted" = true ] && [ "$pending" = false ]; then break; fi
+    sleep 0.1
+  done
+  test "$attempted" = true
   for record in "$DV_HOME"/pending/stack-*.json; do
     if [ -f "$record" ]; then
       printf 'BUG: unmerged dependency keeps a stack in the retry queue\n'; return 1

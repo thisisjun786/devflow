@@ -363,9 +363,46 @@ github_land_method() (
     else .allow_rebase_merge==true end' >/dev/null || fail "repository does not allow $method"
   printf '%s\n' "$method"
 )
+github_land_reconcile() {
+  local head=$1 recorded done_head='' tmp
+  recorded=$(jq -r '.head // empty' "$S/meta")
+  if [ -f "$S/done.json" ]; then done_head=$(jq -r '.head // empty' "$S/done.json"); fi
+  jq -e --arg head "$head" --arg recorded "$recorded" --arg done_head "$done_head" --arg base "$BASE" '
+    .state=="MERGED" and .baseRefName==$base and
+    (.headRefOid | type=="string" and test("^[0-9a-f]{40,64}$")) and
+    (.headRefOid==$head or .headRefOid==$recorded or .headRefOid==$done_head)
+  ' "$S/land-checks.json" >/dev/null || fail 'PR head/base/state mismatch'
+  checks_green "$S/land-checks.json" || fail 'all PR checks must be successful (empty, skipped, pending and failed checks refuse land)'
+  head=$(jq -r .headRefOid "$S/land-checks.json")
+  tmp=$(mktemp "$S/.land-result.XXXXXX")
+  cp "$S/land-checks.json" "$tmp"; mv "$tmp" "$S/land-result.json"
+  if [ "$(jq -r .status "$S/meta")" != landed ]; then metrics_note merged "$head"; fi
+  meta_set --arg head "$head" --argjson time "$(now)" \
+    '.status="landed" | .head=$head | .landed_at=(.landed_at // $time)'
+  # Only a verified merge may bypass the App Server idle guard. Cleanup can
+  # be retried after interruption, including after the worktree was removed.
+  clean_worktree merged-pr
+  if ! jq -se --arg head "$head" 'any(.[]; .kind=="landed" and .head==$head)' "$S/events.log" >/dev/null 2>&1; then
+    cmd_kick landed "$ISSUE" 'Landed'
+  fi
+}
 cmd_land() {
   [ "$#" -eq 1 ] || fail 'usage: dv land ISSUE'
-  load_issue "$1"; issue_lock; require_worktree; require_clean "$WT"
+  load_issue "$1"; issue_lock
+  local pr head='' method rc context=$WT
+  if [ -d "$WT" ] || [ "$(jq -r .status "$S/meta")" != landed ]; then
+    require_worktree; require_clean "$WT"
+    head=$(git -C "$WT" rev-parse HEAD)
+  else context=$REPO; fi
+  if is_github; then
+    pr=$(jq -er .url "$S/pr.json")
+    (cd "$context" && gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,state) > "$S/land-checks.json"
+    if [ "$(jq -r .state "$S/land-checks.json")" = MERGED ]; then
+      github_land_reconcile "$head"
+      return
+    fi
+  fi
+  require_worktree
   [ "$BACKEND" != appserver ] || appserver_require_idle
   if [ "$BACKEND" = exec ]; then
     ! codex_exec_alive "$S" || fail 'exec is still running; cannot land'
@@ -377,7 +414,6 @@ cmd_land() {
     fi
   fi
   if is_github; then
-    local pr head method rc
     pr=$(jq -er .url "$S/pr.json"); head=$(git -C "$WT" rev-parse HEAD)
     stack_land_gate "$pr" "$head" || { rc=$?; stack_conflict_send; return "$rc"; }
     head=$(git -C "$WT" rev-parse HEAD)

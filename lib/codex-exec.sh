@@ -84,16 +84,18 @@ codex_exec_events() {
     fi
     case "$kind" in
       error|turn.failed)
+        if printf '%s\n' "$event" | capacity_error; then exec_capacity=true; fi
         exec_reason=$(printf '%s\n' "$event" | jq -r '.message // .error.message // "codex error event"') ;;
       item.*)
         if printf '%s\n' "$event" | jq -e '.item.type=="error"' >/dev/null; then
+          if printf '%s\n' "$event" | capacity_error; then exec_capacity=true; fi
           exec_reason=$(printf '%s\n' "$event" | jq -r '.item.message // "codex error item"')
         fi ;;
     esac
   done < <(tail -n "+$((exec_line + 1))" "$S/agent.jsonl")
 }
 codex_exec_run() {
-  local instruction=$1 original_instruction=$1 exec_child='' exec_stopped_rc=0 exec_line exec_activity exec_reason rc session run
+  local instruction=$1 original_instruction=$1 exec_child='' exec_stopped_rc=0 exec_line exec_activity exec_reason rc session run stderr_line exec_capacity
   local args=()
   owned_lock "$S/.exec-lock" "$$" || fail 'exec wrapper already running'
   trap codex_exec_cleanup EXIT
@@ -107,7 +109,9 @@ codex_exec_run() {
     rm -f "$S/agent.exit"
     meta_set --arg run "$run" '.exec_run=$run | .exec_status="working" | (if .status=="pr" or .status=="ready" then . else .status="running" end) | del(.done_at,.cleaned_at,.failure_reason)'
     exec_activity=$(now); printf '%s\n' "$exec_activity" > "$S/agent.activity"
-    exec_reason=''; rc=0
+    exec_reason=''; rc=0; exec_capacity=false
+    touch "$S/agent.stderr"
+    stderr_line=$(wc -l < "$S/agent.stderr")
     if ! codex_environment; then
       exec_reason='codex provider environment is not ready'; rc=1
     else
@@ -145,6 +149,20 @@ codex_exec_run() {
       if [ "$rc" -ne 0 ]; then exec_reason="codex exec exited $rc"
       elif [ ! -f "$S/exec/$run/done" ]; then exec_reason='failed-to-finish: codex exec exited 0 without dv done'; fi
     fi
+    if [ "$exec_capacity" = true ] || printf '%s\n' "$exec_reason" | capacity_error ||
+      { [ "$rc" -ne 0 ] && tail -n "+$((stderr_line + 1))" "$S/agent.stderr" | capacity_error; }; then
+      printf '%s\n' "$exec_reason" > "$S/exec/$run/failure"
+      if capacity_wait; then
+        instruction="Continue the interrupted request in this worktree. Preserve existing changes. The original request follows:
+$original_instruction"
+        continue
+      fi
+      meta_set '.exec_status="blocked"'
+      printf '1\n' > "$S/agent.exit"
+      codex_exec_cleanup
+      return 1
+    fi
+    capacity_clear
     if [ -z "$exec_reason" ]; then
       meta_set '.exec_status="done" | del(.failure_reason)'
       printf '%s\n' "$rc" > "$S/agent.exit"

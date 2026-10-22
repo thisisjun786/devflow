@@ -13,9 +13,10 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_APPSERVER_SOCKET:=}" # empty uses Codex's existing default control socket
 : "${DV_APPSERVER_TIMEOUT:=10}" # bounded JSON-RPC response wait, seconds
 : "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds
-: "${DV_STALL_AFTER:=300}" # shared App Server / exec / idle / stalled threshold, positive seconds
+: "${DV_STALL_AFTER:=300}" # App Server / exec / idle / stalled / blocked queue cursor, positive seconds
 : "${DV_RECOVER_MAX:=3}" # App Server: maximum automatic recoveries per job
-: "${DV_CAPACITY_BACKOFF:=120}" # App Server: seconds before capacity/rate-limit recovery
+: "${DV_CAPACITY_BACKOFF:=120}" # first provider capacity wait; then 2.5x, 7.5x (repeated)
+: "${DV_CAPACITY_MAX_WAIT:=21600}" # provider capacity wait deadline in seconds (6 h)
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
 : "${DV_CLAUDE_BIN:=claude}"
@@ -54,7 +55,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_HERMES_BIN:=hermes}"
 : "${DV_WATCH_INTERVAL:=3}" # local queue read interval, seconds
 : "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
-: "${DV_MAX_WORKERS:=4}" # 1..4
+: "${DV_MAX_WORKERS:=4}" # 1..8 ordinary/fallback/QA workers; managers have separate slots
 : "${DV_RECONCILE_INTERVAL:=1800}" # status safety net seconds; capped at min(DV_STALL_AFTER, 60)
 : "${DV_METRICS_INTERVAL:=60}" # file/event activity sampling by dv-watch, seconds
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)
@@ -79,3 +80,4 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_QA:=0}" # 1: real-use QA after landed; .devflow on merged base may opt in/out
 : "${DV_QA_AGENT:=codex}" # codex exec or claude (fresh session)
 : "${DV_QA_AGENT_CMD:=}" # optional command receiving the QA prompt path
+: "${DV_MANAGER_LAST=1}" # 1: the manager host (lina-os) bids only after work hosts; 0: it competes on score like the others

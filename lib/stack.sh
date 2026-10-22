@@ -68,6 +68,18 @@ stack_land_gate() {
       return 75
     fi
   done
+  # A pushed head that already contains every dependency merge and still
+  # merges cleanly with the base needs no base update. Merging a moving base on
+  # each attempt resets CI so it never lands. A conflicting base keeps the
+  # update path so the conflict reaches the agent.
+  if [ "$current" = "$head" ] && [ "$(jq -r .status "$S/meta")" = ready ] && stack_completion "$head" &&
+    git -C "$WT" merge-tree --write-tree "$head" "$base_head" >/dev/null 2>&1; then
+    local present=1
+    for merge_commit in $merged_commits; do
+      git -C "$WT" merge-base --is-ancestor "$merge_commit" "$head" || { present=0; break; }
+    done
+    [ "$present" = 0 ] || return 0
+  fi
   # Preserve unfinished pr/running/waiting-base states. Only completion for
   # this episode can restore ready after waiting on a dependency.
   if stack_completion "$head"; then
