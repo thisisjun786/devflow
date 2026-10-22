@@ -1,6 +1,6 @@
 # devflow
 
-시온이 Linear 이슈를 잡고, 코딩 에이전트 하나가 worktree 하나에서 개발하는 작은 bash 도구입니다. 개발·자기 시험 → 리뷰 한 번 → P0·P1 수정 한 번 → CI/시험 통과 후 병합. 완료는 SSH 이벤트로 알립니다.
+시온이 이슈를 잡고, 코딩 에이전트 하나가 worktree 하나에서 개발하는 작은 bash 도구입니다. GitHub는 개발·시험 → CI 초록 → 현재 head의 Codex 리뷰 → P0·P1 수정·push·새 리뷰를 반복합니다. 최신 리뷰에 P0·P1이 없으면 병합하고 P2·P3은 후속 이슈로 남깁니다. 완료는 SSH 이벤트로 알립니다.
 
 ## 개발 외 task 작업
 
@@ -74,7 +74,7 @@ Claude 온보딩은 `check`의 텍스트 출력과 JSON의 `claude.onboarding`�
 ```bash
 dv start ~/code/my-app APP-42 fix-save --brief /path/brief.md
 # 에이전트: 개발·시험·커밋 → dv pr APP-42 → dv pr-wait APP-42 --foreground
-# CI 실패와 P0/P1 리뷰를 처리한 뒤 pr-wait APP-42 --foreground --review-handled → dv done APP-42
+# CI 초록 + 현재 head의 최신 Codex 리뷰에 P0/P1이 없을 때 dv done APP-42
 dv status APP-42
 # 시온: green done의 보고서·diff·시험을 이슈 완료 조건·범위와 대조
 dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야 함
@@ -104,7 +104,7 @@ exec의 `alive`는 래퍼 프로세스의 생존 여부입니다. 새 JSON 이�
 
 자동 재시도 중의 실패는 로그에 남기며, 재시도를 소진하면 `agent.exit`를 기록한 뒤 `failed`와 `blocked` 이벤트를 보냅니다. 스케줄러는 최종 `failed`로 제출 작업의 실패를 확인하고 대기 작업을 다시 입찰합니다. 에이전트의 `dv done` 이후에도 CLI가 실패할 수 있으므로, `dv land`는 병합 전에 exec 래퍼의 종료, 종료 코드 0, 감독 상태 `done`을 모두 확인합니다. 정상·실패 반환과 신호 종료 시 exec 잠금을 해제합니다.
 
-herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있습니다. `dv send`는 전달 실패 후 에이전트 종료가 확인되면 같은 worktree·브랜치·에이전트 종류·실행 모드로 한 번 자동 재시작합니다. 요청 문장을 첫 입력에 넣고 기존 brief·보고서 경로를 함께 전달합니다. 미커밋 변경과 PR, `review-fix.sent`는 보존하며 같은 수정 요청을 이어가므로 두 번째 리뷰 수정으로 세지 않습니다.
+herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있습니다. `dv send`는 전달 실패 후 에이전트 종료가 확인되면 같은 worktree·브랜치·에이전트 종류·실행 모드로 한 번 자동 재시작합니다. 요청 문장을 첫 입력에 넣고 기존 brief·보고서 경로를 함께 전달합니다. 미커밋 변경과 PR, `review-fix.sent`는 보존하며 기존 작업과 pr-loop.json의 회차 기록을 이어갑니다.
 
 tmux는 사라진 세션이나 종료된 pane을 확인하고, herdr는 `agent_not_found`와 래퍼 종료를 함께 확인합니다. pane이 사라졌어도 살아 있는 래퍼는 재시작하지 않으며 통신 오류, 감지 지연에도 재시작하지 않습니다. 기존 herdr pane이 있으면 재사용하고 없으면 같은 작업 폴더에 새 workspace를 만듭니다. `$DV_STATE/ISSUE/revive/`에 최초 요청과 이전 실행·완료 기록을 보존하며 이슈당 자동 재시작은 한 번입니다. 새 에이전트의 시작·실행이 실패하거나 goal이 새 `dv done` 없이 끝나면 `blocked` 이벤트를 한 번 보냅니다. 강제 종료로 래퍼까지 사라져 종료 처리가 실행되지 않았다면 다음 `dv send`가 종료를 확인해 차단을 알립니다. 이전 버전의 herdr 이슈에서 래퍼 PID와 종료 기록이 모두 없으면 `pane process-info`가 셸만 있는 전경 프로세스를 확인할 때 종료로 봅니다. 다른 명령이 실행 중이거나 프로세스 정보가 없거나 조회에 실패하면 재시작하지 않습니다.
 
@@ -131,7 +131,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv done ISSUE [--note TEXT]` | head·변경 파일 수·보고서 경로·완료 이벤트 |
 | `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작. 제목은 HEAD 커밋 제목. 상태 폴더의 `pr.md`(공개용 본문)를 그대로 쓰고, 없으면 짧은 보고서 요약으로 만든다 |
 | `dv polish ISSUE` | PR 본문 퇴고·코드/URL 보존 검증 후 본문만 갱신 |
-| `dv pr-wait ISSUE [--foreground [--review-handled]]` | foreground는 CI·리뷰·인라인 지적 JSON 반환. 처리 후 --review-handled로 기록. 기본 모드는 조기 종료 작업자 재개 안전망 |
+| `dv pr-wait ISSUE [--foreground [--review-handled]]` | foreground는 CI·리뷰·인라인 지적 JSON 반환. 현재 head의 최신 Codex 리뷰에 P0/P1이 없으면 처리 완료. 기본 모드는 조기 종료 작업자 재개 안전망 |
 | `dv review ISSUE` | 로컬 리뷰 출력과 횟수 저장 |
 | `dv land ISSUE` | PR 허용 방식 선택 / 로컬 시험 후 병합, worktree 정리 |
 | `dv status [ISSUE] [--json]` | 상태, 에이전트, 호스트, 경과, backend·생존·에이전트 상태, 마지막 로그 |
@@ -155,11 +155,13 @@ revive는 자동 재시작/exec 재시도 횟수, resume은 살아 있는 에이
 
 지표는 작업 호스트의 `$DV_STATE/ISSUE/metrics/`와 감시 호스트의 `$DV_HOME/metrics/`에 별도로 보존합니다. 기존 meta·설정은 교체하지 않습니다. 조회는 읽기 전용이며, 연결 불가·시간 초과인 호스트는 마지막 관측을 유지하므로 `observed_at`의 신선도를 확인하세요. 수집은 감시자의 자식 프로세스 하나가 호스트별 `DV_BID_TIMEOUT` 한도 안에서 실행하여 큐 처리를 기다리게 하지 않습니다. 감시자 재시작 때 살아 있는 수집자를 재사용하고, 정상 종료 때 수집자와 하위 프로세스를 종료합니다. 오류는 `metrics.log`에 남깁니다. 도입 전 이벤트·재개 횟수는 소급하지 않습니다.
 
-상태는 `$DV_STATE/ISSUE/`의 `meta`(JSON), `brief.md`, `log`, `report.md`, `done.json`, 리뷰·PR 결과입니다. GitHub의 done은 현재 head의 CI 성공과 리뷰 처리 기록을 확인하고 ready로 바꿉니다. done.json에 checks=green, review=handled를 기록하며 완료 이벤트 메시지에도 담습니다. pr-wait는 결과를 pr-ready.json에 저장하지만 관리자에게 pr-ready를 보내지 않습니다. land는 빈 체크·skipped·pending·실패·head 불일치를 모두 거절합니다. 원격 브랜치를 지우지 않으며 squash 후 로컬 브랜치도 조상이 아니면 보존합니다.
+상태는 `$DV_STATE/ISSUE/`의 `meta`(JSON), `brief.md`, `log`, `report.md`, `done.json`, 리뷰·PR 결과입니다. GitHub의 done은 현재 head의 CI 성공과 최신 Codex 리뷰의 P0·P1 0건을 다시 확인하고 ready로 바꿉니다. done.json에 checks=green, review=handled를 기록하며 완료 이벤트 메시지에도 담습니다. pr-wait는 결과를 pr-ready.json에 저장하지만 관리자에게 pr-ready를 보내지 않습니다. land도 현재 head의 최신 Codex 리뷰가 없거나 P0·P1이 남으면 거절합니다. 빈 체크·skipped·pending·실패·head 불일치를 모두 거절합니다. 원격 브랜치를 지우지 않으며 squash 후 로컬 브랜치도 조상이 아니면 보존합니다.
 
-작업자는 foreground 결과를 읽고 P0·P1 리뷰를 한 번 수정하며 review-fix.sent에 기록합니다. 처리 후 다음 push 전에 `--review-handled`로 마지막 스냅샷의 리뷰를 처리했다고 확인합니다. 이 기록이 있으면 후속 CI 수정에서 새 리뷰를 기다리지 않습니다. 리뷰 시간 초과도 결과와 보고서에 남깁니다. pr-loop.json은 리뷰 처리와 실패한 head를 보존하고, 서로 다른 head의 세 번째 CI 실패에서 blocked를 한 번 보냅니다. 관리자는 이슈 완료 조건·범위를 확인해 병합하며, 범위 누락만 한 번 보완 요청합니다.
+작업자는 foreground 결과의 review.high(P0/P1), review.low(P2/P3), summary와 inline_comments를 읽습니다. P0·P1을 수정·시험·커밋한 뒤 dv pr과 foreground 대기를 반복합니다. 첫 리뷰는 PR-open 자동 트리거, 이후 head는 devflow의 `@codex review` 댓글로 요청합니다. `DV_REVIEW_BOTS=codex`, `DV_REVIEW_ROUNDS=4`가 기본입니다. 같은 head 재조회는 회차를 늘리지 않으며, 상한에 P0·P1이 남으면 `review-rounds`와 열린 지적을 blocked로 보내 관리자가 처리합니다. `pr-loop.json`은 리뷰·CI 회차와 요청·시간 초과 기록을 보존합니다. 서로 다른 head의 세 번째 CI 실패도 차단합니다. `--review-handled`는 호환 옵션이며 현재 head의 깨끗한 리뷰만 인정합니다. 조상 head 리뷰나 시간 초과를 승인할 수 없습니다.
 
-PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 다시 확인합니다. 체크가 종료된 뒤 `DV_REVIEW_WAIT`의 봇 리뷰 제한 시간이 시작되므로, CI가 아예 없는 PR은 체크 등록을 계속 기다립니다. `dv pr`의 대기자는 Linux에서 `setsid`로 분리하며, `setsid`가 없는 환경에서는 Bash job control로 별도 프로세스 그룹을 만듭니다. `.pr-wait`의 PID 소유자가 죽었으면 다음 대기자가 잠금을 회수합니다. 30분 상태 안전망도 `pr` 상태의 호스트에서 대기자 생존을 확인하고 필요하면 다시 시작합니다.
+최종 리뷰의 P2·P3은 PR당 후속 이슈 하나로 같은 저장소·원 이슈와 같은 milestone에 기록합니다. 파일:줄·한 줄 지적과 `Depends on #<원 이슈>`를 본문에 적고 report.md와 PR 본문에 후속 번호를 남깁니다. 재실행 시 공개 마커로 기존 이슈를 찾아 중복 생성을 피합니다. P2·P3은 병합을 차단하지 않습니다.
+
+PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 다시 확인합니다. 체크가 초록이 된 뒤 `DV_REVIEW_WAIT`의 Codex 리뷰 제한 시간이 시작됩니다. 리뷰가 없으면 한 번 더 `@codex review`를 요청하고 같은 시간만큼 기다린 뒤 `review-timeout`으로 차단합니다. 시간 초과는 성공이 아닙니다. CI가 아예 없는 PR은 체크 등록을 계속 기다립니다. `dv pr`의 대기자는 Linux에서 `setsid`로 분리하며, `setsid`가 없는 환경에서는 Bash job control로 별도 프로세스 그룹을 만듭니다. `.pr-wait`의 PID 소유자가 죽었으면 다음 대기자가 잠금을 회수합니다. 30분 상태 안전망도 `pr` 상태의 호스트에서 대기자 생존을 확인하고 필요하면 다시 시작합니다.
 
 감시자는 작업자가 성공 종료한 이벤트만 `seen`에 기록합니다. 실패한 이벤트는 `$DV_HOME/pending/`에 보존하고 `DV_WORKER_RETRY`초(기본 15) 후 다시 실행하며, 재시작 후에도 이어집니다. 실행 중인 중복 이벤트는 한 작업자로 묶습니다. 작업자가 외부 작업을 끝내고 성공 기록 전에 죽으면 다시 실행될 수 있으므로 작업은 재실행을 견딜 수 있어야 합니다. 상태 안전망은 `done`과, `done_at`이 있고 완료 head가 현재 head와 같은 `pr/ready`의 완료 이벤트를 복구합니다. `dv status --json`의 `done_head`는 기존 `done.json`에서 읽으며, 완료 기록을 읽을 수 없으면 `null`입니다. 이전 완료 시각은 보존하므로 수정본의 `dv pr`이 작업 중 슬롯 계산을 바꾸지 않습니다.
 

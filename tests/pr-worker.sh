@@ -4,7 +4,7 @@ case_pr_worker_foreground() {
   pr_fixture
   printf '[{"body":"P1: fix the write","path":"file.sh","line":3,"commit_id":"old"}]\n' > "$GH_STUB_DIR/comments"
   dv pr-wait P-1 --foreground > "$CASE_DIR/snapshot"
-  jq -e '.green and .review_timed_out and .snapshot.inline_comments[0].body=="P1: fix the write"' "$CASE_DIR/snapshot"
+  jq -e '.green and .review_handled and (.review_timed_out|not) and .snapshot.inline_comments[0].body=="P1: fix the write"' "$CASE_DIR/snapshot"
   test ! -s "$DV_HOME/kick.q"
   jq -e '.status=="pr"' "$DV_STATE/P-1/meta"
 }
@@ -119,21 +119,16 @@ case_pr_worker_revive() {
   jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/PW-1/done.json"
   jq -se 'all(.[]; .kind=="done") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
 }
-case_pr_worker_no_rereview() {
+case_pr_worker_requires_review() {
   pr_fixture
-  local head
-  head=$(git -C "$REPO" rev-parse HEAD)
-  jq -n --arg head "$head" '[{author:{login:"devin-ai-integration[bot]"},commit:{oid:$head}},{author:{login:"chatgpt-codex-connector[bot]"},commit:{oid:$head}}]' > "$GH_STUB_DIR/reviews"
-  export DV_REVIEW_WAIT=30
-  dv pr-wait P-1 --foreground > /dev/null
-  dv pr-wait P-1 --foreground --review-handled > /dev/null
+  dv pr-wait P-1 --foreground >/dev/null
+  dv pr-wait P-1 --foreground --review-handled >/dev/null
   git -C "$REPO" commit --allow-empty -qm 'CI correction after review'
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
   dv pr P-1
-  dv pr-wait P-1 --foreground > "$CASE_DIR/snapshot" & waiter=$!
-  # The foreground result must arrive well before the new-head review timeout.
-  wait_file "$CASE_DIR/snapshot"
-  wait "$waiter"; waiter=''
-  jq -e '.green and .review_handled and (.review_timed_out|not) and (.bot_review|not)' "$CASE_DIR/snapshot"
+  if dv pr-wait P-1 --foreground > "$CASE_DIR/snapshot"; then return 1; fi
+  jq -e '.green and (.review_handled|not) and .review_timed_out and .blocked' "$CASE_DIR/snapshot"
+  test "$(grep -c '^pr comment .*@codex review' "$GH_STUB_DIR/calls")" = 2
 }
 case_pr_worker_revive_exec() {
   export DV_PR_EXIT_CODE=1 DV_PR_TEST_MODE=exec

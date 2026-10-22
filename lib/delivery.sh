@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # jq filters and Markdown are literal strings, not shell substitutions.
 # shellcheck disable=SC2016
+# shellcheck source=lib/pr-review.sh
+source "$DV_ROOT/lib/pr-review.sh"
 pr_report_summary() {
   # Use the first prose paragraph, bounded in size. Never copy the brief or
   # publish local paths or configured hosts. Pass configuration explicitly:
@@ -192,105 +194,106 @@ cmd_pr_wait() {
     case "$arg" in --foreground) foreground=true ;; --review-handled) handled=true ;; *) fail "unknown option: $arg" ;; esac
   done
   [ "$handled:$foreground" != true:false ] || fail '--review-handled requires --foreground'
-  local pr head rc=0 deadline='' reviewed=false snapshot tmp current green comments endpoint loop review_head=''
+  [[ "$DV_REVIEW_ROUNDS" =~ ^[1-9][0-9]*$ ]] || fail 'DV_REVIEW_ROUNDS must be a positive integer'
+  local pr head rc=0 tmp current green=false loop review deadline retry reason='' reviewed=false rounds=0
   pr=$(jq -er .url "$S/pr.json")
-  # A foreground caller must receive a result even when dv pr's safety net owns
-  # the lock. Never terminate a live waiter or return an empty success.
   until pr_wait_lock; do
     [ "$foreground" = true ] || return 0
     sleep "$DV_POLL_INTERVAL"
   done
   trap pr_wait_unlock EXIT
   trap 'exit 0' INT TERM
-  head=$(jq -r '.head // empty' "$S/meta")
-  [ -n "$head" ] || head=$(git rev-parse HEAD)
-  loop='{"failed_heads":[],"review_handled":false}'
+  loop='{"failed_heads":[],"reviewed_heads":[],"requests":{}}'
   [ ! -f "$S/pr-loop.json" ] || loop=$(cat "$S/pr-loop.json")
-  if [ "$handled" = true ]; then
-    review_head=$(jq -er '.head' "$S/pr-ready.json") || fail 'wait for a review snapshot before acknowledging it'
-    git merge-base --is-ancestor "$review_head" "$head" || fail 'review snapshot is not an ancestor of the PR head'
-    loop=$(printf '%s\n' "$loop" | jq --arg head "$review_head" '.review_handled=true | .review_head=$head')
-    tmp=$(mktemp "$S/.pr-loop.XXXXXX"); printf '%s\n' "$loop" > "$tmp"; mv "$tmp" "$S/pr-loop.json"
-  fi
-  if printf '%s\n' "$loop" | jq -e '.review_handled' >/dev/null; then
-    review_head=$(printf '%s\n' "$loop" | jq -er .review_head)
-    git merge-base --is-ancestor "$review_head" "$head" || fail 'handled review is not an ancestor of the PR head'
-  fi
+  loop=$(printf '%s\n' "$loop" | jq '.reviewed_heads //= [] | .requests //= {} | .review_handled=false')
+  review=$(mktemp "$S/.review-result.XXXXXX")
   while :; do
+    head=$(jq -r '.head // empty' "$S/meta"); [ -n "$head" ] || head=$(git rev-parse HEAD)
+    loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.initial_head //= (.review_head // $head)')
     rc=0
     gh pr checks "$pr" --watch > "$S/checks.log" 2>&1 || rc=$?
-    snapshot=$(gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state)
-    tmp=$(mktemp "$S/.pr-snapshot.XXXXXX"); printf '%s\n' "$snapshot" > "$tmp"; mv "$tmp" "$S/pr-snapshot.json"
+    tmp=$(mktemp "$S/.pr-snapshot.XXXXXX")
+    gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state > "$tmp"
+    mv "$tmp" "$S/pr-snapshot.json"
     if [ "$(jq -r .state "$S/pr-snapshot.json")" != OPEN ]; then
       [ "$foreground" != true ] || fail 'PR is no longer open'
-      return 0
+      rm "$review"; return 0
     fi
-    # A correction can push while the first wait is active. Follow the new head.
     current=$(jq -r '.head // empty' "$S/meta")
-    if [ -n "$current" ] && [ "$current" != "$head" ]; then
-      head=$current; deadline=''; reviewed=false
-      if [ -n "$review_head" ]; then
-        git merge-base --is-ancestor "$review_head" "$head" || fail 'handled review is not an ancestor of the PR head'
+    if [ -n "$current" ] && [ "$current" != "$head" ]; then continue; fi
+    if [ "$(jq -r .headRefOid "$S/pr-snapshot.json")" != "$head" ] || ! checks_finished "$S/pr-snapshot.json"; then
+      sleep "$DV_POLL_INTERVAL"; continue
+    fi
+    review_snapshot "$pr" "$S/pr-snapshot.json" || { rm "$review"; return 1; }
+    review_parse "$S/pr-snapshot.json" "$head" > "$review"
+    green=false; checks_green "$S/pr-snapshot.json" && green=true
+    # CI failures return to the worker immediately; review waiting starts only
+    # after green CI. Old --review-handled receipts cannot waive this gate.
+    if [ "$green" = false ]; then
+      loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.failed_heads |= (. + [$head] | unique)')
+      break
+    fi
+    if jq -e '.exists' "$review" >/dev/null; then
+      reviewed=true
+      loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.reviewed_heads |= (. + [$head] | unique)')
+      break
+    fi
+    deadline=$(printf '%s\n' "$loop" | jq -r --arg head "$head" '.requests[$head].deadline // empty')
+    if [ -z "$deadline" ]; then
+      # PR-open triggers the initial review. Every later head gets one explicit
+      # request, persisted under the waiter lock so foreground/background agree.
+      if [ "$(printf '%s\n' "$loop" | jq -r .initial_head)" != "$head" ]; then
+        gh pr comment "$pr" --body '@codex review' >/dev/null
+        deadline=$(( $(now) + DV_REVIEW_WAIT ))
+        loop=$(printf '%s\n' "$loop" | jq --arg head "$head" --argjson deadline "$deadline" '.requests[$head]={deadline:$deadline,retried:false}')
+        tmp=$(mktemp "$S/.pr-loop.XXXXXX"); printf '%s\n' "$loop" > "$tmp"; mv "$tmp" "$S/pr-loop.json"
+        continue
       fi
+      deadline=$(( $(now) + DV_REVIEW_WAIT ))
+      loop=$(printf '%s\n' "$loop" | jq --arg head "$head" --argjson deadline "$deadline" '.requests[$head]={deadline:$deadline,retried:false}')
     fi
-    if [ "$(jq -r .headRefOid "$S/pr-snapshot.json")" = "$head" ] && checks_finished "$S/pr-snapshot.json"; then
-      [ -n "$deadline" ] || deadline=$(( $(now) + DV_REVIEW_WAIT ))
-      reviewed=false
-      if printf '%s\n' "$snapshot" | jq -e --arg bots "$DV_REVIEW_BOTS" --arg head "$head" \
-        '.reviews as $reviews | ($bots|split(",")) | all(.[]; . as $pattern | any($reviews[]?; (.author.login|test($pattern;"i")) and .commit.oid==$head))' >/dev/null; then reviewed=true; fi
-      if [ -n "$review_head" ] || [ "$reviewed" = true ] || [ "$(now)" -ge "$deadline" ]; then break; fi
-    else
-      # gh checks --watch returns immediately before CI is registered. Empty
-      # or pending rollups must be polled again, even after the review timeout.
-      deadline=''; reviewed=false
+    if [ "$(now)" -ge "$deadline" ]; then
+      retry=$(printf '%s\n' "$loop" | jq -r --arg head "$head" '.requests[$head].retried')
+      if [ "$retry" = true ]; then reason='review-timeout'; break; fi
+      gh pr comment "$pr" --body '@codex review' >/dev/null
+      deadline=$(( $(now) + DV_REVIEW_WAIT ))
+      loop=$(printf '%s\n' "$loop" | jq --arg head "$head" --argjson deadline "$deadline" '.requests[$head]={deadline:$deadline,retried:true}')
     fi
+    tmp=$(mktemp "$S/.pr-loop.XXXXXX"); printf '%s\n' "$loop" > "$tmp"; mv "$tmp" "$S/pr-loop.json"
     sleep "$DV_POLL_INTERVAL"
   done
-  green=false
-  checks_green "$S/pr-snapshot.json" && green=true
-  # Inline findings are not part of gh pr view's reviews field. Fetch all pages
-  # before publishing a result; an API error must not look like a clean review.
-  if [[ "$pr" =~ ^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$ ]]; then
-    endpoint="repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/pulls/${BASH_REMATCH[3]}/comments"
-  else fail 'invalid PR URL'; fi
-  comments=$(mktemp "$S/.pr-comments.XXXXXX")
-  if ! gh api --paginate "$endpoint" | jq -s 'add // []' > "$comments"; then
-    rm -f "$comments"
-    return 1
-  fi
-  tmp=$(mktemp "$S/.pr-snapshot.XXXXXX")
-  # Inline comments include diff hunks; a normal review can exceed the OS
-  # per-argument limit. Pass the data as a file, never as one argv entry.
-  jq --slurpfile comments "$comments" '. + {inline_comments:$comments[0]}' "$S/pr-snapshot.json" > "$tmp"
-  rm "$comments"
-  mv "$tmp" "$S/pr-snapshot.json"
-  if [ "$green" = false ]; then
-    loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.failed_heads |= (. + [$head] | unique)')
-  fi
+  rounds=$(printf '%s\n' "$loop" | jq '.reviewed_heads|length')
+  if [ "$green" = false ] && [ "$(printf '%s\n' "$loop" | jq '.failed_heads|length')" -ge 3 ]; then reason=ci-rounds; fi
+  if [ "$green" = true ] && [ "$rounds" -ge "$DV_REVIEW_ROUNDS" ] && jq -e '.high|length>0' "$review" >/dev/null; then reason='review-rounds'; fi
+  loop=$(printf '%s\n' "$loop" | jq --arg head "$head" --slurpfile review "$review" \
+    '.review_handled=$review[0].clean | .review_head=$head | .review_id=$review[0].id')
   tmp=$(mktemp "$S/.pr-loop.XXXXXX"); printf '%s\n' "$loop" > "$tmp"; mv "$tmp" "$S/pr-loop.json"
   tmp=$(mktemp "$S/.pr-ready.XXXXXX")
   jq -n --arg head "$head" --argjson checks_exit "$rc" --argjson green "$green" --argjson reviewed "$reviewed" \
-    --argjson loop "$loop" --slurpfile snapshot "$S/pr-snapshot.json" \
-    '{head:$head,checks_exit:$checks_exit,green:$green,bot_review:$reviewed,
-      review_handled:$loop.review_handled,review_timed_out:(($reviewed|not) and ($loop.review_handled|not)),
-      ci_rounds:($loop.failed_heads|length),blocked:(($loop.failed_heads|length)>=3 and ($green|not)),snapshot:$snapshot[0]}' > "$tmp"
+    --argjson loop "$loop" --arg reason "$reason" --slurpfile review "$review" --slurpfile snapshot "$S/pr-snapshot.json" \
+    '{head:$head,checks_exit:$checks_exit,green:$green,bot_review:$reviewed,review:$review[0],
+      review_handled:$loop.review_handled,review_timed_out:($reason=="review-timeout"),review_rounds:($loop.reviewed_heads|length),
+      ci_rounds:($loop.failed_heads|length),blocked:($reason!=""),reason:$reason,snapshot:$snapshot[0]}' > "$tmp"
   mv "$tmp" "$S/pr-ready.json"
-  if jq -e '.blocked' "$S/pr-ready.json" >/dev/null; then
-    if [ ! -f "$S/pr-ci-blocked" ]; then
-      cmd_kick blocked "$ISSUE" 'CI failed in 3 rounds; worker could not make the PR green'
-      touch "$S/pr-ci-blocked"
+  if [ -n "$reason" ]; then
+    if ! printf '%s\n' "$loop" | jq -e --arg key "$head:$reason" '.blocked_events[$key]' >/dev/null; then
+      cmd_kick blocked "$ISSUE" "$reason: $(jq -c '{head,high}' "$review")"
+      tmp=$(mktemp "$S/.pr-loop.XXXXXX")
+      printf '%s\n' "$loop" | jq --arg key "$head:$reason" '.blocked_events[$key]=true' > "$tmp"; mv "$tmp" "$S/pr-loop.json"
     fi
+    rm "$review"
     [ "$foreground" != true ] || cat "$S/pr-ready.json"
     return 1
   fi
-  if [ "$foreground" = true ]; then cat "$S/pr-ready.json"; return; fi
-  # Recovery uses the existing one-shot revival, only with positive exit
-  # evidence. Release ownership BEFORE observing the worker: a later exit can
-  # then start a successor. If its wrapper already observed our lock, agent.exit
-  # was published first; wait for that wrapper to finish its handoff instead.
+  if [ "$foreground" = true ]; then
+    if [ "$green" = true ]; then review_followup "$pr" "$review"; fi
+    rm "$review"
+    cat "$S/pr-ready.json"
+    [ "$handled" = false ] || jq -e '.review_handled' "$S/pr-ready.json" >/dev/null
+    return
+  fi
+  rm "$review"
   pr_wait_unlock; trap - EXIT
-  # Native exec and App Server clients own their recovery. Neither backend
-  # should enter the terminal revival path after a PR wait.
   case "$BACKEND" in exec|appserver) return 0 ;; esac
   local pid
   pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
@@ -301,14 +304,13 @@ cmd_pr_wait() {
   [ "$(jq -r '.head // empty' "$S/meta")" = "$head" ] || return 0
   if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
   if agent_gone; then
-    "$DV_ROOT/bin/dv" send "$ISSUE" "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI, reviews and inline findings. Fix P0/P1 review findings once (preserve review-fix.sent) and fix CI within 3 rounds. After handling the findings, acknowledge with dv pr-wait $ISSUE --foreground --review-handled before the next push. Commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground until green. Do not request another review. Only run dv done $ISSUE after green CI and review handling."
+    "$DV_ROOT/bin/dv" send "$ISSUE" "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI and the current-head Codex findings. Fix P0/P1, test, commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground. Each new head needs a fresh Codex review; devflow requests it after green CI. Preserve pr-loop.json round counts. Only run dv done $ISSUE after green CI and a clean current-head review."
   fi
 }
-
 pr_done_check() {
   local head=$1 pr tmp
   [ -f "$S/pr.json" ] || fail 'GitHub completion requires dv pr and a green PR'
-  jq -e '.review_handled==true' "$S/pr-loop.json" >/dev/null 2>&1 || fail 'handle the review and acknowledge with pr-wait --foreground --review-handled'
+  jq -e '.review_handled==true' "$S/pr-loop.json" >/dev/null 2>&1 || fail 'wait for a clean current-head Codex review with pr-wait --foreground'
   jq -e --arg head "$head" '.head==$head and .green and .review_handled' "$S/pr-ready.json" >/dev/null 2>&1 || fail 'wait for the current PR head before done'
   require_clean "$WT"
   pr=$(jq -er .url "$S/pr.json")
@@ -317,6 +319,7 @@ pr_done_check() {
   mv "$tmp" "$S/done-checks.json"
   jq -e --arg head "$head" --arg base "$BASE" '.headRefOid==$head and .baseRefName==$base and .state=="OPEN"' "$S/done-checks.json" >/dev/null || fail 'PR head/base/state mismatch'
   checks_green "$S/done-checks.json" || fail 'current PR checks must be green before done'
+  review_require_clean "$pr" "$S/done-checks.json" "$head"
 }
 cmd_review() {
   [ "$#" -eq 1 ] || fail 'usage: dv review ISSUE'
@@ -420,6 +423,7 @@ cmd_land() {
     (cd "$WT" && gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,state) > "$S/land-checks.json"
     jq -e --arg head "$head" --arg base "$BASE" '.headRefOid==$head and .baseRefName==$base and .state=="OPEN"' "$S/land-checks.json" >/dev/null || fail 'PR head/base/state mismatch'
     checks_green "$S/land-checks.json" || fail 'all PR checks must be successful (empty, skipped, pending and failed checks refuse land)'
+    review_require_clean "$pr" "$S/land-checks.json" "$head"
     method=$(github_land_method) || return 1
     (cd "$WT" && gh pr merge "$pr" "--$method" --match-head-commit "$head")
     (cd "$WT" && gh pr view "$pr" --json state,headRefOid) > "$S/land-result.json"

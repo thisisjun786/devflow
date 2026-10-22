@@ -29,6 +29,10 @@ case "$1 $2" in
   'api repos/test/repo')
     jq -n --arg method "${STACK_TEST_METHOD:-merge}" \
       '{allow_merge_commit:($method=="merge"),allow_squash_merge:($method=="squash"),allow_rebase_merge:($method=="rebase")}' ;;
-  'api --paginate') printf '[]\n' ;;
+  'api --paginate')
+    case "$3" in
+      */reviews) jq -n --arg head "$(git rev-parse HEAD)" '[{id:1,user:{login:"chatgpt-codex-connector[bot]"},commit_id:$head,state:"COMMENTED",body:"Looks good"}]' ;;
+      *) printf '[]\n' ;;
+    esac ;;
   *) printf 'Unexpected stack gh: %s\n' "$*" >&2; exit 1 ;;
 esac

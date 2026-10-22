@@ -88,7 +88,7 @@ stack_land_gate() {
   fi
   if ! git -C "$WT" merge --no-edit "$base_head"; then
     if git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null && [ ! -e "$S/stack-conflict.sent" ]; then
-      printf 'Resolve the existing merge of origin/%s in this worktree, commit and push with dv pr %s, wait for green CI, and finish with dv done %s. Preserve review-fix.sent; do not request another review or force push. Stack ordering and landing remain dv responsibilities.\n' \
+      printf 'Resolve the existing merge of origin/%s in this worktree, commit and push with dv pr %s, wait for green CI, and finish with dv done %s. Preserve pr-loop.json round counts; wait for a clean current-head Codex review with dv pr-wait --foreground. Do not force push. Stack ordering and landing remain dv responsibilities.\n' \
         "$BASE" "$ISSUE" "$ISSUE" > "$S/stack-conflict.pending"
     fi
     return 1
@@ -174,7 +174,7 @@ cmd_stack_resume() {
     fi
     return 75
   fi
-  prompt="All stack dependencies are merged into origin/$BASE. Resume this job in its existing worktree: merge origin/$BASE, resolve any conflict while preserving local work, rerun the required checks, commit changes, run dv pr $ISSUE, wait for green CI on the current head, and finish with dv done $ISSUE. Preserve review-fix.sent and handled reviews; do not request another review or force push."
+  prompt="All stack dependencies are merged into origin/$BASE. Resume this job in its existing worktree: merge origin/$BASE, resolve any conflict while preserving local work, rerun the required checks, commit changes, run dv pr $ISSUE, wait for green CI on the current head, and finish with dv done $ISSUE. Preserve pr-loop.json round counts; wait for a clean current-head Codex review with dv pr-wait --foreground. Do not force push."
   meta_set --arg key "$key" --arg base "$base_head" --argjson at "$(now)" \
     '.stack_resume={key:$key,base:$base,status:"sending",at:$at} | .done_episode=("stack-"+$key)'
   # dv send owns its own operation lock; keep only the resume reservation.
