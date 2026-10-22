@@ -64,8 +64,7 @@ PANE
 appserver_setup() {
   repo appserver "${1:-}"
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
-  # Only timeout-path tests override the product default supplied by setup.
-  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-$DV_APPSERVER_TIMEOUT}
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver"
   export DV_APPSERVER_POLL=1 DV_STALL_AFTER=300
   mkdir -p "$CASE_DIR/server"
   printf 'idle\n' > "$CASE_DIR/server/status"
@@ -281,10 +280,7 @@ appserver_send_outcome() {
 }
 case_appserver_accepted() { appserver_send_outcome accepted; }
 case_appserver_refused() { appserver_send_outcome refused; }
-case_appserver_unknown() {
-  # The fake peer receives the mutation but deliberately never replies.
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_send_outcome unknown
-}
+case_appserver_unknown() { appserver_send_outcome unknown; }
 case_appserver_idle_send() {
   appserver_setup
   printf 'idle\n' > "$CASE_DIR/server/status"
@@ -825,6 +821,35 @@ ENV
   appserver_setup
   test -f "$CASE_DIR/upgrade-split"
 }
+case_appserver_rpc_timeout() (
+  # Isolate the short RPC deadline from socket/thread startup. The peer stays
+  # connected and consumes the request, but deliberately never sends a reply.
+  DV_ROOT=$ROOT
+  source "$ROOT/lib/appserver.sh"
+  now() { date +%s; }
+  AS_IO="$CASE_DIR/rpc-timeout"; mkdir "$AS_IO"
+  mkfifo "$AS_IO/request" "$AS_IO/wake" "$AS_IO/hold"
+  exec 9<> "$AS_IO/request" 8<> "$AS_IO/wake" 7<> "$AS_IO/hold"
+  local peer started elapsed
+  (
+    IFS= read -r request <&9
+    printf '%s\n' "$request" > "$CASE_DIR/timeout-request"
+    IFS= read -r _hold <&7
+  ) & peer=$!
+  trap 'kill "$peer" 2>/dev/null || true; wait "$peer" 2>/dev/null || true' EXIT
+  AS_PID=$peer AS_SEND=$peer AS_RECEIVE=$peer AS_SEQ=0 AS_EVENTS=0 AS_WRITER=''
+  DV_APPSERVER_TIMEOUT=1
+  started=$(now)
+  appserver_rpc thread/read '{"threadId":"thread-1"}'
+  elapsed=$(( $(now) - started ))
+  printf 'RPC timeout: elapsed=%s budget=%s outcome=%s\n' "$elapsed" "$DV_APPSERVER_TIMEOUT" "$AS_CLASS"
+  test "$elapsed" -ge "$DV_APPSERVER_TIMEOUT"
+  test "$AS_CLASS" = unknown
+  test "$AS_REPLY" = '{}'
+  wait_file "$CASE_DIR/timeout-request"
+  jq -e '.method=="thread/read" and .params.threadId=="thread-1"' "$CASE_DIR/timeout-request"
+  kill -0 "$peer"
+)
 case_appserver_upgrade_timeout() (
   source "$ROOT/lib/appserver-transport.sh"
   AS_IO="$CASE_DIR/upgrade"; mkdir "$AS_IO"

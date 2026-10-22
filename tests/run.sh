@@ -1252,7 +1252,26 @@ case_herdr_goal_retry() {
 case_herdr_goal_timeout() {
   repo goal-timeout; herdr_setup; export DV_START_WAIT=2
   mkdir -p "$CASE_DIR/herdr"
+  # Complete each rejected poll before advancing the deadline. A two-second
+  # wall clock can otherwise expire before even the first prompt attempt.
+  cat > "$DV_CONFIG" <<'CONFIG'
+date() {
+  if [ "$*" = +%s ]; then cat "$CASE_DIR/goal-clock"; else command date "$@"; fi
+}
+sleep() {
+  if [ "${FUNCNAME[1]:-}" = inject_goal ] && [ "$*" = 0.2 ]; then
+    local polls
+    polls=$(cat "$CASE_DIR/goal-polls")
+    polls=$((polls + 1))
+    printf '%s\n' "$polls" > "$CASE_DIR/goal-polls"
+    # Include the first not-ready observation and multiple rejected prompts.
+    printf '%s\n' "$((1000 + polls / 2))" > "$CASE_DIR/goal-clock"
+  else command sleep "$@"; fi
+}
+CONFIG
   for mode in never-ready never-accepted; do
+    printf '1000\n' > "$CASE_DIR/goal-clock"
+    printf '0\n' > "$CASE_DIR/goal-polls"
     printf '%s\n' "$mode" > "$CASE_DIR/herdr/goal-mode"
     issue="HG-$mode"
     dv start "$REPO" "$issue" native
@@ -1264,6 +1283,7 @@ case_herdr_goal_timeout() {
     test ! -f "$DV_STATE/$issue/goal-input"
     grep -Fx 'Codex prompt not detected; use dv send to submit /goal.' "$DV_STATE/$issue/log"
     jq -se '[.[]|select(.kind=="failed" and .message=="Codex prompt not detected")]|length==1' "$DV_STATE/$issue/events.log"
+    test "$(cat "$CASE_DIR/goal-clock")" -ge 1002
     if [ "$mode" = never-ready ]; then test ! -f "$CASE_DIR/herdr/w-$issue/goal-attempts"
     else test "$(cat "$CASE_DIR/herdr/w-$issue/goal-attempts")" -gt 1; fi
     dv clean "$issue"
@@ -2267,7 +2287,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
-  appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
+  appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
   appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \
   send_branch_appserver send_branch_appserver_reconnect send_branch_exec send_branch_tmux send_branch_herdr send_branch_revive send_branch_guards send_branch_missing send_branch_replaced_repo send_branch_replaced_path \
   heavy_serial heavy_kill heavy_slots heavy_status heavy_command heavy_priority heavy_config heavy_waiter_probe \
