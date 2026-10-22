@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
 # Reliability cases use disposable repositories and the normal gh/worker stubs.
+case_watcher_teardown_waiter() {
+  local fixture="$CASE_DIR/teardown" pid stopped=false
+  mkdir -p "$fixture/state/P-1" "$fixture/home"
+  cat > "$CASE_DIR/late-waiter" <<'WAITER'
+#!/usr/bin/env bash
+trap 'sleep 0.3; touch "$CASE_DIR/waiter-stopped"; exit 0' TERM
+touch "$CASE_DIR/waiter-ready"
+while :; do sleep 0.1; done
+WAITER
+  bash "$CASE_DIR/late-waiter" & pid=$!
+  printf '%s\n' "$pid" > "$fixture/state/P-1/pr-wait.pid"
+  wait_file "$CASE_DIR/waiter-ready"
+  CASE_DIR="$fixture" DV_STATE="$fixture/state" DV_HOME="$fixture/home" DV_TEST_KEEP=0 watcher_teardown
+  [ ! -f "$CASE_DIR/waiter-stopped" ] || stopped=true
+  wait "$pid" || true
+  test "$stopped" = true
+  test ! -e "$fixture"
+}
 watcher_teardown() {
   touch "$DV_HOME/release" "$DV_HOME/stop"
   local pid
@@ -9,7 +27,9 @@ watcher_teardown() {
   done
   if [ -f "$DV_STATE/P-1/pr-wait.pid" ]; then
     pid=$(cat "$DV_STATE/P-1/pr-wait.pid")
-    [ "$pid" = "$$" ] || kill "$pid" 2>/dev/null || true
+    if [ "$pid" != "$$" ]; then
+      teardown_stop_pidfile "$DV_STATE/P-1/pr-wait.pid" || return 1
+    fi
   fi
   teardown
 }
@@ -302,7 +322,9 @@ case_status_done_head() {
 }
 case_reconcile_waiter() {
   pr_fixture; watch_fixture
-  export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=1
+  # One initial scan proves recovery; repeated scans can launch a successor
+  # waiter while teardown is stopping the watcher and its detached children.
+  export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=99999
   mkdir "$DV_STATE/P-1/.pr-wait"
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_pr_ready P-1
@@ -310,7 +332,7 @@ case_reconcile_waiter() {
 }
 case_reconcile_waiter_remote() {
   pr_fixture; watch_fixture
-  export DV_HOSTS=test-box SSH_FIXTURE_EXEC=1 DV_RECONCILE_INTERVAL=1
+  export DV_HOSTS=test-box SSH_FIXTURE_EXEC=1 DV_RECONCILE_INTERVAL=99999
   mkdir "$CASE_DIR/remote-home"
   printf 'DV_HOME=%q\nDV_STATE=%q\n' "$DV_HOME" "$DV_STATE" > "$CASE_DIR/remote-home/config.sh"
   mkdir "$DV_STATE/P-1/.pr-wait"
