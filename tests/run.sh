@@ -1774,6 +1774,14 @@ case_award_rejected_next() {
 case_award_new_round() {
   bidding_hosts; bidding_functions
   local host kind issue saved
+  # Keep this receipt/retry test independent of which process runs first:
+  # the start RPC must observe the deliberately failed wrapper's final exit.
+  # Compose an outer fault-injection environment when this case is stressed.
+  {
+    if [ -n "${BASH_ENV:-}" ]; then printf 'source %q\n' "$BASH_ENV"; fi
+    printf 'source %q\n' "$ROOT/tests/fixtures/failed-start-env"
+  } > "$CASE_DIR/failed-start-env"
+  export BASH_ENV="$CASE_DIR/failed-start-env"
   export DV_HOSTS='hx-linux go2-linux'
   for kind in 'done' failed landed submitted; do
     issue="ROUND-$kind"

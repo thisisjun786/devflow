@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# A failed-award test needs a completed failure before the start RPC returns.
+# Real starts may legitimately acknowledge agent.started before an agent exits.
+tmux() {
+  command tmux "$@" || return
+  if [ "${1:-}" = -L ] && [ "${3:-}" = new-session ] && [ "${DV_AGENT_CMD_codex:-}" = false ]; then
+    local attempt
+    for attempt in {1..100}; do
+      if [ -s "$DV_STATE/$ISSUE/agent.exit" ] &&
+        ! command tmux -L "$DV_TMUX_SOCKET" has-session -t "=dv-$ISSUE" 2>/dev/null; then return 0; fi
+      command sleep 0.1
+    done
+    return 1
+  fi
+}

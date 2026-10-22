@@ -298,8 +298,12 @@ appserver_read_line 5
 [ "$AS_LINE" = '{"id":"b"}' ]
 # A remote frame split across the deadline is buffered by the decoder.
 AS_IO="$CASE_DIR/partial-frame"; mkdir "$AS_IO"
-exec 8< <({ printf '\201\021{"id":"c",'; sleep 2.5; printf '"ok":1}\210\000'; } | appserver_ws_receive 0)
+# Bash 3.2 cannot wait for a process substitution. Use an explicit child so
+# teardown waits until the decoder has consumed the close frame as well.
+mkfifo "$AS_IO/decoded"
+{ printf '\201\021{"id":"c",'; sleep 2.5; printf '"ok":1}\210\000'; } | appserver_ws_receive 0 > "$AS_IO/decoded" &
 decoder=$!
+exec 8< "$AS_IO/decoded"
 if appserver_read_line 1; then exit 1; fi
 [ -z "$AS_LINE" ]
 appserver_read_line 10
