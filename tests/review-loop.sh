@@ -134,6 +134,21 @@ case_review_followup() {
   test "$(grep -c '^api --method POST repos/test/repo/issues ' "$GH_STUB_DIR/calls")" = 1
   dv 'done' P-1
 }
+case_review_followup_source() {
+  # A job moved to another host keeps its key with a suffix; the follow-up
+  # still depends on the issue the PR closes.
+  export S="$CASE_DIR/state"; mkdir -p "$S"
+  # shellcheck source=/dev/null
+  source "$ROOT/lib/pr-review.sh"
+  ISSUE=LN-214M; printf 'Body\n\nCloses #214\n' > "$S/pr.md"
+  test "$(review_source_issue)" = 214
+  ISSUE=LN-214M; printf 'Body without a closing line\n' > "$S/pr.md"
+  test "$(review_source_issue)" = 214
+  ISSUE=P-7; rm "$S/pr.md"
+  test "$(review_source_issue)" = 7
+  ISSUE=LN-212M; printf 'Fixes #300\n' > "$S/pr.md"
+  test "$(review_source_issue)" = 300
+}
 case_review_retry_arrives() {
   review_fixture
   # The automatic review did not arrive; the single retry produces a review.
