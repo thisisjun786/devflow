@@ -119,6 +119,18 @@ case_pr_worker_revive() {
   jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/PW-1/done.json"
   jq -se 'all(.[]; .kind=="done") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
 }
+case_pr_worker_revive_policy() {
+  case_pr_worker_revive
+  local prompt="$DV_STATE/PW-1/revive/prompt.md"
+  if grep -F 'one-fix-per-PR limit' "$prompt"; then
+    printf 'FAIL: GitHub revival still imposes the obsolete single-fix limit\n'
+    return 1
+  fi
+  grep -F "$DV_STATE/PW-1/review-fix.sent" "$prompt"
+  grep -F "$DV_STATE/PW-1/pr-loop.json review round counts" "$prompt"
+  grep -F 'Each new head requires a fresh Codex review' "$prompt"
+  ! grep -F 'single local review' "$prompt"
+}
 case_pr_worker_requires_review() {
   pr_fixture
   dv pr-wait P-1 --foreground >/dev/null
