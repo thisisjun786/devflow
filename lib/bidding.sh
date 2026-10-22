@@ -247,6 +247,7 @@ cmd_cancel() (
   trap 'rmdir "$DV_HOME/.schedule-lock"' EXIT
   jq -e '.status=="submitted" and .host==null' "$dir/task.json" >/dev/null || fail 'only unassigned submissions can be canceled'
   bid_task_set "$dir" '.status="canceled"'
+  "$DV_ROOT/bin/dv-kick" canceled "$1" 'Submission canceled' "$DV_HOST"
 )
 cmd__receipt() {
   [ "$#" = 2 ] || fail 'usage: dv _receipt ISSUE token'

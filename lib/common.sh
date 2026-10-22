@@ -115,7 +115,7 @@ event_json() {
     # already seen. Identical retransmissions still share one ID.
     if [ "$1" = blocked ]; then id="$id:m$(printf '%s' "$3" | cksum | cut -d' ' -f1)"; fi
     case "$1" in
-      bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|pr-opened|pr-closed)
+      bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|issue-labeled|issue-unlabeled|pr-opened|pr-closed)
         # Several findings or open/close episodes can share a job/head. A
         # receipt carries this ID through retries; subsequent mutations differ.
         id="$id:$(now):$$:$RANDOM" ;;

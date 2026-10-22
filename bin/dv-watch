@@ -323,7 +323,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
       autofill_event "$line" >> "$DV_HOME/autofill.log" 2>&1 || true
       if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then stall_reason='stack_landed_event failed'; break; fi
       case "$(jq -r .kind <<< "$line")" in
-      submitted|bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|pr-opened|pr-closed)
+      submitted|bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|issue-labeled|issue-unlabeled|pr-opened|pr-closed)
         metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"

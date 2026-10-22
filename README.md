@@ -188,7 +188,7 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 ### 준비된 이슈 자동 채우기
 
 관리자 설정에 저장소를 한 번 등록하면 기존 `dv-watch`가 커밋된
-`done`/`landed`/`failed`, `bid-changed`, 이슈 열림·닫힘 이벤트에서 빈 호스트 자리를
+`done`/`landed`/`failed`/`canceled`, `bid-changed`, 이슈 열림·닫힘·label 변경 이벤트에서 빈 호스트 자리를
 채웁니다. idle tick에는 조회하지 않습니다. 시작 시와 기존
 `DV_RECONCILE_INTERVAL`(기본 1800초) 안전 점검만 누락 이벤트를 보완하며,
 체크별 timer나 daemon을 추가하지 않습니다. 예:
@@ -234,7 +234,8 @@ devflow는 PR 생성, QA finding 등록, 입찰 snapshot 변경, 확인된 병�
 기존 이벤트 큐에 직접 발행합니다. 병합 알림은 worktree 정리보다 먼저 발행하므로
 정리 재시도가 QA를 막지 않습니다. 외부 GitHub 이슈 변경을 전달하는 기존 hook은
 `dv kick issue-opened ISSUE URL`, `dv kick issue-closed ISSUE URL`을 사용합니다.
-재열림은 `issue-reopened`, label·의존성 변경은 `issue-edited`, 외부 host 입찰 변경은
+재열림은 `issue-reopened`, label 변경은 `issue-labeled`/`issue-unlabeled`,
+의존성 변경은 `issue-edited`, 외부 host 입찰 변경은
 `bid-changed`로 전달할 수 있습니다. 동일 webhook 재전송은 `dv-kick`의 여섯 번째
 인자에 원래 delivery ID를 넣어 중복을 제거합니다. 별도 GitHub webhook 서버를
 설치하지 않으며 전달되지 않은 외부 변경은 느린 안전 점검에서 발견합니다.

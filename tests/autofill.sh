@@ -254,6 +254,24 @@ case_autofill_event_cadence() {
   autofill_event '{"kind":"issue-closed"}'
   test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 4
 }
+case_autofill_cancel_event() {
+  autofill_fixture; autofill_issues
+  touch "$CASE_DIR/autofill/reject"
+  autofill_tick
+  local issue
+  issue=$(autofill_id test/repo 1)
+  cmd_cancel "$issue"
+  jq -se --arg issue "$issue" '.[-1].kind=="canceled" and .[-1].issue==$issue' "$DV_HOME/kick.q"
+  rm "$CASE_DIR/autofill/reject"
+  autofill_event "$(tail -n 1 "$DV_HOME/kick.q")"
+  test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 2
+  if grep -Fx "$issue" "$CASE_DIR/autofill/awards"; then return 1; fi
+}
+case_autofill_label_event() {
+  autofill_fixture; autofill_issues
+  autofill_event '{"kind":"issue-labeled"}'
+  test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 2
+}
 case_qa_merge_commit_event() {
   land_setup true true true
   touch "$GH_STUB_DIR/merged"
