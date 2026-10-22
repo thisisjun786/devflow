@@ -1993,6 +1993,8 @@ source "$ROOT/tests/revive.sh"
 source "$ROOT/tests/appserver.sh"
 # shellcheck source=tests/codex-exec.sh
 source "$ROOT/tests/codex-exec.sh"
+# shellcheck source=tests/send-branch.sh
+source "$ROOT/tests/send-branch.sh"
 # shellcheck source=tests/codex-exec-review.sh
 source "$ROOT/tests/codex-exec-review.sh"
 # shellcheck source=tests/portability.sh
@@ -2013,6 +2015,108 @@ source "$ROOT/tests/stack.sh"
 source "$ROOT/tests/watcher-stuck.sh"
 # shellcheck source=tests/task.sh
 source "$ROOT/tests/task.sh"
+task_content_setup() {
+  task_setup
+  export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state" XDG_CACHE_HOME="$HOME/.cache"
+  export TMPDIR="$CASE_DIR/tmp"
+  mkdir -p "$TMPDIR"
+  export DV_CODEX_MODE=exec DV_AGENT_CMD_codex=''
+  export DV_TRUSTED_REPOS="$CASE_DIR/Desk project" DV_CODEX_BIN="$CASE_DIR/task-content-agent"
+  export DV_TASK_CONTENT=$1
+  cat > "$DV_CODEX_BIN" <<'AGENT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-} ${2:-}" = 'login status' ]; then exit 0; fi
+printf '{"type":"thread.started","thread_id":"task-content-fixture"}\n'
+mkdir -p out/nested
+: > out/empty.txt
+: > out/nested/empty.txt
+if [ "$DV_TASK_CONTENT" = mixed ]; then printf '\0' > out/nested/payload.bin; fi
+printf 'Synthetic deliverables for content validation.\n' > "$DV_STATE/$DV_ISSUE/report.md"
+dv 'done' "$DV_ISSUE"
+printf '{"type":"turn.completed"}\n'
+AGENT
+  chmod +x "$DV_CODEX_BIN"
+  task_start; task_exec_wait TK-1
+}
+case_task_empty_files_done() {
+  task_content_setup empty
+  # Each --case runs setup independently; other sourced cases cannot change it.
+  # shellcheck disable=SC2031
+  local s="$DV_STATE/TK-1"
+  if dv 'done' TK-1 > "$CASE_DIR/done.log" 2>&1; then
+    cat "$CASE_DIR/done.log"
+    printf 'BUG: done accepted only zero-byte deliverables\n'; return 1
+  fi
+  grep -F 'task out/ has only empty files' "$CASE_DIR/done.log"
+  test ! -e "$s/done.json"
+  test ! -e "$s/task-snapshots"
+  jq -e '.status!="done" and .exec_status!="done"' "$s/meta"
+  jq -se 'all(.[]; .kind!="done")' "$s/events.log"
+  test ! -f "$GH_STUB_DIR/calls"
+}
+case_task_empty_files_land() {
+  task_content_setup mixed
+  # shellcheck disable=SC2031
+  local s="$DV_STATE/TK-1" wt manifest head snapshot
+  wt=$(jq -r .worktree "$s/meta")
+  : > "$wt/out/nested/payload.bin"
+  # Model an internally consistent all-empty snapshot created by older dv.
+  # shellcheck source=lib/task.sh
+  source "$ROOT/lib/task.sh"
+  manifest=$(jq -cn --arg empty "$(task_hash < "$wt/out/empty.txt")" --arg report "$(task_hash < "$s/report.md")" \
+    '{files:(["empty.txt","nested/empty.txt","nested/payload.bin"]|map({path:.,sha256:$empty})),report_sha256:$report}')
+  head="task-$(printf '%s\n' "$manifest" | task_hash)"
+  snapshot="$s/task-snapshots/$head"
+  mkdir -p "$snapshot/out"
+  cp -R "$wt/out/." "$snapshot/out/"
+  cp "$s/report.md" "$snapshot/report.md"
+  jq --arg head "$head" '.head=$head' "$s/done.json" > "$CASE_DIR/legacy-done.json"
+  mv "$CASE_DIR/legacy-done.json" "$s/done.json"
+  if dv land TK-1 --checked "$head" > "$CASE_DIR/land.log" 2>&1; then
+    cat "$CASE_DIR/land.log"
+    printf 'BUG: land accepted an all-empty legacy snapshot\n'; return 1
+  fi
+  grep -F 'task out/ has only empty files' "$CASE_DIR/land.log"
+  test ! -e "$CASE_DIR/destination/TK-1"
+  jq -e '.status=="done" and .landed_path==null' "$s/meta"
+  jq -se 'all(.[]; .kind!="landed")' "$s/events.log"
+  test ! -f "$GH_STUB_DIR/calls"
+}
+case_task_mixed_files() {
+  task_content_setup mixed
+  # shellcheck disable=SC2031
+  local s="$DV_STATE/TK-1" wt head snapshot landed
+  wt=$(jq -r .worktree "$s/meta")
+  head=$(jq -r .head "$s/done.json")
+  snapshot="$s/task-snapshots/$head"
+  jq -e '.files==3' "$s/done.json"
+  mkfifo "$wt/out/nested/pipe"
+  if dv 'done' TK-1 > "$CASE_DIR/done.log" 2>&1; then return 1; fi
+  grep -F 'task out/ must contain only regular files and directories' "$CASE_DIR/done.log"
+  rm "$wt/out/nested/pipe"
+  # Valid working output cannot hide an all-empty corrupted snapshot.
+  : > "$snapshot/out/nested/payload.bin"
+  if dv land TK-1 --checked "$head" > "$CASE_DIR/land.log" 2>&1; then return 1; fi
+  grep -F 'task out/ has only empty files' "$CASE_DIR/land.log"
+  test ! -e "$CASE_DIR/destination/TK-1"
+  cp "$wt/out/nested/payload.bin" "$snapshot/out/nested/payload.bin"
+  # Empty auxiliary files still participate in revision integrity checks.
+  printf 'changed\n' > "$wt/out/empty.txt"
+  if dv land TK-1 --checked "$head" > "$CASE_DIR/land.log" 2>&1; then return 1; fi
+  grep -F 'task changed since done' "$CASE_DIR/land.log"
+  : > "$wt/out/empty.txt"
+  mkdir "$CASE_DIR/destination/TK-1"
+  printf 'keep\n' > "$CASE_DIR/destination/TK-1/existing.txt"
+  dv land TK-1 --checked "$head"
+  landed=$(jq -r .landed_path "$s/meta")
+  test "$landed" = "$CASE_DIR/destination/TK-1-v2"
+  test "$(cat "$CASE_DIR/destination/TK-1/existing.txt")" = keep
+  test -f "$landed/empty.txt" && test ! -s "$landed/empty.txt"
+  test -f "$landed/nested/empty.txt" && test ! -s "$landed/nested/empty.txt"
+  cmp "$wt/out/nested/payload.bin" "$landed/nested/payload.bin"
+  test ! -f "$GH_STUB_DIR/calls"
+}
 # shellcheck source=tests/capacity.sh
 source "$ROOT/tests/capacity.sh"
 # shellcheck source=tests/heavy.sh
@@ -2020,6 +2124,14 @@ source "$ROOT/tests/heavy.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in send_branch_appserver send_branch_appserver_reconnect send_branch_exec send_branch_tmux send_branch_herdr send_branch_revive send_branch_guards send_branch_missing send_branch_replaced_repo send_branch_replaced_path; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+  fi
+done
 for name in heavy_serial heavy_kill heavy_slots heavy_status heavy_command heavy_priority heavy_config heavy_waiter_probe; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
@@ -2048,7 +2160,7 @@ for name in appserver_reader_legacy appserver_sender_idle appserver_sender_parti
     else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
   fi
 done
-for name in teardown_wait_tmux task_tmux_fast_completion code_tmux_fast_completion code_tmux_fast_revival task_tmux_stale_completion code_tmux_stale_completion task_tmux_socket_failed code_tmux_socket_failed task_tmux_session_missing code_tmux_session_missing task_tmux_new_session_failed code_tmux_new_session_failed task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_launch_race task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace; do
+for name in teardown_wait_tmux task_empty_files_done task_empty_files_land task_mixed_files task_tmux_fast_completion code_tmux_fast_completion code_tmux_fast_revival task_tmux_stale_completion code_tmux_stale_completion task_tmux_socket_failed code_tmux_socket_failed task_tmux_session_missing code_tmux_session_missing task_tmux_new_session_failed code_tmux_new_session_failed task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_launch_race task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
@@ -2096,7 +2208,7 @@ for name in exec_success exec_config_flags exec_launch_race exec_nonzero exec_ca
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
   else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
 done
-for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_done_capacity revive_orphan_owner revive_orphan_close_failure revive_stale_marker revive_goal_owned_done revive_report_event revive_orphan_workspace revive_manual_done revive_capacity revive_release_event revive_legacy_idle revive_legacy_unknown revive_capacity_status revive_legacy_busy revive_legacy_uncertain revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_branch_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
+for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_done_capacity revive_orphan_owner revive_orphan_close_failure revive_stale_marker revive_goal_owned_done revive_report_event revive_orphan_workspace revive_manual_done revive_capacity revive_release_event revive_legacy_idle revive_legacy_unknown revive_capacity_status revive_legacy_busy revive_legacy_uncertain revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_worktree_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?

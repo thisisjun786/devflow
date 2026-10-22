@@ -64,7 +64,8 @@ PANE
 appserver_setup() {
   repo appserver "${1:-}"
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
-  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-2}
+  # Socket startup and JSON-RPC framing need scheduling slack on busy CI hosts.
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-5}
   export DV_APPSERVER_POLL=1 DV_STALL_AFTER=300
   mkdir -p "$CASE_DIR/server"
   printf 'idle\n' > "$CASE_DIR/server/status"

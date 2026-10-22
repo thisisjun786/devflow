@@ -132,7 +132,12 @@ launch_agent() {
   fi
 }
 run_agent() {
-  load_issue "$1"; require_worktree; cd "$WT" || exit
+  load_issue "$1"
+  case "${2:-}" in
+    --revived|--exec-prompt) require_worktree --allow-branch-change ;;
+    *) require_worktree ;;
+  esac
+  cd "$WT" || exit
   export DV_ISSUE="$ISSUE"
   local agent mode override instruction rc=0 sentinel='' helper='' revived=0 original_instruction
   [ "${2:-}" != --revived ] || revived=1
@@ -625,7 +630,7 @@ revive_blocked() {
   printf 'dv: %s; automatic revival already attempted\n' "$1" >&2
 }
 revive_agent() {
-  require_worktree
+  require_worktree --allow-branch-change
   case "$(jq -r .status "$S/meta")" in landed|cancelled) fail 'cannot revive a finished issue' ;; esac
   if [ -d "$S/revive" ]; then
     revive_blocked 'agent unavailable after revival'
@@ -644,7 +649,7 @@ revive_agent() {
     if [ "$KIND" = task ]; then
       printf 'Continue the task in %s; preserve partial work and write deliverables to out/. No Git or PR.\n' "$WT"
     else
-      printf 'Continue in the existing worktree %s on branch %s.\n' "$WT" "$BRANCH"
+      printf 'Continue in the existing worktree %s on its current checkout (%s).\n' "$WT" "$(git -C "$WT" rev-parse --abbrev-ref HEAD)"
     fi
     printf 'Read %s/brief.md and, if present, %s/report.md for context.\n' "$S" "$S"
     printf 'This continues the same request; preserve %s/review-fix.sent.\n' "$S"
@@ -671,7 +676,7 @@ revive_agent() {
 }
 cmd_send() {
   [ "$#" -eq 2 ] || fail 'usage: dv send ISSUE text'
-  load_issue "$1"; issue_lock; require_worktree
+  load_issue "$1"; issue_lock; require_worktree --allow-branch-change
   if [ -n "${DV_PR_RECOVERY_HEAD:-}" ]; then
     # A background waiter may be descheduled before taking this issue lock.
     # Another waiter can meanwhile revive or finish the job. Revalidate here

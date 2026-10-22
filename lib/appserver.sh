@@ -358,7 +358,10 @@ appserver_start() {
   done
 }
 cmd__appserver_run() {
-  load_issue "$1"; require_worktree
+  load_issue "$1"
+  if jq -e '.thread_id|type=="string"' "$S/meta" >/dev/null; then
+    require_worktree --allow-branch-change
+  else require_worktree; fi
   umask 077
   local AS_EVENTS=1 AS_SEQ=0 AS_THREAD='' AS_REPLY='{}' AS_CLASS=unknown AS_SNAPSHOT='{}' AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER=''
   local AS_LINE=''
