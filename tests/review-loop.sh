@@ -114,6 +114,17 @@ case_review_e2e() {
   dv land P-1
   test -f "$GH_STUB_DIR/merged"
 }
+case_review_followup_no_milestone() {
+  review_fixture
+  review_set 1 P2
+  touch "$GH_STUB_DIR/review-no-milestone"
+  dv pr-wait P-1 --foreground > "$CASE_DIR/result"
+  jq -e '.review.clean and .review_handled' "$CASE_DIR/result"
+  jq -e '.milestone==null and (.body|contains("Depends on #1"))' "$GH_STUB_DIR/followup"
+  dv 'done' P-1
+  jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/P-1/done.json"
+  test "$(grep -c '^api --method POST repos/test/repo/issues ' "$GH_STUB_DIR/calls")" = 1
+}
 case_review_followup() {
   review_fixture
   review_set 1 P2
