@@ -21,14 +21,14 @@ setup() {
   # Ordinary lifecycle tests use the product's deadlines, even on a busy host.
   # Isolate the defaults so sourcing config cannot change other fixture values.
   # Cases that exercise timeout behavior select their short deadline explicitly.
-  read -r DV_START_WAIT DV_APPSERVER_TIMEOUT < <(
-    unset DV_START_WAIT DV_APPSERVER_TIMEOUT
+  read -r DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER < <(
+    unset DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER
     # Checked separately; avoid expanding every setting into test dataflow.
     # shellcheck source=/dev/null
     source "$ROOT/config.example.sh"
-    printf '%s %s\n' "$DV_START_WAIT" "$DV_APPSERVER_TIMEOUT"
+    printf '%s %s %s\n' "$DV_START_WAIT" "$DV_APPSERVER_TIMEOUT" "$DV_STALL_AFTER"
   )
-  export DV_START_WAIT DV_APPSERVER_TIMEOUT
+  export DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER
   unset DV_MODE
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF DV_CAPACITY_MAX_WAIT
   unset CODEX_HOME
@@ -2292,6 +2292,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+  exec_send_slow_completion \
   appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
   review_source_moved review_source_named review_source_numeric review_source_meta review_source_invalid_meta review_source_unknown review_source_start teardown_wait_host_agent \
   appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \

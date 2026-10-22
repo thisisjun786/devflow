@@ -204,7 +204,7 @@ case_pr_worker_exec_missing_pr() {
 }
 case_pr_worker_native_exec() {
   exec_setup pr-loop remote
-  export DV_PR_EARLY_EXIT=1 DV_STALL_AFTER=30
+  export DV_PR_EARLY_EXIT=1
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]\n' > "$GH_STUB_DIR/checks"
   printf '[{"body":"P1: fix the write","path":"file.sh","line":3}]\n' > "$GH_STUB_DIR/comments"
   dv start "$REPO" EX-1 worker
