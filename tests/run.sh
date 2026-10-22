@@ -174,7 +174,7 @@ AGENT
   done
   printf '1\n' > "$state/agent.exit"
   # A later exit must not replace an explicit lifecycle state.
-  for status in done ready pr landed cancelled blocked start-failed waiting-capacity; do
+  for status in 'done' ready pr landed cancelled blocked start-failed waiting-capacity; do
     jq --arg status "$status" '.status=$status' "$CASE_DIR/saved-meta" > "$state/meta"
     dv status FS-1 --json | jq -e --arg status "$status" '.[0].status==$status'
   done
