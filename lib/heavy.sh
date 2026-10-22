@@ -35,7 +35,9 @@ heavy_snapshot() {
     '{slots:$slots,in_use:$used,waiting:$waiting}'
 }
 cmd_heavy() {
-  [ "${1:-}" = -- ] && [ "$#" -ge 2 ] || fail 'usage: dv heavy -- command [args...]'
+  if [ "${1:-}" != -- ] || [ "$#" -lt 2 ]; then
+    fail 'usage: dv heavy -- command [args...]'
+  fi
   shift
   need flock; need nice
   local slots dir="$DV_STATE/.heavy" slot rc waiter=''
