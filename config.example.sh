@@ -55,7 +55,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_HERMES_BIN:=hermes}"
 : "${DV_WATCH_INTERVAL:=3}" # local queue read interval, seconds
 : "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
-: "${DV_MAX_WORKERS:=4}" # 1..8 ordinary/fallback/QA workers; managers have separate slots
+: "${DV_MAX_WORKERS:=4}" # 1..8 ordinary/fallback workers; QA uses host DV_MAX_JOBS slots
 : "${DV_RECONCILE_INTERVAL:=1800}" # status safety net seconds; capped at min(DV_STALL_AFTER, 60)
 : "${DV_METRICS_INTERVAL:=60}" # file/event activity sampling by dv-watch, seconds
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)
