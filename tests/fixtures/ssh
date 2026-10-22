@@ -1,5 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${SSH_STATUS_SLOW:-0}" = 1 ]; then
+  while [ "$#" -gt 0 ]; do
+    case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac
+  done
+  host=$1; shift
+  case "$*" in
+    'dv status --json'*)
+      printf 'status\n' >> "$CASE_DIR/status-$host"
+      printf '%s\n' "$$" > "$CASE_DIR/status-$host.pid"
+      [ "$host" != slow-host ] || exec sleep 60
+      printf '[]\n' ;;
+    *) printf '[]\n' ;;
+  esac
+  exit
+fi
 if [ "${SSH_POLISH_UNREACHABLE:-0}" != 0 ]; then
   printf '%s\n' "$*" >> "$CASE_DIR/polish-ssh-calls"
   [ "$SSH_POLISH_UNREACHABLE" != hang ] || exec sleep 30

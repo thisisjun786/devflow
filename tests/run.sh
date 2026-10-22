@@ -1962,9 +1962,15 @@ source "$ROOT/tests/watcher-stuck.sh"
 source "$ROOT/tests/task.sh"
 # shellcheck source=tests/capacity.sh
 source "$ROOT/tests/capacity.sh"
+# shellcheck source=tests/status-nonblocking.sh
+source "$ROOT/tests/status-nonblocking.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
 for name in capacity_classifier capacity_backoff capacity_exec_once capacity_exec_timeout capacity_appserver_once capacity_appserver_timeout capacity_appserver_rpc capacity_appserver_unknown capacity_qa_once capacity_qa_native capacity_qa_timeout capacity_claude capacity_devin capacity_terminal_exit capacity_terminal_timeout capacity_legacy_terminal; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else

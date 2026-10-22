@@ -75,6 +75,36 @@ appserver_atomic() {
   tmp=$(mktemp "$target.XXXXXX")
   cat > "$tmp" && mv "$tmp" "$target"
 }
+appserver_cache_write() {
+  [ "${AS_EVENTS:-0}" = 1 ] || return 0
+  printf '%s\n' "$AS_CACHED" | jq -c --argjson at "$(now)" \
+    --arg thread "$AS_THREAD" '. + {observed_at:$at,thread_id:$thread}' |
+    appserver_atomic "$S/appserver/status.json"
+}
+appserver_cache_event() {
+  local line=$1 pending=false question
+  for question in "$S/appserver/questions/"*.json; do
+    [ ! -f "$question" ] || pending=true
+  done
+  AS_CACHED=$(printf '%s\n%s\n' "${AS_CACHED:-'{}'}" "$line" | jq -sc --argjson pending "$pending" '
+    .[0] as $old | .[1] as $event | $event.params as $p | $event.method as $method |
+    $old | .alive=true | .question_pending=$pending |
+    if $method=="turn/started" then
+      .thread.status.type="active" | .turn=$p.turn | .turn_id=$p.turn.id | .error=null
+    elif $method=="turn/completed" then
+      .thread.status.type="idle" | .turn=$p.turn | .turn_id=null | .error=$p.turn.error
+    elif $method=="thread/status/changed" then .thread.status=$p.status
+    elif $method=="thread/goal/updated" then .goal=$p.goal
+    elif $method=="error" then .error=($p.error // $p)
+    else . end |
+    .agent_status=(if .error!=null or .turn.status=="failed" or .thread.status.type=="systemError" then "failed"
+      elif .thread.status.type=="active" then "working"
+      elif .goal.status=="complete" then "goal-complete"
+      elif .goal.status=="active" then "idle-with-goal-active"
+      elif .thread.status.type=="idle" then "idle"
+      else (.agent_status // "unknown") end)')
+  appserver_cache_write
+}
 appserver_event() {
   [ "$AS_EVENTS" = 1 ] || return 0
   local line=$1 method thread request key turn
@@ -116,6 +146,7 @@ appserver_event() {
       printf '%s\n' "$line" | appserver_atomic "$S/appserver/error.json" ;;
     turn/started) rm -f "$S/appserver/error.json" ;;
   esac
+  appserver_cache_event "$line"
 }
 appserver_questions() {
   local question key
@@ -162,6 +193,14 @@ appserver_rpc() {
            elif $method=="turn/steer" then (.result.turnId|type)=="string"
            elif $method=="thread/start" or $method=="thread/read" or $method=="thread/resume" then (.result.thread.id|type)=="string"
            else true end)' >/dev/null; then AS_CLASS=accepted; fi
+        if [ "$AS_CLASS" = accepted ] && [ "${AS_EVENTS:-0}" = 1 ] && [ -n "${AS_THREAD:-}" ]; then
+          case "$method" in
+            turn/start)
+              appserver_cache_event "$(printf '%s\n' "$AS_REPLY" | jq -c '{method:"turn/started",params:{turn:.result.turn}}')" ;;
+            thread/goal/set|thread/goal/get)
+              appserver_cache_event "$(printf '%s\n' "$AS_REPLY" | jq -c '{method:"thread/goal/updated",params:{goal:.result.goal}}')" ;;
+          esac
+        fi
         appserver_write_end; return 0
       fi
       appserver_event "$line"
@@ -192,6 +231,7 @@ appserver_snapshot() {
     if printf '%s\n' "$AS_REPLY" | jq -e '.error.data.codexErrorInfo=="threadNotFound" or ((.error.message // "")|test("^(thread not found|no thread found)";"i"))' >/dev/null; then state=gone; fi
     AS_SNAPSHOT=$(jq -cn --arg state "$state" '{agent_status:$state,alive:false,question_pending:false}')
     appserver_recovery_info
+    appserver_cache_snapshot
     return
   fi
   last=$(printf '%s\n' "$AS_REPLY" | jq -c '[.result.thread.turns[]?.items[]? | select(.type=="agentMessage") | .text // empty][-1] // ""')
@@ -224,6 +264,12 @@ appserver_snapshot() {
   done
   appserver_recovery_info
   printf '%s\n' "$AS_SNAPSHOT" | appserver_atomic "$S/appserver/snapshot.json"
+  appserver_cache_snapshot
+}
+appserver_cache_snapshot() {
+  [ "${AS_EVENTS:-0}" = 1 ] || return 0
+  AS_CACHED=$AS_SNAPSHOT
+  appserver_cache_write
 }
 appserver_deliver() {
   local id=$1 text=$2 recovery=${3:-0} state turn params method active cleaned
@@ -358,7 +404,7 @@ cmd__appserver_run() {
   load_issue "$1"; require_worktree
   umask 077
   local AS_EVENTS=1 AS_SEQ=0 AS_THREAD='' AS_REPLY='{}' AS_CLASS=unknown AS_SNAPSHOT='{}' AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER=''
-  local AS_LINE='' AS_PARTIAL=''
+  local AS_LINE='' AS_PARTIAL='' AS_CACHED='{}'
   local instruction params id file operation text line last_poll=0
   # bin/dv captures HEAD before sourcing the libraries.
   local client_commit=${entry_commit:-} current_commit
@@ -397,6 +443,7 @@ cmd__appserver_run() {
   fi
   now > "$S/appserver/activity"
   touch "$S/agent.started"
+  appserver_snapshot
   printf '%s\n' "$$" > "$S/appserver/ready"
   while kill -0 "$AS_PID" 2>/dev/null && kill -0 "$AS_SEND" 2>/dev/null && kill -0 "$AS_RECEIVE" 2>/dev/null; do
     for file in "$S/appserver/outbox/"*.json; do
@@ -467,6 +514,29 @@ appserver_status() (
   appserver_recovery_info
   printf '%s\n' "$AS_SNAPSHOT"
 )
+appserver_cached_row() {
+  local path=$1 time=$2 dir=${1%/meta} client=false pid=''
+  [ ! -f "$dir/appserver/client.pid" ] || read -r pid < "$dir/appserver/client.pid" || true
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then client=true; fi
+  jq -c --argjson at "$time" --argjson client "$client" \
+    --rawfile cache <(cat "$dir/appserver/status.json" 2>/dev/null || true) \
+    --rawfile 'done' <(cat "$dir/done.json" 2>/dev/null || true) \
+    --rawfile last <(tail -c 200 "$dir/log" 2>/dev/null || true) '
+    . as $meta |
+    ((try ($cache|fromjson|select(type=="object" and (.observed_at|type)=="number")) catch null) // null) as $cached |
+    (if $cached.thread_id!=null and $cached.thread_id!=$meta.thread_id then null else $cached end) as $valid |
+    ({agent_status:"unknown",alive:false,question_pending:false,recoveries:0,last_recovery_reason:null} + $valid |
+      if $client then . else .alive=false | .question_pending=false |
+        .agent_status=(if $meta.status=="landed" or $meta.status=="cancelled" then "gone" else "unknown" end) end |
+      .status_age_seconds=(if $valid.observed_at!=null then [0,($at-$valid.observed_at)]|max else null end)) as $info |
+    . + {done_head:(try ($done|fromjson|.head) catch null),backend:"appserver",alive:$info.alive,
+      agent_status:$info.agent_status,agent_dead:false,tmux:false,elapsed:($at-.started),
+      last_log:($last|split("\n")|map(select(length>0))|last // ""),question_pending:$info.question_pending,
+      goal_stalled:false,goal_active:false,agent_state_seq:null,agent_session:null,capacity_detected:false,
+      appserver:$info,recoveries:$info.recoveries,last_recovery_reason:$info.last_recovery_reason,
+      status_age_seconds:$info.status_age_seconds,capacity_retry_at:(.capacity.next_try_at // null)} |
+    if .status=="waiting-capacity" then .agent_status="waiting-capacity" else . end' "$path"
+}
 appserver_recovery_info() {
   local info='{"recoveries":0,"last_recovery_reason":null}' retry=null
   if [ -f "$S/appserver/recoveries.json" ]; then info=$(cat "$S/appserver/recoveries.json")

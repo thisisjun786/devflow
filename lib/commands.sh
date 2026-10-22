@@ -466,19 +466,24 @@ cmd_kick() {
   return 0
 }
 cmd_status() {
-  local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
+  local selected='' json=0 live=0 time path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
   local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead provider_capacity
-  for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
+  for path in "$@"; do case "$path" in --json) json=1 ;; --live) live=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
+  time=$(now)
   {
     for path in "$DV_STATE"/*/meta; do
       [ -f "$path" ] || continue
-      [ -z "$selected" ] || [ "$(basename "$(dirname "$path")")" = "$selected" ] || continue
+      [ -z "$selected" ] || [ "$path" = "$DV_STATE/$selected/meta" ] || continue
       alive=false; tmux_alive=false; agent_status=unknown; question_pending=false
       agent_dead=false
       goal_stalled=false; goal_active=false; agent_state_seq=null; agent_session=null
       provider_capacity=false
       backend=$(jq -r '.backend // "tmux"' "$path")
+      if [ "$backend" = appserver ] && [ "$live" = 0 ]; then
+        appserver_cached_row "$path" "$time"
+        continue
+      fi
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
       if [ "$backend" = appserver ]; then
@@ -553,16 +558,16 @@ cmd_status() {
       row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" \
         --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" --argjson agent_dead "$agent_dead" --argjson provider_capacity "$provider_capacity" \
         '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session,capacity_detected:$provider_capacity}' "$path")
-      if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
+      if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],status_age_seconds:0,recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
       row=$(printf '%s\n' "$row" | jq -c '.capacity_retry_at=(.capacity.next_try_at // null) |
         if .status=="waiting-capacity" then .agent_status="waiting-capacity" else . end')
       if [ "$backend" = exec ] && [ "$alive" = false ] && [ "$agent_status" = failed ]; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
       fi
-      if [ "$json" = 1 ]; then printf '%s\n' "$row"
-      else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none") else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
+      printf '%s\n' "$row"
     done
-  } | if [ "$json" = 1 ]; then jq -s .; else cat; fi
+  } | if [ "$json" = 1 ]; then jq -s .
+    else jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none"),"status_age="+(if .status_age_seconds==null then "unknown" else (.status_age_seconds|tostring)+"s" end) else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
 }
 agent_gone() {
   local reply pane pid unknown=0
