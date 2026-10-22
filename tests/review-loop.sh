@@ -326,6 +326,7 @@ review_receipt_set() {
 }
 review_receipt_parse() (
   local head=$1
+  cd "$REPO" || exit
   jq -n --slurpfile reviews "$GH_STUB_DIR/reviews" --slurpfile comments "$GH_STUB_DIR/issue-comments" \
     --slurpfile inline "$GH_STUB_DIR/comments" \
     '{reviews:$reviews[0],issue_comments:$comments[0],inline_comments:$inline[0]}' > "$CASE_DIR/snapshot"
@@ -336,7 +337,9 @@ review_receipt_parse() (
 )
 case_review_receipt() {
   # Synthetic version of the receipt-only PR #188 at head 2a4c2d9.
-  local head=2a4c2d9000000000000000000000000000000000000 length
+  repo receipt
+  local head length
+  head=$(git -C "$REPO" rev-parse HEAD)
   printf '[]\n' > "$GH_STUB_DIR/reviews"
   printf '[]\n' > "$GH_STUB_DIR/comments"
   for length in 7 10 40; do
@@ -355,7 +358,9 @@ case_review_receipt() {
   done
 }
 case_review_receipt_guards() {
-  local head=2a4c2d9000000000000000000000000000000000000 variant
+  repo receipt-guards
+  local head variant
+  head=$(git -C "$REPO" rev-parse HEAD)
   printf '[]\n' > "$GH_STUB_DIR/reviews"
   printf '[]\n' > "$GH_STUB_DIR/comments"
   for variant in old short long suffix human other_bot marker message commit timestamp finding; do
@@ -488,7 +493,9 @@ case_review_receipt_incomplete() {
 }
 
 case_review_receipt_metadata() {
-  local head=2a4c2d9000000000000000000000000000000000000 time
+  repo receipt-metadata
+  local head time
+  head=$(git -C "$REPO" rev-parse HEAD)
   printf '[]\n' > "$GH_STUB_DIR/reviews"
   printf '[{"id":101,"commit_id":"old-head","pull_request_review_id":1,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"[P1] Old head"}]\n' > "$GH_STUB_DIR/comments"
   review_receipt_set "${head:0:10}"
@@ -501,4 +508,36 @@ case_review_receipt_metadata() {
     review_receipt_parse "$head"
     jq -e '.exists and .clean and .source=="receipt" and .findings==[]' "$CASE_DIR/result"
   done
+}
+
+case_review_receipt_ambiguous() {
+  repo receipt-collision
+  local nonce old head
+  # Two precomputed commit objects share seven hex digits. No brute force runs
+  # in the test: the old clean receipt must not authorize the distinct head.
+  git -C "$REPO" mktree < /dev/null > /dev/null
+  for nonce in 21043 27714; do
+    printf 'tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor Test <test@example.invalid> 0 +0000\ncommitter Test <test@example.invalid> 0 +0000\n\nreceipt collision %s\n' "$nonce" |
+      git -C "$REPO" hash-object -w -t commit --stdin
+  done > "$CASE_DIR/commits"
+  old=$(head -n 1 "$CASE_DIR/commits"); head=$(tail -n 1 "$CASE_DIR/commits")
+  test "$old" != "$head"
+  test "${old:0:7}" = "${head:0:7}"
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
+  printf '[]\n' > "$GH_STUB_DIR/comments"
+  review_receipt_set "${old:0:7}"
+  cp "$GH_STUB_DIR/receipt" "$GH_STUB_DIR/issue-comments"
+  review_receipt_parse "$head"
+  jq -e '(.exists|not) and (.clean|not)' "$CASE_DIR/result"
+  # A longer unique abbreviation still works with both colliding objects.
+  review_receipt_set "${head:0:10}"
+  cp "$GH_STUB_DIR/receipt" "$GH_STUB_DIR/issue-comments"
+  review_receipt_parse "$head"
+  jq -e '.exists and .clean' "$CASE_DIR/result"
+  # Missing local objects cannot establish a short receipt's commit binding.
+  head=ffffffffffffffffffffffffffffffffffffffff
+  review_receipt_set "${head:0:7}"
+  cp "$GH_STUB_DIR/receipt" "$GH_STUB_DIR/issue-comments"
+  review_receipt_parse "$head"
+  jq -e '(.exists|not) and (.clean|not)' "$CASE_DIR/result"
 }

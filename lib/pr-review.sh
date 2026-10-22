@@ -25,8 +25,17 @@ review_snapshot() {
   mv "$tmp" "$file"
 }
 review_parse() {
-  local file=$1 head=$2
-  jq --arg head "$head" --arg bots "$DV_REVIEW_BOTS" '
+  local file=$1 head=$2 sha resolved prefixes='[]'
+  local receipt_pattern='^\*\*Reviewed commit:\*\*[[:blank:]]+`(?<sha>[0-9a-fA-F]{7,40})`[[:space:]]*$'
+  # Bind abbreviations to Git objects, not just matching text: two distinct
+  # commits can share seven digits. Unknown or ambiguous prefixes fail closed.
+  while IFS= read -r sha; do
+    resolved=$(git rev-parse --disambiguate="$sha" 2>/dev/null) || continue
+    [ "$resolved" = "$head" ] || continue
+    prefixes=$(printf '%s\n' "$prefixes" | jq --arg sha "$sha" '.+[$sha]')
+  done < <(jq -r --arg pattern "$receipt_pattern" '[.issue_comments[]? | .body // "" | split("\n")[] |
+    capture($pattern).sha | ascii_downcase | select(length<40)] | unique[]' "$file")
+  jq --arg head "$head" --arg bots "$DV_REVIEW_BOTS" --arg pattern "$receipt_pattern" --argjson prefixes "$prefixes" '
     # The legacy setting may still include Devin. It can never replace Codex.
     def bot: . as $login | (test("codex";"i") and endswith("[bot]")) and
       (($bots|split(",")) | any(.[]; . as $pattern | $pattern!="" and ($login|test($pattern;"i"))));
@@ -51,9 +60,8 @@ review_parse() {
     [$snapshot.issue_comments[]? | select((.user.login // "" | bot) and
       ((.body // "") | contains("<!-- codex-review-receipt:v1 -->") and
         contains("Codex Review: Didn\u0027t find any major issues"))) |
-      . as $comment | (.body | split("\n")[] |
-        capture("^\\*\\*Reviewed commit:\\*\\*[[:blank:]]+`(?<sha>[0-9a-fA-F]{7,40})`[[:space:]]*$").sha) as $sha |
-      select($head | startswith($sha | ascii_downcase)) |
+      . as $comment | (.body | split("\n")[] | capture($pattern).sha | ascii_downcase) as $sha |
+      select(($head | startswith($sha)) and (($sha|length)==40 or ($prefixes|index($sha))!=null)) |
       $comment | select((.updated_at // .created_at // "")!="" and ([findings("receipt")]|length)==0)] |
     sort_by((.updated_at // .created_at),.id) | last as $receipt |
     ($summary!=null and ($rest==null or ($summary.comment.updated_at // "")>=($rest.submitted_at // ""))) as $fresh |
