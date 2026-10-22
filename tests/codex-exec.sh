@@ -82,8 +82,8 @@ exec_failure() {
   dv status EX-1 --json | jq -e '.[0] | (.alive|not) and .agent_status=="blocked"'
 }
 case_exec_nonzero() { exec_failure nonzero; test "$(cat "$DV_STATE/EX-1/agent.exit")" = 7; }
-case_exec_capacity() { exec_failure capacity; }
-case_exec_rate() { exec_failure rate; }
+case_exec_capacity() { case_capacity_exec_timeout; }
+case_exec_rate() { case_capacity_exec_timeout rate; }
 case_exec_silence() { exec_failure silence; grep -F stalled "$DV_STATE/EX-1/events.log"; }
 case_exec_unfinished() { exec_failure unfinished; grep -F failed-to-finish "$DV_STATE/EX-1/events.log"; }
 case_exec_retry() {

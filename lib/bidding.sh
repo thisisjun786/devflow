@@ -85,8 +85,8 @@ bid_active() {
     # Release on this run's completion before its done event wakes scheduling;
     # historical or manual completions must still leave the revival counted.
     jq -c --arg revived "$revived" 'select(.cleaned_at==null and
-      (if $revived!="" then .done_episode!=$revived and .status!="landed" and .status!="cancelled"
-       else .done_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required") end))' "$path"
+      (.status=="waiting-capacity" or (if $revived!="" then .done_episode!=$revived and .status!="landed" and .status!="cancelled"
+       else .done_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required") end)))' "$path"
   done | jq -s length
 }
 bid_agent() {

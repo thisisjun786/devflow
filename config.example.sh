@@ -15,7 +15,8 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds
 : "${DV_STALL_AFTER:=300}" # App Server / exec / idle / stalled / blocked queue cursor, positive seconds
 : "${DV_RECOVER_MAX:=3}" # App Server: maximum automatic recoveries per job
-: "${DV_CAPACITY_BACKOFF:=120}" # App Server: seconds before capacity/rate-limit recovery
+: "${DV_CAPACITY_BACKOFF:=120}" # first provider capacity wait; then 2.5x, 7.5x (repeated)
+: "${DV_CAPACITY_MAX_WAIT:=21600}" # provider capacity wait deadline in seconds (6 h)
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
 : "${DV_CLAUDE_BIN:=claude}"
