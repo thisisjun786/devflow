@@ -293,6 +293,12 @@ cmd_pr_wait() {
     return
   fi
   rm "$review"
+  local recovery_episode
+  recovery_episode=$(cat "$S/revive/id" 2>/dev/null) || recovery_episode=''
+  # Recovery uses the existing one-shot revival, only with positive exit
+  # evidence. Release ownership BEFORE observing the worker: a later exit can
+  # then start a successor. If its wrapper already observed our lock, agent.exit
+  # was published first; wait for that wrapper to finish its handoff instead.
   pr_wait_unlock; trap - EXIT
   case "$BACKEND" in exec|appserver) return 0 ;; esac
   local pid
@@ -304,7 +310,8 @@ cmd_pr_wait() {
   [ "$(jq -r '.head // empty' "$S/meta")" = "$head" ] || return 0
   if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
   if agent_gone; then
-    "$DV_ROOT/bin/dv" send "$ISSUE" "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI and the current-head Codex findings. Fix P0/P1, test, commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground. Each new head needs a fresh Codex review; devflow requests it after green CI. Preserve pr-loop.json round counts. Only run dv done $ISSUE after green CI and a clean current-head review."
+    DV_PR_RECOVERY_HEAD="$head" DV_PR_RECOVERY_EPISODE="$recovery_episode" \
+      "$DV_ROOT/bin/dv" send "$ISSUE" "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI and the current-head Codex findings. Fix P0/P1, test, commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground. Each new head needs a fresh Codex review; devflow requests it after green CI. Preserve pr-loop.json round counts. Only run dv done $ISSUE after green CI and a clean current-head review."
   fi
 }
 pr_done_check() {
