@@ -53,6 +53,9 @@ teardown_stop_pidfile() {
   printf 'Fixture process %s did not stop: %s\n' "$pid" "$pidfile" >&2
   return 1
 }
+# ShellCheck 0.9 does not see the exit status passed by the EXIT trap.
+# Direct fixture teardown calls intentionally default to a successful case.
+# shellcheck disable=SC2120
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
   local pidfile pane_pid rc=0 case_result=${1:-0} diagnostic
