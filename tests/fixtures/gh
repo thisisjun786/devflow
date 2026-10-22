@@ -65,6 +65,11 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
   esac
 fi
 case "$*" in
+  'api graphql '*closingIssuesReferences*)
+    [ ! -f "$GH_STUB_DIR/closing-issues-fail" ] || { printf 'GraphQL unavailable\n' >&2; exit 1; }
+    [[ "$*" = *'--paginate'* ]] && [[ "$*" = *'pageInfo'* ]]
+    if [ -f "$GH_STUB_DIR/closing-issues" ]; then cat "$GH_STUB_DIR/closing-issues"
+    else printf '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[]}}}}}\n'; fi ;;
   'api --paginate repos/'*/issues/*/comments)
     [ ! -f "$GH_STUB_DIR/issue-comments-fail" ] || exit 1
     if [ -f "$GH_STUB_DIR/issue-comments" ]; then cat "$GH_STUB_DIR/issue-comments"; else printf '[]\n'; fi ;;
@@ -84,7 +89,10 @@ case "$*" in
     if [ -f "$GH_STUB_DIR/followups" ]; then cat "$GH_STUB_DIR/followups"; else printf '[]\n'; fi ;;
   'api repos/'*'/issues/'*' --jq .milestone.number // null')
     # gh --jq renders JSON null as empty output, unlike standalone jq.
-    if [ -f "$GH_STUB_DIR/no-milestone" ]; then printf '\n'; else printf '7\n'; fi ;;
+    if [ -f "$GH_STUB_DIR/no-milestone" ]; then printf '\n'
+    elif [ -f "$GH_STUB_DIR/source-milestones" ]; then
+      jq -r --arg number "${2##*/}" '.[$number] // empty' "$GH_STUB_DIR/source-milestones"
+    else printf '7\n'; fi ;;
   'api --method POST repos/'*'/issues --input '*|'api --method PATCH repos/'*'/issues/'*' --input '*)
     jq '.+{number:20,html_url:"https://github.com/test/repo/issues/20"}' "$6" > "$GH_STUB_DIR/followup"
     jq -s '.' "$GH_STUB_DIR/followup" > "$GH_STUB_DIR/followups"

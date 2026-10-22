@@ -60,6 +60,11 @@ teardown() {
     teardown_stop_pidfile "$pidfile" || rc=1
   done
   if command -v tmux >/dev/null; then tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true; fi
+  # Fake SSH hosts keep native wrappers outside DV_STATE. tmux can return
+  # before those wrappers finish writing their final receipts and logs.
+  for pidfile in "$CASE_DIR"/hosts/*/state/*/agent.pid; do
+    teardown_stop_pidfile "$pidfile" || rc=1
+  done
   # Shutdown handlers can still publish receipts/exited markers after TERM.
   # Preserve their directory if termination cannot be confirmed.
   if [ "$rc" != 0 ]; then printf 'Retained live fixture: %s\n' "$CASE_DIR" >&2; return 1; fi
@@ -1239,7 +1244,7 @@ case_herdr_disabled_legacy() {
 herdr_isolated_path() {
   # Exclude user PATH and ~/.local/bin so native tests cannot reach real herdr.
   mkdir -p "$CASE_DIR/path" "$CASE_DIR/empty-home"
-  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed tail wc grep rm touch awk ln; do
+  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed sort tail wc grep rm touch awk ln; do
     ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"
   done
   if [ "${1:-}" = tmux ]; then ln -s "$(command -v tmux)" "$CASE_DIR/path/tmux"; fi
@@ -2189,6 +2194,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+  review_source_moved review_source_named review_source_numeric review_source_meta review_source_invalid_meta review_source_unknown review_source_start teardown_wait_host_agent \
   appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \
   send_branch_appserver send_branch_appserver_reconnect send_branch_exec send_branch_tmux send_branch_herdr send_branch_revive send_branch_guards send_branch_missing send_branch_replaced_repo send_branch_replaced_path \
   heavy_serial heavy_kill heavy_slots heavy_status heavy_command heavy_priority heavy_config heavy_waiter_probe \
