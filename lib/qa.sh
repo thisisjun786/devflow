@@ -283,7 +283,23 @@ qa_load() {
   [ "$(jq -r '.kind // empty' "$S/meta")" = qa ] || fail 'not a QA job'
 }
 qa_open_issues() {
-  gh api --paginate "repos/$(jq -r .repository "$S/meta")/issues?state=open&per_page=100" | jq -sc 'add | map(select(.pull_request==null))'
+  local repository page=1 result count issues='[]'
+  repository=$(jq -r .repository "$S/meta") || return 1
+  # Fetch numbered pages ourselves: gh --paginate can silently stop after a
+  # full page. Count PRs too, and check one more page when the last is full.
+  while :; do
+    result=$(gh api "repos/$repository/issues?state=open&per_page=100&page=$page") || return 1
+    result=$(jq -sce 'if length==1 and (.[0]|type)=="array" then .[0]
+      else error("QA issues: expected one array per page") end' <<< "$result") || return 1
+    count=$(jq length <<< "$result") || return 1
+    result=$(jq -c '[.[] | select(.pull_request==null) | {number,title}]' <<< "$result") || return 1
+    issues="$issues
+$result"
+    [ "$count" -ge 100 ] || break
+    page=$((page + 1))
+  done
+  # Publish the list only after every page succeeds. Keep large lists off argv.
+  printf '%s\n' "$issues" | jq -sc 'add'
 }
 qa_finding() (
   [ "$#" = 2 ] || fail 'usage: dv qa finding ISSUE finding.json'
@@ -295,13 +311,20 @@ qa_finding() (
   repository=$(jq -r .repository "$S/meta"); milestone=$(jq -r .milestone.number "$S/meta")
   marker="<!-- devflow-qa:$ISSUE:$(printf '%s' "$data" | cksum | awk '{print $1 "-" $2}') -->"
   if [ -f "$S/findings.jsonl" ] && jq -se --arg marker "$marker" 'any(.[]; .marker==$marker)' "$S/findings.jsonl" >/dev/null; then return; fi
-  # Search all open titles before any write; the agent can supply match after
-  # keyword search when titles differ. A supplied match must still be open.
-  issues=$(qa_open_issues)
-  match=$(jq -r --arg title "$title" --argjson data "$data" '[.[] | select(
-    if $data.match!=null then .number==$data.match
-    else (.title|ascii_downcase)==($title|ascii_downcase) end)] | first | .number // empty' <<< "$issues")
-  if jq -e '.match!=null' <<< "$data" >/dev/null && [ -z "$match" ]; then fail 'matching issue is no longer open'; fi
+  # Validate an explicit match directly; list membership is not authoritative.
+  # Otherwise finish reading all open titles before any external write.
+  if jq -e '.match!=null' <<< "$data" >/dev/null; then
+    match=$(jq -er '.match | select(type=="number")' <<< "$data") || fail 'invalid matching issue number'
+    [[ "$match" =~ ^[1-9][0-9]*$ ]] || fail 'invalid matching issue number'
+    result=$(gh api "repos/$repository/issues/$match") || fail 'cannot look up matching issue'
+    jq -se --argjson match "$match" 'length==1 and (.[0] | type=="object" and
+      .number==$match and .state=="open" and .pull_request==null)' <<< "$result" >/dev/null ||
+      fail 'matching issue must be open and not a pull request'
+  else
+    issues=$(qa_open_issues) || fail 'cannot list open QA issues'
+    match=$(jq -r --arg title "$title" '[.[] | select(
+      (.title|ascii_downcase)==($title|ascii_downcase))] | first | .number // empty' <<< "$issues") || return 1
+  fi
   body=$(mktemp "$S/.finding.XXXXXX")
   {
     printf '%s\n\n' "$marker"

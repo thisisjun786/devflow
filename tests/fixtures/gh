@@ -24,6 +24,19 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
       [[ "$*" = *'--paginate'* ]] && [[ "$*" = *'pageInfo'* ]]
       cat "$GH_STUB_DIR/qa-graphql"; exit ;;
     'api --paginate repos/test/repo/issues?state=open&per_page=100') cat "$GH_STUB_DIR/qa-issues"; exit ;;
+    'api repos/test/repo/issues?state=open&per_page=100&page='*)
+      page=${2##*&page=}
+      if [ -f "$GH_STUB_DIR/qa-page-$page" ]; then cat "$GH_STUB_DIR/qa-page-$page"
+      elif [ "$page" = 1 ]; then cat "$GH_STUB_DIR/qa-issues"
+      else printf '[]\n'; fi
+      [ ! -f "$GH_STUB_DIR/qa-page-$page-fail" ] || exit 1
+      exit ;;
+    'api repos/test/repo/issues/'*)
+      number=${2##*/}
+      if [ -f "$GH_STUB_DIR/qa-issue-$number" ]; then cat "$GH_STUB_DIR/qa-issue-$number"
+      else jq --argjson number "$number" '.[] | select(.number==$number) | .state //= "open"' "$GH_STUB_DIR/qa-issues"; fi
+      [ ! -f "$GH_STUB_DIR/qa-issue-$number-fail" ] || exit 1
+      exit ;;
     'api --paginate repos/test/repo/issues/'*'/comments?per_page=100') cat "$GH_STUB_DIR/qa-comments"; exit ;;
     'label create '*) exit ;;
     'issue edit '*) printf 'issue-edit %s\n' "$2" >> "$GH_STUB_DIR/qa-actions"; exit ;;
