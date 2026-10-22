@@ -301,9 +301,24 @@ cmd_pr_wait() {
   [ "$(jq -r '.head // empty' "$S/meta")" = "$head" ] || return 0
   if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
   if agent_gone; then
-    "$DV_ROOT/bin/dv" send "$ISSUE" "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI, reviews and inline findings. Fix P0/P1 review findings once (preserve review-fix.sent) and fix CI within 3 rounds. After handling the findings, acknowledge with dv pr-wait $ISSUE --foreground --review-handled before the next push. Commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground until green. Do not request another review. Only run dv done $ISSUE after green CI and review handling."
+    pr_worker_recover "$head"
   fi
 }
+
+# Background waiters release their wait lock before checking process liveness.
+# Another waiter can complete revival during that check. Revalidate under the
+# issue operation lock so a stale observer cannot block a successful successor.
+pr_worker_recover() (
+  local expected=$1
+  load_issue "$ISSUE"; issue_lock; require_worktree
+  case "$BACKEND" in exec|appserver) return 0 ;; esac
+  [ ! -d "$S/revive" ] || return 0
+  [ "$(jq -r '.head // empty' "$S/meta")" = "$expected" ] || return 0
+  if jq -e --arg head "$expected" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
+  if agent_gone; then
+    revive_agent "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI, reviews and inline findings. Fix P0/P1 review findings once (preserve review-fix.sent) and fix CI within 3 rounds. After handling the findings, acknowledge with dv pr-wait $ISSUE --foreground --review-handled before the next push. Commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground until green. Do not request another review. Only run dv done $ISSUE after green CI and review handling."
+  fi
+)
 
 pr_done_check() {
   local head=$1 pr tmp
