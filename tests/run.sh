@@ -1550,9 +1550,15 @@ case_submit_spread() {
   jq -s -e '[.[].host]|unique|length==3' "$DV_HOME"/submissions/BID-{1,2,3}/task.json
   wait_file "$DV_HOME/submissions/BID-4/bids.json"
   wait_task BID-4 submitted
-  # Repeated local ticks never rebid an all-full queue.
-  sleep 0.5; cp "$CASE_DIR/ssh.calls" "$CASE_DIR/calls.before"
-  sleep 0.5; cmp "$CASE_DIR/calls.before" "$CASE_DIR/ssh.calls"
+  # Repeated local ticks never rebid an all-full queue. Status/metrics scans
+  # run independently, so compare only scheduler RPCs.
+  sleep 0.5
+  awk '$2=="dv" && ($3=="bid" || $3=="_award" || $3=="_receipt")' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.before"
+  # A concurrent safety scan can still query a host while the queue is full.
+  ssh -o BatchMode=yes hx-linux 'dv status --json' > /dev/null
+  sleep 0.5
+  awk '$2=="dv" && ($3=="bid" || $3=="_award" || $3=="_receipt")' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.after"
+  cmp "$CASE_DIR/calls.before" "$CASE_DIR/calls.after"
   host=$(jq -r .host "$DV_HOME/submissions/BID-1/task.json")
   DV_CONFIG="$CASE_DIR/hosts/$host/config" dv 'done' BID-1
   wait_task BID-1 completed; wait_task BID-4 working
