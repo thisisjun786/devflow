@@ -2073,7 +2073,7 @@ for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_serve
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
-for name in manager_reexec manager_real_conflict manager_real_pending_conflict manager_conflict_restart manager_reserved_collision manager_note_busy watch_stuck_route watch_stuck_bid watch_stuck_stack watch_stuck_empty watch_stuck_worker manager_collision manager_fallback_collision manager_hash_collision manager_legacy_replay manager_note manager_pool_independent watch_capacity_eight watch_stuck; do
+for name in manager_reexec manager_real_conflict manager_real_pending_conflict manager_conflict_restart manager_reserved_collision manager_note_busy watch_stuck_route watch_stuck_bid watch_stack_background_failure watch_stuck_empty watch_stuck_worker manager_collision manager_fallback_collision manager_hash_collision manager_legacy_replay manager_note manager_pool_independent watch_capacity_eight watch_stuck; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
   else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
 done

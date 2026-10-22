@@ -242,7 +242,26 @@ case_watch_stuck_route() {
   touch "$DV_HOME/stop"; wait "$watcher"
 }
 case_watch_stuck_bid() { case_watch_stuck_route bid; }
-case_watch_stuck_stack() { case_watch_stuck_route stack; }
+case_watch_stack_background_failure() {
+  watch_fixture
+  export WATCH_FAULT=stack DV_RECONCILE_INTERVAL=1 DV_STALL_AFTER=1
+  touch "$DV_HOME/fail-route"
+  dv-kick landed W-1 test unknown h
+  BASH_ENV="$ROOT/tests/fixtures/watch-faults" dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  # Stack publication now runs in the bounded background reconciliation.
+  # Its failure must be logged/retried without holding the event cursor.
+  wait_seen 1
+  for _ in {1..100}; do
+    if grep -q 'reconcile host=.*failed' "$DV_HOME/reconcile.log"; then break; fi
+    sleep 0.05
+  done
+  grep 'reconcile host=.*failed' "$DV_HOME/reconcile.log"
+  jq -se 'all(.[]; .kind!="watcher-stuck")' "$DV_HOME/events.log"
+  rm "$DV_HOME/fail-route"
+  wait_file "$DV_HOME/stack-route-ok"
+  test "$(cat "$DV_HOME/cursor")" = 1
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+}
 case_watch_stuck_empty() { case_watch_stuck_route empty; }
 case_watch_stuck_worker() { case_watch_stuck_route worker; }
 case_manager_real_conflict() {
