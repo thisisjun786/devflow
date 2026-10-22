@@ -104,7 +104,8 @@ review_followup() {
   } > "$body"
   payload=$(mktemp "$S/.followup-payload.XXXXXX")
   milestone=$(gh api "$repository/issues/$number" --jq '.milestone.number // null')
-  jq -n --rawfile body "$body" --arg title "Follow up on Codex review of PR #${pr##*/}" --argjson milestone "$milestone" \
+  # gh --jq renders JSON null as empty output; --argjson needs literal null.
+  jq -n --rawfile body "$body" --arg title "Follow up on Codex review of PR #${pr##*/}" --argjson milestone "${milestone:-null}" \
     '{title:$title,body:$body,milestone:$milestone}' > "$payload"
   response=$(mktemp "$S/.followup-response.XXXXXX")
   if [ -n "$existing" ]; then

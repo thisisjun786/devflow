@@ -62,7 +62,9 @@ case "$*" in
     fi ;;
   'api --paginate repos/'*'/issues?state=all&per_page=100')
     if [ -f "$GH_STUB_DIR/followups" ]; then cat "$GH_STUB_DIR/followups"; else printf '[]\n'; fi ;;
-  'api repos/'*'/issues/'*' --jq .milestone.number // null') printf '7\n' ;;
+  'api repos/'*'/issues/'*' --jq .milestone.number // null')
+    # gh --jq renders JSON null as empty output, unlike standalone jq.
+    if [ -f "$GH_STUB_DIR/no-milestone" ]; then printf '\n'; else printf '7\n'; fi ;;
   'api --method POST repos/'*'/issues --input '*|'api --method PATCH repos/'*'/issues/'*' --input '*)
     jq '.+{number:20,html_url:"https://github.com/test/repo/issues/20"}' "$6" > "$GH_STUB_DIR/followup"
     jq -s '.' "$GH_STUB_DIR/followup" > "$GH_STUB_DIR/followups"
