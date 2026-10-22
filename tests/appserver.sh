@@ -74,6 +74,23 @@ appserver_setup() {
   printf 'idle\n' > "$CASE_DIR/server/status"
   dv start "$REPO" AS-1 change --brief "$CASE_DIR/brief"
 }
+appserver_wait_work() {
+  # Provider work precedes queued completion RPCs. Observe the worker's real
+  # exit using the same overall bound as appserver_request, not one RPC's time.
+  local deadline=$((SECONDS + DV_APPSERVER_TIMEOUT * 5 + 5))
+  while [ ! -f "$CASE_DIR/server/work.exit" ]; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      printf 'Timed out waiting for fake App Server work\n' >&2
+      return 1
+    fi
+    sleep 0.05
+  done
+  if [ "$(cat "$CASE_DIR/server/work.exit")" != 0 ]; then
+    tail -n 5 "$CASE_DIR/server/work.log" >&2
+    return 1
+  fi
+  test -f "$CASE_DIR/server/work.done"
+}
 appserver_checkout_setup() {
   local legacy=${1:-false}
   CLIENT_ROOT="$CASE_DIR/client checkout"
@@ -701,7 +718,7 @@ case_appserver_exec() {
 case_appserver_pipeline() {
   export DV_APP_TEST_WORK=1
   appserver_setup remote
-  wait_file "$CASE_DIR/server/work.done"
+  appserver_wait_work
   jq -e '.files==1' "$DV_STATE/AS-1/done.json"
   dv status AS-1 --json | jq -e '.[0] | .status=="ready" and .agent_status=="goal-complete" and .backend=="appserver" and (.tmux|not)'
   printf 'Exercise synthetic App Server delivery.\n' > "$DV_STATE/AS-1/pr.md"
@@ -1019,7 +1036,7 @@ appserver_idle_done() {
   appserver_age
   dv _appserver-watch
   jq -se 'any(.[]; .method=="turn/start" and (.params.input[0].text|contains("You stopped without dv done") and contains("dv done AS-1") and contains("dv kick blocked AS-1")))' "$CASE_DIR/server/requests"
-  wait_file "$CASE_DIR/server/work.done"
+  appserver_wait_work
   jq -e '.files==1' "$DV_STATE/AS-1/done.json"
   appserver_age
   dv _appserver-watch

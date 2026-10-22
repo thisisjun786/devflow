@@ -21,14 +21,14 @@ setup() {
   # Ordinary lifecycle tests use the product's deadlines, even on a busy host.
   # Isolate the defaults so sourcing config cannot change other fixture values.
   # Cases that exercise timeout behavior select their short deadline explicitly.
-  read -r DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER < <(
-    unset DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER
+  read -r DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT < <(
+    unset DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT
     # Checked separately; avoid expanding every setting into test dataflow.
     # shellcheck source=/dev/null
     source "$ROOT/config.example.sh"
-    printf '%s %s %s\n' "$DV_START_WAIT" "$DV_APPSERVER_TIMEOUT" "$DV_STALL_AFTER"
+    printf '%s %s %s %s %s\n' "$DV_START_WAIT" "$DV_APPSERVER_TIMEOUT" "$DV_STALL_AFTER" "$DV_BID_TIMEOUT" "$DV_AWARD_TIMEOUT"
   )
-  export DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER
+  export DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT
   unset DV_MODE
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF DV_CAPACITY_MAX_WAIT
   unset CODEX_HOME
@@ -70,7 +70,7 @@ teardown_stop_pidfile() {
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
   local pidfile pane_pid rc=0 case_result=${1:-0} diagnostic
-  for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
+  for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$CASE_DIR"/server/work-*.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
     teardown_stop_pidfile "$pidfile" || rc=1
   done
   if command -v tmux >/dev/null; then
@@ -1598,7 +1598,6 @@ bidding_hosts() {
   needs_tmux; repo bidding
   export SSH_BIDDING=1 DV_MANAGER_HOST=test-host DV_HOSTS='lina-os go2-linux hx-linux'
   export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1 DV_RECONCILE_INTERVAL=99999
-  export DV_BID_TIMEOUT=2 DV_AWARD_TIMEOUT=3
   local host
   for host in hx-linux go2-linux lina-os; do
     mkdir -p "$CASE_DIR/hosts/$host"
@@ -1745,6 +1744,7 @@ case_submit_order_amd_go2() {
 }
 case_submit_timeout() {
   bidding_hosts
+  export DV_BID_TIMEOUT=2
   touch "$CASE_DIR/hosts/hx-linux/hang-bid" "$CASE_DIR/hosts/go2-linux/drop-award"
   dv submit "$REPO" TIME-1 change --brief "$CASE_DIR/brief"
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
@@ -1765,7 +1765,7 @@ case_submit_forward() {
 case_award_capacity() {
   bidding_hosts
   request() {
-    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + 10 ))" \
+    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + DV_AWARD_TIMEOUT ))" \
       '{issue:$issue,repo:$repo,slug:"capacity",agent:"codex",mode:"goal",base:"",brief:"held fake agent",token:$issue,deadline:$deadline}'
   }
   request CAPA-1 | DV_CONFIG="$CASE_DIR/hosts/hx-linux/config" dv _award > "$CASE_DIR/a1" & a1=$!
@@ -1837,7 +1837,7 @@ case_bid_clone() {
   export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$CASE_DIR/remote.git.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/test/repo.git
   dv bid --json --repo https://github.com/test/repo.git --agent codex | jq -e '.status=="submitted" and (.repo_cloned|not)'
   test ! -e "$DV_REPO_ROOT"
-  jq -cn --argjson deadline "$(( $(date +%s) + 10 ))" \
+  jq -cn --argjson deadline "$(( $(date +%s) + DV_AWARD_TIMEOUT ))" \
     '{issue:"CLONE-1",repo:"https://github.com/test/repo.git",slug:"clone",agent:"codex",mode:"goal",base:"",brief:"held fake agent",token:"clone",deadline:$deadline}' |
     DV_AGENT_CMD_codex='exec sleep 30' dv _award | jq -e '.status=="working"'
   test -d "$DV_REPO_ROOT/repo/.git"
@@ -2002,12 +2002,13 @@ if [ "${1:-}" = start ] && [ -f "$CASE_DIR/delay-start" ]; then
   touch "$CASE_DIR/start-entered"
   exec sleep 30
 fi
+if [ "${1:-}" = start ] && [ "${DV_TEST_AWARD_DELAY:-0}" != 0 ]; then sleep "$DV_TEST_AWARD_DELAY"; fi
 exec "$(dirname "$0")/dv-real" "$@"
 STUB
   chmod +x "$CASE_DIR/tool/bin/dv"
   export DV_ROOT="$CASE_DIR/tool"
   award_request() {
-    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + 10 ))" \
+    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + DV_AWARD_TIMEOUT ))" \
       '{issue:$issue,repo:$repo,slug:"timeout",agent:"codex",mode:"goal",base:"",brief:"fake",token:$issue,deadline:$deadline}'
   }
   touch "$CASE_DIR/delay-start"
@@ -2016,7 +2017,7 @@ STUB
   test -d "$DV_STATE/.admission-lock"
   cp "$DV_STATE/.awards/LOCK-1/receipt.json" "$CASE_DIR/uncertain-receipt"
   rm "$CASE_DIR/delay-start"
-  award_request LOCK-2 | bid_limit 3 bid_rpc "$DV_HOST" _award > "$CASE_DIR/next.json"
+  award_request LOCK-2 | bid_limit "$DV_AWARD_TIMEOUT" bid_rpc "$DV_HOST" _award > "$CASE_DIR/next.json"
   jq -e '.status=="working"' "$CASE_DIR/next.json"
   cmp "$CASE_DIR/uncertain-receipt" "$DV_STATE/.awards/LOCK-1/receipt.json"
   test ! -d "$DV_STATE/.admission-lock"
@@ -2036,6 +2037,10 @@ STUB
   owned_unlock "$DV_STATE/.admission-lock" "$$"
   test ! -e "$DV_STATE/.admission-lock/owner"
   test ! -e "$DV_STATE/.admission-lock/pid-$$"
+}
+case_award_timeout_slow_success() {
+  export DV_TEST_AWARD_DELAY=4
+  case_award_timeout_lock
 }
 bid_without_tmux() {
   cat > "$CASE_DIR/no-tmux-env" <<'NO_TMUX'
@@ -2307,6 +2312,8 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+  award_timeout_slow_success \
+  capacity_appserver_slow_work \
   question_goal_start_ack \
   exec_send_slow_completion \
   appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \

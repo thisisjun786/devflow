@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
+start_fixture_work() {
+  local issue=$1 agent=$2 pid
+  rm -f "$CASE_DIR/server/work.done" "$CASE_DIR/server/work.exit"
+  (
+    # Only this worker publishes its exit; pre-exec children may inherit EXIT.
+    work_owner_subshell=$BASH_SUBSHELL
+    trap 'work_result=$?; if [ "$BASH_SUBSHELL" = "$work_owner_subshell" ]; then
+      work_status_file=$(mktemp "$CASE_DIR/server/.work-exit.XXXXXX")
+      printf "%s\n" "$work_result" > "$work_status_file"
+      mv "$work_status_file" "$CASE_DIR/server/work.exit"
+    fi' EXIT
+    cd "$(jq -r .worktree "$DV_STATE/$issue/meta")" || exit 1
+    env DV_ISSUE="$issue" "$agent" || exit "$?"
+    printf 'idle\n' > "$CASE_DIR/server/status"
+    touch "$CASE_DIR/server/work.done"
+  ) > "$CASE_DIR/server/work.log" 2>&1 & pid=$!
+  printf '%s\n' "$pid" > "$CASE_DIR/server/work-$pid.pid"
+}
 if [ "${1:-}" = --peer ]; then
   # shellcheck source=lib/appserver-transport.sh
   source "$ROOT/lib/appserver-transport.sh"
@@ -142,20 +160,10 @@ while IFS= read -r line; do
   if [ "$method" = turn/start ] &&
     { { [ "${DV_APP_TEST_WORK:-0}" = 1 ] && [ "$id" = '"initial-turn"' ]; } ||
       { [ -f "$CASE_DIR/server/recovery-work" ] && [ "$id" != '"initial-turn"' ]; }; }; then
-    (
-      cd "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
-      DV_ISSUE=AS-1 "$ROOT/tests/fixtures/agent"
-      printf 'idle\n' > "$CASE_DIR/server/status"
-      touch "$CASE_DIR/server/work.done"
-    ) > "$CASE_DIR/server/work.log" 2>&1 &
+    start_fixture_work AS-1 "$ROOT/tests/fixtures/agent"
   fi
   if [ "${DV_TASK_APP_TEST_WORK:-0}" = 1 ] && [ "$method" = turn/start ] && [ "$id" = '"initial-turn"' ]; then
-    (
-      cd "$(jq -r .worktree "$DV_STATE/TK-1/meta")"
-      DV_ISSUE=TK-1 "$ROOT/tests/fixtures/task-agent"
-      printf 'idle\n' > "$CASE_DIR/server/status"
-      touch "$CASE_DIR/server/work.done"
-    ) > "$CASE_DIR/server/work.log" 2>&1 &
+    start_fixture_work TK-1 "$ROOT/tests/fixtures/task-agent"
   fi
   if [ -f "$CASE_DIR/server/notify" ]; then
     mv "$CASE_DIR/server/notify" "$CASE_DIR/server/notified"

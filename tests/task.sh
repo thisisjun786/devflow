@@ -386,7 +386,7 @@ case_task_appserver() {
   export DV_CODEX_MODE=auto DV_TASK_APP_TEST_WORK=1
   task_start
   jq -e '.kind=="task" and .backend=="appserver" and .mode=="goal" and .thread_id=="thread-1"' "$DV_STATE/TK-1/meta"
-  wait_file "$CASE_DIR/server/work.done"
+  appserver_wait_work
   local wt head
   wt=$(jq -r .worktree "$DV_STATE/TK-1/meta")
   head=$(jq -r .head "$DV_STATE/TK-1/done.json")
