@@ -154,3 +154,9 @@ session_enter() {
 source "$DV_ROOT/lib/metrics.sh"
 # shellcheck source=lib/disk.sh
 source "$DV_ROOT/lib/disk.sh"
+# shellcheck source=lib/tmp.sh
+source "$DV_ROOT/lib/tmp.sh"
+# Collect both the configured disk root and the caller's previous temporary
+# root. Unmarked legacy directories are deliberately retained.
+tmp_collect "$DV_TMP" "${TMPDIR:-/tmp}"
+tmp_environment

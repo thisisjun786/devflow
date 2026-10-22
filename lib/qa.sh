@@ -202,7 +202,7 @@ cmd__qa_run() (
     base=$(jq -er '.base.ref // empty' <<< "$pr")
   fi
   qa_step='checkout'
-  scratch=$(mktemp -d "${TMPDIR:-/tmp}/dv-qa.XXXXXX")
+  tmp_make scratch dv-qa
   printf '%s\n' "$scratch" > "$qa_dir/scratch"
   git clone --quiet --no-hardlinks --no-checkout "$remote" "$scratch/source"
   git -C "$scratch/source" checkout --quiet --detach "refs/remotes/origin/$base"
