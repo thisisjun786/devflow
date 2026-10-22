@@ -142,21 +142,21 @@ case_appserver_legacy_capacity() {
   appserver_checkout_update
   appserver_wait_updated
   # The first poll evaluates the legacy marker without requiring a watch call.
-  wait_file "$state/capacity-since"
+  capacity_status_wait AS-1
   test ! -f "$state/blocked"
   jq -e '.recoveries==0' "$state/recoveries.json"
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
-  printf '0\n' > "$state/capacity-since"
+  capacity_due AS-1
   dv _appserver-watch
-  jq -e '.recoveries==1 and .last_recovery_reason=="capacity"' "$state/recoveries.json"
+  jq -e '.recoveries==0' "$state/recoveries.json"
   dv _appserver-watch
-  test -f "$state/blocked"
+  test ! -f "$state/blocked"
   rm "$CASE_DIR/server/resumed"
   appserver_checkout_update
   appserver_wait_updated
   dv _appserver-watch
-  jq -se '[.[]|select(.method=="turn/start" and .params.input[0].text=="continue")]|length==1' "$CASE_DIR/server/requests"
-  jq -se '[.[]|select(.kind=="blocked")]|length==1' "$DV_STATE/AS-1/events.log"
+  jq -se '[.[]|select(.method=="turn/start" and (.params.input[0].text|startswith("Continue the interrupted request")))]|length==1' "$CASE_DIR/server/requests"
+  jq -se 'map(.kind)==["waiting-capacity"]' "$DV_STATE/AS-1/events.log"
 }
 appserver_legacy_guard() {
   local guard=$1 state
@@ -182,7 +182,7 @@ appserver_legacy_guard() {
   dv _appserver-watch
   dv status AS-1 --json >/dev/null
   test -f "$state/blocked"
-  test ! -f "$state/capacity-since"
+  jq -e '.capacity==null' "$DV_STATE/AS-1/meta"
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
   case "$guard" in
     budget|episode) jq -e '.recoveries==1' "$state/recoveries.json" ;;
@@ -320,6 +320,20 @@ case_appserver_large_reply() {
   dv 'done' AS-1
   dv clean AS-1
   test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
+}
+case_appserver_status_landed_cheap() {
+  # Finished jobs must not cost an App Server round trip on every dv status;
+  # the watcher reconciles every host each minute and history only grows.
+  appserver_setup
+  printf 'complete\n' > "$CASE_DIR/server/goal"
+  printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"completed","items":[],"error":null}]}}' > "$CASE_DIR/server/thread.json"
+  dv 'done' AS-1
+  dv clean AS-1
+  jq '.status="landed"' "$DV_STATE/AS-1/meta" > "$CASE_DIR/meta"; mv "$CASE_DIR/meta" "$DV_STATE/AS-1/meta"
+  : > "$CASE_DIR/server/requests"
+  dv status --json | jq -e '.[0] | .status=="landed" and .agent_status=="gone" and .alive==false'
+  dv status AS-1 --json >/dev/null
+  test ! -s "$CASE_DIR/server/requests"
 }
 case_appserver_failed() {
   appserver_setup
@@ -827,21 +841,21 @@ case_appserver_capacity() {
   if [ -f "$DV_STATE/AS-1/events.log" ]; then jq -se 'all(.[]; .kind!="failed" and .kind!="blocked")' "$DV_STATE/AS-1/events.log"; fi
   dv status AS-1 --json | jq -e '.[0].recoveries==0 and .[0].appserver.capacity_retry_at!=null'
   # The client remains responsive during backoff. Expire only the fixture timer.
-  printf '0\n' > "$DV_STATE/AS-1/appserver/capacity-since"
+  capacity_due AS-1
   dv _appserver-watch
   dv _appserver-watch
-  jq -se '[.[]|select(.method=="turn/start" and .params.input[0].text=="continue")]|length==1' "$CASE_DIR/server/requests"
-  dv status AS-1 --json | jq -e '.[0].recoveries==1 and .[0].last_recovery_reason=="capacity"'
+  jq -se '[.[]|select(.method=="turn/start" and (.params.input[0].text|startswith("Continue the interrupted request")))]|length==1' "$CASE_DIR/server/requests"
+  dv status AS-1 --json | jq -e '.[0].recoveries==0 and .[0].last_recovery_reason==null'
 }
 case_appserver_rate_limit() {
   export DV_CAPACITY_BACKOFF=1
   appserver_setup
   appserver_capacity_error '{"message":"Too many requests","codexErrorInfo":{"httpConnectionFailed":{"httpStatusCode":429}}}'
   dv _appserver-watch
-  test -f "$DV_STATE/AS-1/appserver/capacity-since"
+  jq -e '.capacity!=null' "$DV_STATE/AS-1/meta"
   sleep 1
   dv _appserver-watch
-  dv status AS-1 --json | jq -e '.[0].recoveries==1 and .[0].last_recovery_reason=="capacity"'
+  dv status AS-1 --json | jq -e '.[0].recoveries==0 and .[0].last_recovery_reason==null'
 }
 case_appserver_recovery_guards() {
   appserver_setup
@@ -911,15 +925,15 @@ case_appserver_capacity_notification() {
   printf '%s\n' '{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"Rate limit reached"}}}' > "$CASE_DIR/server/notify"
   dv status AS-1 --json >/dev/null
   dv _appserver-watch
-  test -f "$DV_STATE/AS-1/appserver/capacity-since"
+  jq -e '.capacity!=null' "$DV_STATE/AS-1/meta"
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
-  printf '0\n' > "$DV_STATE/AS-1/appserver/capacity-since"
+  capacity_due AS-1
   dv _appserver-watch
-  dv status AS-1 --json | jq -e '.[0].recoveries==1 and .[0].last_recovery_reason=="capacity"'
+  dv status AS-1 --json | jq -e '.[0].recoveries==0 and .[0].last_recovery_reason==null'
   appserver_progress
   appserver_age
   dv _appserver-watch
-  dv status AS-1 --json | jq -e '.[0].recoveries==2 and .[0].last_recovery_reason=="stalled"'
+  dv status AS-1 --json | jq -e '.[0].recoveries==1 and .[0].last_recovery_reason=="stalled"'
 }
 
 case_appserver_pr_idle_recover() {

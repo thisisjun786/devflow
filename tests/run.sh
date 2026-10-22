@@ -19,7 +19,7 @@ setup() {
   export DV_AUTO_UPDATE=0
   export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5 DV_APPSERVER_TIMEOUT=1
   unset DV_MODE
-  unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF
+  unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF DV_CAPACITY_MAX_WAIT
   unset CODEX_HOME
   export DV_TRUSTED_REPOS='' DV_CODEX_ENV_FILE="$HOME/.opencodex/codex-auth-env.sh"
   unset DV_AGENT_QUESTIONS DV_AWARD_TOKEN CLAUDE_CONFIG_DIR
@@ -1954,9 +1954,19 @@ source "$ROOT/tests/stack.sh"
 source "$ROOT/tests/watcher-stuck.sh"
 # shellcheck source=tests/task.sh
 source "$ROOT/tests/task.sh"
+# shellcheck source=tests/capacity.sh
+source "$ROOT/tests/capacity.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in capacity_classifier capacity_backoff capacity_exec_once capacity_exec_timeout capacity_appserver_once capacity_appserver_timeout capacity_appserver_rpc capacity_appserver_unknown capacity_qa_once capacity_qa_native capacity_qa_timeout capacity_claude capacity_devin capacity_terminal_exit capacity_terminal_timeout capacity_legacy_terminal; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else
+    result=$?
+    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+    else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+  fi
+done
 for name in land_merged land_merged_recorded_pr land_merged_recorded_done land_merged_mismatch land_merged_base_mismatch land_merged_cleanup_retry land_merged_dirty land_merged_checks land_worker_rule appserver_land_merged_active appserver_land_merged_timeout appserver_land_merged_failed appserver_land_merged_system_error; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
@@ -1993,7 +2003,7 @@ for name in stack_unfinished_auto_land stack_auto_done_guard stack_auto_done_mer
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in appserver_reexec_accepted appserver_reexec_refused appserver_reexec_unknown appserver_legacy_capacity appserver_legacy_budget appserver_legacy_episode appserver_legacy_idle appserver_legacy_done appserver_legacy_inactive appserver_legacy_question appserver_scratch_root appserver_scratch_tmpdir appserver_scratch_long appserver_stale_done_recover appserver_pr_idle_recover appserver_recovery_uncertain appserver_recovery_events appserver_recovery_early_progress appserver_capacity_notification appserver_idle_done appserver_goal_done appserver_idle_blocked appserver_episode appserver_budget appserver_budget_restart appserver_capacity appserver_rate_limit appserver_recovery_guards appserver_start appserver_accepted appserver_refused appserver_unknown appserver_idle_send appserver_states appserver_large_reply appserver_read_partial appserver_failed appserver_retried_error appserver_stall appserver_question appserver_auto appserver_no_goal appserver_clean_guard appserver_reconnect appserver_active_stall appserver_unknown_restart appserver_question_multiple appserver_question_retry appserver_malformed appserver_watch appserver_fallback appserver_exec_override appserver_goal_override appserver_submit_auto appserver_exec appserver_pipeline appserver_pr_pending appserver_preserve_config appserver_detached appserver_detached_fallback appserver_websocket appserver_active_error_send appserver_interrupt_pending appserver_interrupt_timeout appserver_done_refused appserver_done_unknown appserver_land_active; do
+for name in appserver_reexec_accepted appserver_reexec_refused appserver_reexec_unknown appserver_legacy_capacity appserver_legacy_budget appserver_legacy_episode appserver_legacy_idle appserver_legacy_done appserver_legacy_inactive appserver_legacy_question appserver_scratch_root appserver_scratch_tmpdir appserver_scratch_long appserver_stale_done_recover appserver_pr_idle_recover appserver_recovery_uncertain appserver_recovery_events appserver_recovery_early_progress appserver_capacity_notification appserver_idle_done appserver_goal_done appserver_idle_blocked appserver_episode appserver_budget appserver_budget_restart appserver_capacity appserver_rate_limit appserver_recovery_guards appserver_start appserver_accepted appserver_refused appserver_unknown appserver_idle_send appserver_states appserver_large_reply appserver_read_partial appserver_status_landed_cheap appserver_failed appserver_retried_error appserver_stall appserver_question appserver_auto appserver_no_goal appserver_clean_guard appserver_reconnect appserver_active_stall appserver_unknown_restart appserver_question_multiple appserver_question_retry appserver_malformed appserver_watch appserver_fallback appserver_exec_override appserver_goal_override appserver_submit_auto appserver_exec appserver_pipeline appserver_pr_pending appserver_preserve_config appserver_detached appserver_detached_fallback appserver_websocket appserver_active_error_send appserver_interrupt_pending appserver_interrupt_timeout appserver_done_refused appserver_done_unknown appserver_land_active; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
@@ -2009,7 +2019,7 @@ for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metri
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in review_legacy_bot stack_review_update stack_review_recover review_clean_summary review_summary_guards review_summary_api_failure review_other_bot review_ci_first review_badges review_current review_summary review_land_missing review_land_latest review_timeout review_rounds review_e2e review_followup review_retry_arrives review_done_live review_api_failure review_latest_inline pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_requires_review pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
+for name in review_summary_new_findings review_summary_latest_low review_summary_complete_low review_legacy_bot stack_review_update stack_review_recover review_clean_summary review_summary_guards review_summary_api_failure review_other_bot review_ci_first review_badges review_current review_summary review_land_missing review_land_latest review_timeout review_rounds review_e2e review_followup review_retry_arrives review_done_live review_api_failure review_latest_inline pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_requires_review pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

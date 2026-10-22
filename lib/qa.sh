@@ -149,7 +149,7 @@ qa_run_cleanup() {
   local rc=$? reason
   trap - EXIT INT TERM
   if [ -n "${qa_child:-}" ]; then bid_stop_tree "$qa_child"; wait "$qa_child" 2>/dev/null || true; fi
-  reason="QA failed at $qa_step (exit $rc); inspect log before retrying"
+  reason=${qa_failure_reason:-"QA failed at $qa_step (exit $rc); inspect log before retrying"}
   if [ "$rc" != 0 ]; then
     printf '%s\n' "$reason" >&2
     if [ -z "${S:-}" ] || [ ! -f "$S/meta" ]; then
@@ -160,7 +160,7 @@ qa_run_cleanup() {
     printf '%s\n' "$rc" > "$S/agent.exit"
     if [ "$rc" != 0 ]; then
       meta_set --arg reason "$reason" '.status="blocked" | .failure_reason=$reason'
-      cmd_kick blocked "$ISSUE" "$reason"
+      [ -n "${qa_failure_reason:-}" ] || cmd_kick blocked "$ISSUE" "$reason"
     fi
   fi
   printf '%s\n' "$rc" > "$qa_dir/exit"
@@ -173,6 +173,8 @@ cmd__qa_run() (
   [ "$#" = 1 ] || fail 'usage: dv _qa-run <qa-directory>'
   local qa_dir=$1 qa_child='' scratch repository remote base head settings agent pr milestone prompt
   local S='' ISSUE='' WT='' qa_step='request'
+  local qa_failure_reason='' rc session='' new_session instruction attempt=0 output
+  local args=()
   [ "$(dirname "$qa_dir")" = "$DV_HOME/qa" ] || fail 'invalid QA directory'
   [ "$(cat "$qa_dir/pid")" = "$PPID" ] || fail 'QA runner has no parent reservation'
   (set -C; printf '%s\n' "$$" > "$qa_dir/claim") 2>/dev/null || fail 'QA reservation already claimed'
@@ -235,20 +237,45 @@ cmd__qa_run() (
   printf '\nJob: %s\nRepository: %s\nHead: %s\nMilestone: %s\nIsolated product home/state/output: %s/{home,state,out}\nReport: %s/report.md\n' \
     "$ISSUE" "$repository" "$head" "$(jq -r '.title // "none"' <<< "$milestone")" "$scratch" "$S" >> "$prompt"
   export DV_ISSUE="$ISSUE" DV_QA_SCRATCH="$scratch"
+  instruction=$(cat "$prompt")
+  while :; do
+  attempt=$((attempt + 1)); output="$S/agent-$attempt.log"
+  export DV_AGENT_INSTRUCTION="$instruction"
   if [ -n "$DV_QA_AGENT_CMD" ]; then
-    (cd "$WT" && bash -c "$DV_QA_AGENT_CMD \"\$@\"" dv-qa "$prompt") > "$S/log" 2>&1 & qa_child=$!
+    (cd "$WT" && bash -c "$DV_QA_AGENT_CMD \"\$@\"" dv-qa "$prompt") > "$output" 2>&1 & qa_child=$!
   elif [ "$agent" = codex ]; then
     codex_environment || fail 'Codex environment unavailable'
-    (cd "$WT" && "$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\"" \
-      --disable hooks -c 'plugins."crw@crw".enabled=false' exec --json --dangerously-bypass-approvals-and-sandbox \
-      "$(cat "$prompt")") > "$S/log" 2>&1 & qa_child=$!
+    args=("$DV_CODEX_BIN" -m "$DV_CODEX_MODEL" -c "model_reasoning_effort=\"$DV_CODEX_EFFORT\""
+      --disable hooks -c 'plugins."crw@crw".enabled=false' exec)
+    if [ -n "$session" ]; then args+=(resume --json --dangerously-bypass-approvals-and-sandbox "$session")
+    else args+=(--json --dangerously-bypass-approvals-and-sandbox); fi
+    (cd "$WT" && "${args[@]}" "$instruction") > "$output" 2>&1 & qa_child=$!
   else
+    # The QA workspace is isolated; preserve it and include the original brief
+    # on continuation even when the CLI does not persist a provider session.
     (cd "$WT" && "$DV_CLAUDE_BIN" --model "$DV_CLAUDE_MODEL" --dangerously-skip-permissions \
-      --no-session-persistence -p "$(cat "$prompt")") > "$S/log" 2>&1 & qa_child=$!
+      --no-session-persistence -p "$instruction") > "$output" 2>&1 & qa_child=$!
   fi
   printf '%s\n' "$qa_child" > "$qa_dir/child.pid"
   qa_step='agent'
-  wait "$qa_child"; qa_child=''
+  rc=0; wait "$qa_child" || rc=$?; qa_child=''
+  rm -f "$qa_dir/child.pid"
+  cat "$output" >> "$S/log"
+  if capacity_output_error "$output" "$rc"; then
+    new_session=$(jq -Rr 'fromjson? | select(.type=="thread.started") | .thread_id // empty' "$output" | tail -n 1)
+    [ -z "$new_session" ] || session=$new_session
+    if ! capacity_wait; then
+      qa_failure_reason=$(jq -r .failure_reason "$S/meta")
+      exit 1
+    fi
+    instruction="Continue the interrupted request in this worktree. Preserve existing changes and findings; do not start over.
+$(cat "$prompt")"
+    continue
+  fi
+  capacity_clear
+  [ "$rc" = 0 ] || exit "$rc"
+  break
+  done
   [ -f "$S/done.json" ] || fail 'QA exited without dv done'
 )
 qa_load() {

@@ -88,6 +88,14 @@ while IFS= read -r line; do
       else turn=$(cat "$CASE_DIR/server/turn-id" 2>/dev/null) || turn='turn-1'
         result=$(jq -cn --arg status "$status" --arg turn "$turn" '{thread:{id:"thread-1",status:{type:$status},turns:(if $status=="active" then [{id:$turn,status:"inProgress",items:[]}] else [] end)}}'); fi ;;
     turn/start|turn/steer)
+      if [ "$method" = turn/start ] && [ "${DV_APP_CAPACITY_RPC:-0}" -gt 0 ]; then
+        refused_count=$(cat "$CASE_DIR/server/capacity-rpc-count" 2>/dev/null) || refused_count=0
+        if [ "$refused_count" -lt "$DV_APP_CAPACITY_RPC" ]; then
+          printf '%s\n' "$((refused_count + 1))" > "$CASE_DIR/server/capacity-rpc-count"
+          jq -cn --argjson id "$id" '{id:$id,error:{code:429,message:"HTTP 429: provider overloaded"}}'
+          continue
+        fi
+      fi
       if [ "$method" = turn/steer ] && [ -f "$CASE_DIR/server/hold-mutation" ]; then
         touch "$CASE_DIR/server/mutation-held"
         for _ in {1..200}; do
@@ -105,6 +113,7 @@ while IFS= read -r line; do
       printf 'active\n' > "$CASE_DIR/server/status"
       [ "$outcome" != unknown ] || continue
       if [ "$method" = turn/start ]; then
+        if [ -f "$CASE_DIR/server/capacity-once" ]; then rm -f "$CASE_DIR/server/thread.json"; fi
         turn_count=$(cat "$CASE_DIR/server/turn-count" 2>/dev/null) || turn_count=0
         turn_count=$((turn_count + 1))
         printf '%s\n' "$turn_count" > "$CASE_DIR/server/turn-count"

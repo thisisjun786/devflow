@@ -184,7 +184,7 @@ case_stall_capacity() {
   dv status ST-1 --json | jq -e '.[0] | .goal_stalled and (.goal_active|not)'
   stall_functions
   STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
-  stall_scan; stall_tick; stall_count 1
+  stall_scan; stall_tick; stall_count 0
 }
 case_stall_resume() {
   stall_fixture; stall_functions
@@ -268,11 +268,13 @@ case_stall_banner_sequence() {
 }
 case_stall_watch_resume() {
   stall_fixture
+  export DV_CAPACITY_BACKOFF=1 DV_CAPACITY_MAX_WAIT=30
   printf 'Selected model is at capacity\n› \n' > "$CASE_DIR/herdr/w-ST-1/output"
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_file "$DV_STATE/ST-1/goal-input"
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
-  stall_count 1; stall_resume_count 1
+  stall_count 0; stall_resume_count 1
+  jq -se '[.[]|select(.kind=="waiting-capacity")]|length==1' "$DV_STATE/ST-1/events.log"
   grep -Fx '/goal resume' "$DV_STATE/ST-1/goal-input"
   test ! -d "$DV_STATE/ST-1/revive"
 }
@@ -325,7 +327,9 @@ case_stall_working_banner_detection() {
     printf '• Working\n%s\n› \n' "$banner" > "$CASE_DIR/herdr/w-ST-1/output"
     STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
     stall_scan; stall_tick 9; stall_count "$count"
-    stall_tick 1; count=$((count + 1)); stall_count "$count"
+    stall_tick 1
+    if [ "$banner" = 'Goal stalled' ]; then count=$((count + 1)); fi
+    stall_count "$count"
     stall_tick; stall_count "$count"
     # A newer activity banner ends this episode despite old stalled text.
     printf '%s\n• Pursuing goal\n› \n' "$banner" > "$CASE_DIR/herdr/w-ST-1/output"
@@ -341,6 +345,12 @@ case_stall_working_banner_resume() {
     printf '• Pursuing goal\n%s\n› \n' "$banner" > "$CASE_DIR/herdr/w-ST-1/output"
     count=$((count + 1))
     cmd__stall_recover ST-1 "working-banner-$count" round-1
+    if [ "$banner" = 'Selected model is at capacity' ]; then
+      stall_resume_count 0
+      capacity_due ST-1
+      cmd__stall_recover ST-1 "working-banner-$count" round-1
+      test ! -f "$DV_STATE/ST-1/stall-recovery.json"
+    fi
     stall_resume_count "$count"
     cmd__stall_recover ST-1 "working-banner-$count" round-1
     stall_resume_count "$count"

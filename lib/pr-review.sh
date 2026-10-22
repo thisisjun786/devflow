@@ -45,7 +45,14 @@ review_parse() {
       select($state!=null and $state.commit_sha==$head) | {comment:$comment,state:$state}] |
     sort_by(.comment.updated_at,.comment.id) | last as $summary |
     ($summary!=null and ($rest==null or ($summary.comment.updated_at // "")>=($rest.submitted_at // ""))) as $fresh |
-    (if $fresh and $summary.state.status=="completed" and $summary.state.has_any_findings==false and
+    (if $fresh and $summary.state.status=="completed" and $summary.state.has_any_findings==true and
+       ($summary.state.has_unresolved_findings|type)=="boolean" then
+       [$summary.comment | findings("summary")] else [] end) as $summary_findings |
+    # A completed finding-bearing summary supplies its own findings. Use
+    # those instead of borrowing findings from an older REST receipt.
+    (if ($summary_findings|length)>0 then
+       $summary.comment + {id:("summary-"+($summary.comment.id|tostring)),source:"summary"}
+     elif $fresh and $summary.state.status=="completed" and $summary.state.has_any_findings==false and
         $summary.state.has_unresolved_findings==false then
        $summary.comment + {id:("summary-"+($summary.comment.id|tostring)),source:"summary"}
      elif $fresh and ($summary.state.status!="completed" or
@@ -56,7 +63,8 @@ review_parse() {
      ($snapshot.inline_comments[]? | select($review!=null and .commit_id==$head and .pull_request_review_id==$review.id and
        .user.login==$review.user.login) | findings("inline"))] as $findings |
     {id:($review.id // null),head:$head,
-     exists:($review!=null and (($fresh and $summary.state.has_any_findings==true and ($findings|length)==0)|not)),
+     exists:($review!=null and
+       (($fresh and $summary.state.has_any_findings==true and ($findings|length)==0)|not)),
      source:($review.source // "review"),summary:($review.body // $summary.comment.body // ""),findings:$findings,
      high:[$findings[] | select(.severity=="P0" or .severity=="P1")],
      low:[$findings[] | select(.severity=="P2" or .severity=="P3")]} |

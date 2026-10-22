@@ -289,8 +289,20 @@ case_stack_dependencies_present_conflict() {
 case_stack_defer() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 dev; stack_pr 3 stack-1 $'Depends on #1\nDepends on #2'
   stack_waiting 3; dv land S-1; stack_watch
-  sleep 2
-  local record
+  # A fixed sleep can inspect the initial enqueue before the worker has run.
+  # Wait for an actual stack attempt and its removal by the reaper instead.
+  local record prompt attempt attempted=false pending=true
+  for attempt in {1..200}; do
+    for prompt in "$DV_HOME"/workers/*.prompt.md; do
+      [ -f "$prompt" ] || continue
+      if grep -Fq '"kind":"stack-resume"' "$prompt" && [ -f "${prompt%.prompt.md}.log" ]; then attempted=true; fi
+    done
+    pending=false
+    for record in "$DV_HOME"/pending/stack-*.json; do [ ! -f "$record" ] || pending=true; done
+    if [ "$attempted" = true ] && [ "$pending" = false ]; then break; fi
+    sleep 0.1
+  done
+  test "$attempted" = true
   for record in "$DV_HOME"/pending/stack-*.json; do
     if [ -f "$record" ]; then
       printf 'BUG: unmerged dependency keeps a stack in the retry queue\n'; return 1

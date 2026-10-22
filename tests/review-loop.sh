@@ -281,3 +281,39 @@ case_stack_review_recover() {
   dv land S-2
   test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
 }
+case_review_summary_new_findings() {
+  review_fixture
+  review_set 1 P2
+  review_summary_set "$(git -C "$REPO" rev-parse HEAD)" completed true
+  jq '.[0].body+="\n### [P1] Newer review found a blocker"' "$GH_STUB_DIR/issue-comments" > "$CASE_DIR/summary"
+  mv "$CASE_DIR/summary" "$GH_STUB_DIR/issue-comments"
+  dv pr-wait P-1 --foreground > "$CASE_DIR/result"
+  jq -e '(.review.clean|not) and (.review.high|length)==1 and .review.high[0].severity=="P1"' "$CASE_DIR/result"
+  test ! -f "$GH_STUB_DIR/followup"
+  if dv 'done' P-1; then return 1; fi
+}
+case_review_summary_latest_low() {
+  review_fixture
+  review_set 1 P2
+  review_summary_set "$(git -C "$REPO" rev-parse HEAD)" completed true
+  jq '.[0].body+="\n### [P2] Preserve the newer finding"' "$GH_STUB_DIR/issue-comments" > "$CASE_DIR/summary"
+  mv "$CASE_DIR/summary" "$GH_STUB_DIR/issue-comments"
+  dv pr-wait P-1 --foreground > "$CASE_DIR/result"
+  jq -e '.review.clean and .review.source=="summary" and (.review.low|length)==1 and (.review.low[0].body|contains("newer finding"))' "$CASE_DIR/result"
+  # A later REST receipt supersedes this summary without blocking P2.
+  review_set 2 P2
+  jq '.[0].submitted_at="2026-10-22T04:00:00Z"' "$GH_STUB_DIR/reviews" > "$CASE_DIR/reviews"
+  mv "$CASE_DIR/reviews" "$GH_STUB_DIR/reviews"
+  dv pr-wait P-1 --foreground > "$CASE_DIR/result"
+  jq -e '.review.clean and .review.id==2 and (.review.low|length)==1' "$CASE_DIR/result"
+}
+case_review_summary_complete_low() {
+  review_fixture
+  review_set 1 P2
+  # Real Codex metadata describes its REST review; it is not an independent
+  # finding-bearing summary and its later publication time is expected.
+  review_summary_set "$(git -C "$REPO" rev-parse HEAD)" completed true
+  dv pr-wait P-1 --foreground > "$CASE_DIR/result"
+  jq -e '.review.clean and .review.id==1 and (.review.low|length)==1' "$CASE_DIR/result"
+  test -f "$GH_STUB_DIR/followup"
+}
