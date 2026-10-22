@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+s="$DV_STATE/$DV_ISSUE"
+printf '%s\n' "$$" > "$s/held.pid"
+printf '%s\n' "$PPID" > "$s/wrapper.pid"
+n=1
+[ ! -f "$s/terminal-runs" ] || n=$(( $(cat "$s/terminal-runs") + 1 ))
+printf '%s\n' "$n" > "$s/terminal-runs"
+if [ "$n" = 1 ]; then
+  printf 'Error: provider overloaded (HTTP 429)\n'
+  if [ "${DV_CAPACITY_TERMINAL_ALWAYS:-0}" = 1 ]; then
+    while IFS= read -r line; do printf 'Error: provider overloaded (HTTP 429)\n'; done
+    exit 1
+  fi
+  if [ "${DV_CAPACITY_EXIT:-0}" = 1 ]; then exit 1; fi
+  IFS= read -r line
+  printf '%s\n' "$line" > "$s/capacity-input"
+else
+  printf '%s\n' "$DV_AGENT_INSTRUCTION" > "$s/capacity-input"
+fi
+printf '\033[2J\033[HWorking\n'
+dv 'done' "$DV_ISSUE" > /dev/null
