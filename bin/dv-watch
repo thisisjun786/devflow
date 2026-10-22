@@ -278,6 +278,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   reap
   qa_recover
   pulls
+  qa_github_events >> "$DV_HOME/qa.log" 2>&1
   if [ $(( $(now) - last_disk )) -ge "$disk_tick" ]; then
     disk_start
     last_disk=$(now)
@@ -315,13 +316,13 @@ while [ ! -e "$DV_HOME/stop" ]; do
       printf 'invalid queue line %s\n' "$((cursor + 1))" >> "$DV_HOME/watch.log"
     elif ! grep -Fxq -- "$id" "$DV_HOME/seen" && ! pending_event "$id"; then
       case "$(jq -r .kind <<< "$line")" in
-        merged|landed|done|failed|submitted|bid-changed|issue-opened|issue-closed)
+        qa-repository|merged|landed|done|failed|submitted|bid-changed|issue-opened|issue-closed)
           qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1 ;;
       esac
       # Deterministic scheduling is driven by this existing queue, never a bid poll.
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then stall_reason='bid_event failed'; break; fi
       if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then stall_reason='stack_landed_event failed'; break; fi
-      if [ "$(printf '%s\n' "$line" | jq -r .kind)" = submitted ]; then
+      if jq -e '.kind=="submitted" or .kind=="qa-repository"' <<< "$line" >/dev/null; then
         metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"

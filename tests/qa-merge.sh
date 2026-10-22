@@ -59,6 +59,7 @@ case_qa_merge_disabled() {
   meta=$(manager_dir "$REPO")/meta.json
   jq '.enabled=false' "$meta" > "$meta.tmp"; mv "$meta.tmp" "$meta"
   qa_scan
+  qa_github_events
   test ! -d "$DV_HOME/qa"
   test ! -s "$GH_STUB_DIR/calls"
 }
@@ -224,4 +225,78 @@ case_qa_merge_event_wake() {
   done
   jq -e '[.prs[].number]==[7,8]' "$request"
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+}
+case_qa_github_event_input() {
+  qa_merge_fixture
+  export DV_RECONCILE_INTERVAL=99999
+  printf '[]\n' > "$GH_STUB_DIR/qa-events"
+  printf 'first\n' > "$GH_STUB_DIR/qa-etag"
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  local request observed=false
+  request="$(qa_dir test/repo main)/pending.json"
+  wait_file "$request"
+  qa_merge_add 8 2026-10-22T00:02:00Z
+  printf '[{"id":"event-8","type":"PullRequestEvent","payload":{"action":"closed","pull_request":{"merged":true,"base":{"ref":"main"}}}}]\n' > "$GH_STUB_DIR/qa-events"
+  printf 'second\n' > "$GH_STUB_DIR/qa-etag"
+  for _ in {1..100}; do
+    if jq -e '[.prs[].number]==[7,8]' "$request" >/dev/null; then observed=true; break; fi
+    sleep 0.1
+  done
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  if [ "$observed" != true ]; then
+    printf 'External GitHub merge event did not wake QA without a devflow job event\n' >&2
+    return 1
+  fi
+  jq -se 'any(.[]; .kind=="qa-repository" and .id=="github:test/repo:event-8")' "$DV_HOME/kick.q"
+  grep -Fx 'github:test/repo:event-8' "$DV_HOME/seen"
+  test "$(find "$DV_HOME/workers" -name '*.prompt.md' | wc -l | tr -d ' ')" = 0
+}
+case_qa_github_event_dedup() {
+  qa_merge_fixture
+  printf '[{"id":"1","type":"PushEvent","payload":{"ref":"refs/heads/main"}}]\n' > "$GH_STUB_DIR/qa-events"
+  printf 'one\n' > "$GH_STUB_DIR/qa-etag"
+  qa_github_events
+  qa_github_events
+  jq -se 'length==1 and .[0].kind=="qa-repository"' "$DV_HOME/kick.q"
+  grep 'If-None-Match: "one"' "$GH_STUB_DIR/calls"
+  # A different-base push is acknowledged without running a QA check.
+  jq '[{id:"2",type:"PushEvent",payload:{ref:"refs/heads/release"}}]+.' "$GH_STUB_DIR/qa-events" > "$CASE_DIR/events.tmp"
+  mv "$CASE_DIR/events.tmp" "$GH_STUB_DIR/qa-events"
+  printf 'two\n' > "$GH_STUB_DIR/qa-etag"
+  qa_github_events
+  jq -se 'length==1' "$DV_HOME/kick.q"
+  # Issue lifecycle is also a relevant repository event from the same source.
+  jq '[{id:"3",type:"IssuesEvent",payload:{action:"closed"}}]+.' "$GH_STUB_DIR/qa-events" > "$CASE_DIR/events.tmp"
+  mv "$CASE_DIR/events.tmp" "$GH_STUB_DIR/qa-events"
+  printf 'three\n' > "$GH_STUB_DIR/qa-etag"
+  qa_github_events
+  jq -se 'length==2' "$DV_HOME/kick.q"
+  jq -e '.id=="3" and .etag=="\"three\""' "$DV_HOME"/qa-events/*/cursor.json
+}
+case_qa_github_event_retry() {
+  qa_merge_fixture
+  printf '[{"id":"1","type":"PushEvent","payload":{"ref":"refs/heads/main"}}]\n' > "$GH_STUB_DIR/qa-events"
+  printf 'one\n' > "$GH_STUB_DIR/qa-etag"
+  qa_github_events
+  cp "$DV_HOME"/qa-events/*/cursor.json "$CASE_DIR/cursor.before"
+  jq '.[0].id="2"' "$GH_STUB_DIR/qa-events" > "$CASE_DIR/events.tmp"
+  mv "$CASE_DIR/events.tmp" "$GH_STUB_DIR/qa-events"
+  printf 'two\n' > "$GH_STUB_DIR/qa-etag"
+  touch "$GH_STUB_DIR/qa-events-fail"
+  qa_github_events
+  cmp "$CASE_DIR/cursor.before" "$DV_HOME"/qa-events/*/cursor.json
+  rm "$GH_STUB_DIR/qa-events-fail"
+  qa_github_events
+  qa_github_events
+  jq -se 'length==2 and ([.[].id]|unique|length)==2' "$DV_HOME/kick.q"
+  jq -e '.id=="2"' "$DV_HOME"/qa-events/*/cursor.json
+}
+case_qa_github_not_modified() {
+  qa_merge_fixture
+  printf '[{"id":"1","type":"PushEvent","payload":{"ref":"refs/heads/main"}}]\n' > "$GH_STUB_DIR/qa-events"
+  printf 'one\n' > "$GH_STUB_DIR/qa-etag"
+  qa_github_events
+  export QA_EVENTS_304_EXIT=1
+  qa_github_events_repo "$(qa_enabled_repos events)"
+  jq -se 'length==1' "$DV_HOME/kick.q"
 }

@@ -371,12 +371,16 @@ checkout의 `.devflow`에 `DV_QA=1`인 저장소를 감시합니다(기본값 `0
 
 watcher는 기존 큐의 `merged`·`landed`·`done`·`failed`·`submitted`·`bid-changed`·
 `issue-opened`·`issue-closed` 이벤트가 처리될 때 GitHub의 병합
-PR을 조회하고, 각 병합 커밋이 설정한 base에 포함됐는지 확인합니다. `gh pr merge`나
-공용 `DV_RECONCILE_INTERVAL`(기본 30분) 점검과 시작 시 복구만 안전망으로 씁니다.
-별도 점검 타이머는 없습니다. 외부 GitHub 알림을 전달하는 기존 연결에서는
-`dv kick merged <ISSUE>`로 병합 확인을 깨울 수 있습니다. 알림이 없는 외부 병합은
-다음 관련 이벤트 또는 느린 안전 점검에서 발견합니다.
-GitHub에서 직접 병합해도 QA를 등록합니다. 승인 기준은 활성 저장소와 base이며,
+PR을 조회하고, 각 병합 커밋이 설정한 base에 포함됐는지 확인합니다.
+외부 병합도 기존 watcher tick에서 읽는 GitHub 저장소 이벤트 피드로 자동 입력됩니다.
+조건부 ETag 요청으로 바뀌지 않은 피드는 다시 처리하지 않습니다. base의 Push/병합 PR과
+issue opened/closed 이벤트가 도착하면 기존 큐에 식별자가 고정된 알림을 저장한 뒤
+cursor를 갱신합니다. 큐 전달이 실패하면 cursor를 유지하며 재시도합니다. 이벤트 피드는
+알림 역할만 하고, QA 승인은 활성 목록과 실제 base 포함 여부 검사로 결정합니다.
+GitHub 이벤트 공개 지연이나 최근 100개 feed 범위를 넘는 누락은 시작 시 복구와 공용
+`DV_RECONCILE_INTERVAL`(기본 30분) sweep으로 보완합니다. 별도 타이머·데몬·webhook
+배포는 없으며, 기존 연결의 `dv kick merged <ISSUE>`도 계속 사용할 수 있습니다.
+GitHub UI나 `gh pr merge`로 직접 병합해도 QA를 등록합니다. 승인 기준은 활성 저장소와 base이며,
 개발 작업의 완료 상태나 award token은 필요하지 않습니다. 이벤트나 원격 status가
 새 저장소를 승인할 수 없습니다. API 조회가 실패하면 관측 지점을 보존하고 재시도합니다.
 

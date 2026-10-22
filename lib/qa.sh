@@ -27,17 +27,75 @@ qa_enabled_repos() {
     jq -e .enabled <<< "$settings" >/dev/null || continue
     base=$(jq -r .base <<< "$settings")
     if [ -z "$base" ]; then base=$(jq -r '.base // empty' "$meta"); fi
-    if [ -z "$base" ]; then
+    if [ -z "$base" ] && [ "${1:-}" != events ]; then
       base=$(bid_limit "$DV_BID_TIMEOUT" git -C "$repo" ls-remote --symref origin HEAD |
         sed -n 's@^ref: refs/heads/\([^[:space:]]*\).*@\1@p') || continue
     fi
-    git check-ref-format "refs/heads/$base" >/dev/null || continue
+    if [ -n "$base" ] || [ "${1:-}" != events ]; then
+      git check-ref-format "refs/heads/$base" >/dev/null || continue
+    fi
     remote=$(git -C "$repo" config --get remote.origin.url) || continue
     jq -cn --arg repo "$repo" --arg repository "${identity#github.com/}" --arg base "$base" \
       --arg remote "$remote" --argjson settings "$settings" \
       '{repo:$repo,repository:$repository,base:$base,remote:$remote,agent:$settings.agent}'
   done
 }
+# GitHub is another input to the existing watcher loop, not a separate check
+# timer. Authenticated conditional requests avoid re-reading unchanged feeds.
+qa_github_events() {
+  local record
+  [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
+  while IFS= read -r record; do
+    if ! qa_github_events_repo "$record"; then
+      printf 'QA event input unavailable; retaining cursor: %s\n' "$(jq -r .repository <<< "$record")" >&2
+    fi
+  done < <(qa_enabled_repos events)
+}
+qa_github_events_repo() (
+  local record=$1 repository base key dir response body code etag='' previous='' newest eligible tmp rc=0
+  local headers=()
+  repository=$(jq -r .repository <<< "$record"); base=$(jq -r .base <<< "$record")
+  key=$(printf '%s' "$repository" | cksum | awk '{print $1 "-" $2}')
+  dir="$DV_HOME/qa-events/$key"
+  mkdir -p "$dir" || return 1
+  if [ -f "$dir/cursor.json" ]; then
+    jq -e --arg repository "$repository" '.repository==$repository' "$dir/cursor.json" >/dev/null || return 1
+    etag=$(jq -r '.etag // empty' "$dir/cursor.json")
+    previous=$(jq -r '.id // empty' "$dir/cursor.json")
+  fi
+  [ -z "$etag" ] || headers=(-H "If-None-Match: $etag")
+  response=$(mktemp "$dir/.response.XXXXXX") || return 1
+  body=$(mktemp "$dir/.body.XXXXXX") || { rm "$response"; return 1; }
+  trap 'rm "$response" "$body"' EXIT
+  bid_limit "$DV_BID_TIMEOUT" gh api --include "repos/$repository/events?per_page=100" \
+    ${headers[@]+"${headers[@]}"} > "$response" || rc=$?
+  code=$(awk '/^HTTP\// {code=$2} END {print code}' "$response")
+  [ "$code" != 304 ] || return 0
+  [ "$rc" = 0 ] && [ "$code" = 200 ] || return 1
+  # gh --include puts one response header block before the JSON body.
+  awk 'body {print; next} /^\r?$/ {body=1}' "$response" > "$body"
+  jq -e 'type=="array" and all(.[]; (.id|type)=="string")' "$body" >/dev/null || return 1
+  etag=$(awk 'tolower($1)=="etag:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$response")
+  newest=$(jq -r 'first.id // empty' "$body")
+  eligible=$(jq -r --arg previous "$previous" --arg base "$base" '
+    (map(.id)|index($previous)) as $index | (if $index==null then . else .[:$index] end) |
+    map(select((.type=="PullRequestEvent" and .payload.action=="closed" and .payload.pull_request.merged==true and
+      ($base=="" or .payload.pull_request.base.ref==$base)) or
+      (.type=="PushEvent" and ($base=="" or .payload.ref==("refs/heads/"+$base))) or
+      (.type=="IssuesEvent" and (.payload.action=="opened" or .payload.action=="closed")))) | first.id // empty' "$body") || return 1
+  if [ -n "$eligible" ]; then
+    # Only a repository already enabled by the operator reaches this point.
+    # Public event content never supplies commands, paths or QA authorization.
+    "$DV_ROOT/bin/dv-kick" qa-repository "QA-EVENTS-$key" 'GitHub repository event; verify merged base' \
+      "$DV_HOST" '' "github:$repository:$eligible" || return 1
+  fi
+  # The queue write comes first: a crash replays a stable event ID, so the
+  # watcher's existing deduplication preserves at-least-once delivery.
+  tmp=$(mktemp "$dir/.cursor.XXXXXX") || return 1
+  jq -n --arg repository "$repository" --arg id "$newest" --arg etag "$etag" \
+    '{repository:$repository,id:$id,etag:$etag}' > "$tmp" || return 1
+  mv "$tmp" "$dir/cursor.json"
+)
 qa_scan() {
   local record
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0

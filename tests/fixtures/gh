@@ -3,6 +3,15 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 if [ -f "$GH_STUB_DIR/qa-pr" ]; then
   case "$*" in
+    'api --include repos/test/repo/events?per_page=100'*)
+      [ ! -f "$GH_STUB_DIR/qa-events-fail" ] || exit 1
+      if [ ! -f "$GH_STUB_DIR/qa-events" ]; then printf 'HTTP/2.0 304 Not Modified\r\n\r\n'; exit; fi
+      etag=$(cat "$GH_STUB_DIR/qa-etag")
+      case "$*" in
+        *"If-None-Match: \"$etag\"") printf 'HTTP/2.0 304 Not Modified\r\n\r\n'; exit "${QA_EVENTS_304_EXIT:-0}" ;;
+      esac
+      printf 'HTTP/2.0 200 OK\r\nETag: "%s"\r\n\r\n' "$etag"
+      cat "$GH_STUB_DIR/qa-events"; exit ;;
     'api repos/test/repo/commits/'*' --jq .sha')
       git --git-dir="$CASE_DIR/remote.git" rev-parse "refs/heads/${2##*/}"; exit ;;
     'api repos/test/repo/pulls?'*)
