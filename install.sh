@@ -22,7 +22,7 @@ if [ "$mac" = 1 ] || [ "$linux_watch" = 1 ]; then
   link "$ROOT/skills/devflow" "$skill_parent/devflow"
 fi
 missing=0
-for tool in git gh tmux jq; do
+for tool in git gh tmux jq flock; do
   if ! command -v "$tool" >/dev/null; then printf 'Missing: %s — install with your package manager.\n' "$tool"; missing=$((missing + 1)); fi
 done
 if { [ "$mac" = 1 ] || [ "$linux_watch" = 1 ]; } && ! command -v hermes >/dev/null; then echo 'Missing: hermes — install Hermes and configure the sion profile.'; missing=$((missing + 1)); fi

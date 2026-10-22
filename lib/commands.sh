@@ -466,10 +466,15 @@ cmd_kick() {
   return 0
 }
 cmd_status() {
+  local heavy
+  heavy=$(heavy_snapshot)
   local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
   local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead provider_capacity
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
+  if [ "$json" = 0 ]; then
+    printf '%s\n' "$heavy" | jq -r '"heavy="+(.in_use|tostring)+"/"+(.slots|tostring)+" waiting="+(.waiting|tostring)'
+  fi
   {
     for path in "$DV_STATE"/*/meta; do
       [ -f "$path" ] || continue
@@ -559,7 +564,7 @@ cmd_status() {
       if [ "$backend" = exec ] && [ "$alive" = false ] && [ "$agent_status" = failed ]; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
       fi
-      if [ "$json" = 1 ]; then printf '%s\n' "$row"
+      if [ "$json" = 1 ]; then printf '%s\n' "$row" | jq -c --argjson heavy "$heavy" '.+{heavy:$heavy}'
       else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none") else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
     done
   } | if [ "$json" = 1 ]; then jq -s .; else cat; fi
