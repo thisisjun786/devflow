@@ -406,6 +406,128 @@ case_appserver_clean_guard() {
   if dv clean AS-1; then return 1; fi
   test -f "$wt/dirty"
 }
+case_appserver_close_unset() {
+  (
+    DV_ROOT=$ROOT
+    source "$ROOT/lib/appserver.sh"
+    unset AS_PID AS_SEND AS_RECEIVE AS_WRITER AS_IO
+    appserver_close
+    AS_IO=$(mktemp -d "$CASE_DIR/partial.XXXXXX")
+    local scratch=$AS_IO
+    sleep 30 & AS_PID=$!
+    local child=$AS_PID
+    appserver_close
+    ! kill -0 "$child" 2>/dev/null
+    test ! -d "$scratch"
+    appserver_close
+  )
+}
+case_appserver_daemon_restart() {
+  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  local state="$DV_STATE/AS-1/appserver" client attempts
+  client=$(cat "$state/client.pid")
+  touch "$CASE_DIR/server/offline"
+  kill "$(cat "$CASE_DIR/server/daemon.pid")"
+  # Several failed opens must leave the same client alive and back off.
+  for _ in {1..300}; do
+    grep -q 'retrying thread thread-1 in 2s' "$DV_STATE/AS-1/log" && break
+    sleep 0.1
+  done
+  grep -q 'retrying thread thread-1 in 1s' "$DV_STATE/AS-1/log"
+  grep -q 'retrying thread thread-1 in 2s' "$DV_STATE/AS-1/log"
+  test "$(cat "$state/client.pid")" = "$client"
+  kill -0 "$client"
+  attempts=$(wc -l < "$CASE_DIR/server/connections")
+  test "$attempts" -ge 2
+  test "$attempts" -le 5
+  rm "$CASE_DIR/server/offline"
+  appserver_wait_reconnected
+  dv send AS-1 'progress after daemon restart' | jq -e '.outcome=="accepted"'
+  jq -e '.status=="running" and .thread_id=="thread-1"' "$DV_STATE/AS-1/meta"
+  jq -se '[.[]|select(.method=="thread/start" or .method=="turn/start")]|length==2' "$CASE_DIR/server/requests"
+  jq -se 'all(.[]|select(.method=="thread/resume"); .params.threadId=="thread-1")' "$CASE_DIR/server/requests"
+  test ! -f "$state/recoveries.json"
+  test ! -f "$state/exited"
+  ! grep -q 'unbound variable' "$DV_STATE/AS-1/log"
+}
+appserver_wait_reconnected() {
+  for _ in {1..300}; do
+    [ ! -f "$CASE_DIR/server/resumed" ] || return 0
+    sleep 0.1
+  done
+  cat "$DV_STATE/AS-1/log" >&2
+  return 1
+}
+case_appserver_watch_dead_client() {
+  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  local state="$DV_STATE/AS-1/appserver" client replacement watcher
+  client=$(cat "$state/client.pid")
+  cp "$DV_STATE/AS-1/meta" "$CASE_DIR/meta.before"
+  kill -KILL "$client"
+  export DV_HOSTS=test-host DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  appserver_wait_reconnected
+  touch "$DV_HOME/stop"
+  wait "$watcher"
+  replacement=$(cat "$state/client.pid")
+  test "$replacement" != "$client"
+  kill -0 "$replacement"
+  cmp "$CASE_DIR/meta.before" "$DV_STATE/AS-1/meta"
+  test ! -f "$state/recoveries.json"
+  jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
+  kill -KILL "$replacement"
+  dv _appserver-watch
+  dv _appserver-watch
+  jq -se '[.[]|select(.method=="thread/resume")]|length==1' "$CASE_DIR/server/requests"
+  ! grep -q 'unbound variable' "$DV_STATE/AS-1/log"
+}
+case_appserver_daemon_lost_turn() {
+  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  local state="$DV_STATE/AS-1/appserver"
+  dv status AS-1 --json | jq -e '.[0].appserver.turn_id=="turn-1"'
+  printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"interrupted","items":[]}]}}' > "$CASE_DIR/server/thread.json"
+  kill "$(cat "$CASE_DIR/server/daemon.pid")"
+  appserver_wait_reconnected
+  for _ in {1..100}; do
+    [ "$(cat "$CASE_DIR/server/turn-count")" = 1 ] || break
+    sleep 0.1
+  done
+  test "$(cat "$CASE_DIR/server/turn-count")" = 2
+  test ! -f "$state/recoveries.json"
+  # Repeated reconnects against the same interrupted snapshot cannot replay it.
+  rm "$CASE_DIR/server/resumed"
+  kill "$(cat "$CASE_DIR/server/daemon.pid")"
+  appserver_wait_reconnected
+  dv status AS-1 --json >/dev/null
+  test "$(cat "$CASE_DIR/server/turn-count")" = 2
+}
+case_appserver_reconnect_stall_clock() {
+  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  printf '0\n' > "$DV_STATE/AS-1/appserver/activity"
+  kill "$(cat "$CASE_DIR/server/daemon.pid")"
+  appserver_wait_reconnected
+  dv _appserver-watch
+  test ! -f "$DV_STATE/AS-1/appserver/recoveries.json"
+  jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
+}
+case_appserver_disconnect_unknown() {
+  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  local sender rc=0
+  touch "$CASE_DIR/server/hold-mutation"
+  dv send AS-1 once > "$CASE_DIR/receipt" & sender=$!
+  wait_file "$CASE_DIR/server/mutation-held"
+  kill "$(cat "$CASE_DIR/server/daemon.pid")"
+  touch "$CASE_DIR/server/release-mutation"
+  wait "$sender" || rc=$?
+  test "$rc" != 0
+  jq -e '.outcome=="unknown"' "$CASE_DIR/receipt"
+  appserver_wait_reconnected
+  if dv send AS-1 once > "$CASE_DIR/duplicate"; then return 1; fi
+  jq -e '.outcome=="unknown"' "$CASE_DIR/duplicate"
+  dv send AS-1 fresh | jq -e '.outcome=="accepted"'
+  jq -se '[.[]|select(.method=="turn/steer" and .params.input[0].text=="once")]|length==1' "$CASE_DIR/server/requests"
+  test ! -f "$DV_STATE/AS-1/appserver/recoveries.json"
+}
 case_appserver_reconnect() {
   appserver_setup
   kill "$(cat "$DV_STATE/AS-1/appserver/client.pid")"

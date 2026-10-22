@@ -10,7 +10,7 @@ appserver_ws_upgrade() {
   local key expected line status='' accept='' upgrade='' connection='' deadline complete=0
   key=$(openssl rand -base64 16) || return 1
   expected=$(appserver_ws_accept "$key") || return 1
-  printf 'GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n' "$key" >&7
+  printf 'GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n' "$key" >&7 || return 1
   deadline=$(( $(date +%s) + DV_APPSERVER_TIMEOUT ))
   while [ "$(date +%s)" -le "$deadline" ]; do
     IFS= read -r -t 1 line <&6 || continue

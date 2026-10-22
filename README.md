@@ -287,6 +287,11 @@ resume하며, 이전 전송 결과가 불명확한 메시지는 재전송하지 
 표시합니다. 서버의 명시적인 thread-not-found만 gone이며 통신 장애는 unknown입니다.
 일반 오류 turn과 error item은 failed이며 용량 오류는 아래 대기 정책을 따릅니다. 화면은 읽지 않습니다.
 작업 클라이언트가 종료됐어도 상태 조회는 새 연결의 thread/read로 확인하며 turn을 시작하지 않습니다.
+연결이 끊긴 클라이언트는 같은 thread에 재접속하며 실패하면 1·2·4초부터 최대 30초 간격으로
+재시도합니다. 연결 복구는 `DV_RECOVER_MAX`를 소모하지 않습니다. 연결 전 활성 turn이 서버에서
+interrupted로 확인될 때만 continuation을 한 번 보내며, 불명확한 전달 결과는 재전송하지 않습니다.
+`running` 작업의 클라이언트가 죽으면 기존 watcher가 작업당 한 번 같은 시작 경로로 재실행합니다.
+이때 작업 상태와 복구 예산은 유지하며, done 또는 blocked가 기록된 작업은 재실행하지 않습니다.
 현재는 `thread/read(includeTurns=true)`를 사용하므로 긴 thread의 조회 비용이 증가합니다.
 `DV_APPSERVER_TIMEOUT`(10초)은 응답 제한, `DV_APPSERVER_POLL`(5초)은 상태 갱신 주기입니다.
 
