@@ -86,12 +86,46 @@ review_require_clean() (
   review_followup "$pr" "$result"
   rm "$result"
 )
+review_source_issue() {
+  local pr=$1 repository=$2 number references
+  number=$(jq -r '.source_issue // empty | tostring' "$S/meta")
+  if [[ "$number" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$number"; return; fi
+  # Older gh versions do not expose closingIssuesReferences via pr view.
+  # Read all pages and exclude cross-repository references before deduping.
+  if references=$(gh api graphql --paginate -f owner="${repository%%/*}" -f name="${repository#*/}" \
+    -F number="${pr##*/}" -f query='
+      query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
+        repository(owner:$owner, name:$name) {
+          pullRequest(number:$number) {
+            closingIssuesReferences(first:100, after:$endCursor) {
+              nodes { number repository { nameWithOwner } }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }'); then
+    number=$(jq -sr --arg repository "$repository" '
+      if length==0 or any(.[]; (.errors|length)>0 or
+        (.data.repository.pullRequest.closingIssuesReferences.nodes|type)!="array") then empty
+      else [.[].data.repository.pullRequest.closingIssuesReferences.nodes[] |
+        select((.repository.nameWithOwner|ascii_downcase)==($repository|ascii_downcase)) |
+        .number | tostring | select(test("^[1-9][0-9]*$"))] | unique |
+        if length==1 then .[0] else empty end end' <<< "$references") || number=''
+    if [ -n "$number" ]; then printf '%s\n' "$number"; return; fi
+  fi
+  number=${ISSUE##*-}
+  if [[ "$number" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$number"; fi
+  return 0
+}
 review_followup() {
-  local pr=$1 result=$2 endpoint repository number marker issues existing body payload response milestone link tmp remote_body
+  local pr=$1 result=$2 endpoint repository number marker issues existing body payload response milestone link tmp remote_body warning
   jq -e '.clean and (.low|length)>0' "$result" >/dev/null || return 0
   endpoint=$(review_endpoint "$pr"); repository=${endpoint%/pulls/*}
-  number=${ISSUE##*-}
-  [[ "$number" =~ ^[0-9]+$ ]] || fail 'cannot identify the source issue for review follow-up'
+  number=$(review_source_issue "$pr" "${repository#repos/}")
+  if [ -z "$number" ]; then
+    warning="Warning: cannot resolve the source GitHub issue for $pr; creating the review follow-up without Depends on or milestone."
+    if ! grep -Fq "$warning" "$S/report.md" 2>/dev/null; then printf '\n%s\n' "$warning" >> "$S/report.md"; fi
+  fi
   marker="<!-- devflow-review-followup: $pr -->"
   issues=$(mktemp "$S/.followup-issues.XXXXXX")
   gh api --paginate "$repository/issues?state=all&per_page=100" | jq -s 'add // []' > "$issues"
@@ -99,11 +133,14 @@ review_followup() {
   rm "$issues"
   body=$(mktemp "$S/.followup-body.XXXXXX")
   {
-    printf '%s\n\nDepends on #%s\n\nP2/P3 findings from the final Codex review of %s:\n\n' "$marker" "$number" "$pr"
+    printf '%s\n\n' "$marker"
+    if [ -n "$number" ]; then printf 'Depends on #%s\n\n' "$number"; fi
+    printf 'P2/P3 findings from the final Codex review of %s:\n\n' "$pr"
     jq -r '.low[] | "- \(.severity) \(.path):\(.line): \(.body | gsub("[\\r\\n]";" "))"' "$result"
   } > "$body"
   payload=$(mktemp "$S/.followup-payload.XXXXXX")
-  milestone=$(gh api "$repository/issues/$number" --jq '.milestone.number // null')
+  milestone=''
+  if [ -n "$number" ]; then milestone=$(gh api "$repository/issues/$number" --jq '.milestone.number // null'); fi
   # gh --jq renders JSON null as empty output; --argjson needs literal null.
   jq -n --rawfile body "$body" --arg title "Follow up on Codex review of PR #${pr##*/}" --argjson milestone "${milestone:-null}" \
     '{title:$title,body:$body,milestone:$milestone}' > "$payload"

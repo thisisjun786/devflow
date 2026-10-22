@@ -159,6 +159,97 @@ case_review_followup_no_milestone() {
   jq -e '.milestone==null' "$GH_STUB_DIR/followup"
   jq -e '.state=="MERGED"' "$DV_STATE/P-1/land-result.json"
 }
+review_source_fixture() {
+  review_fixture
+  local issue=$1
+  mv "$DV_STATE/P-1" "$DV_STATE/$issue"
+  jq --arg issue "$issue" '.issue=$issue' "$DV_STATE/$issue/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/$issue/meta"
+  review_set 1 P2
+  printf 'Original report\n' > "$DV_STATE/$issue/report.md"
+  printf '{"1":7,"73":9,"214":11}\n' > "$GH_STUB_DIR/source-milestones"
+}
+review_closing_issues() {
+  jq -n --argjson nodes "$1" '{data:{repository:{pullRequest:{closingIssuesReferences:{nodes:$nodes}}}}}'
+}
+review_source_check() {
+  local issue=$1 number=$2 milestone=$3
+  dv pr-wait "$issue" --foreground > "$CASE_DIR/result"
+  jq -e '.green and .review.clean and .review_handled and (.blocked|not)' "$CASE_DIR/result"
+  jq -e --arg number "$number" --argjson milestone "$milestone" \
+    '.milestone==$milestone and (.body|contains("Depends on #"+$number+"\n")) and (.body|contains("P2 lib/example.sh:12"))' "$GH_STUB_DIR/followup"
+  # Dedupe must survive lost local receipts and a later P3-only review.
+  rm "$DV_STATE/$issue/pr-review-followup.json"
+  review_set 2 P3
+  dv pr-wait "$issue" --foreground > "$CASE_DIR/result"
+  jq -e '.body|contains("P3 lib/example.sh:12")' "$GH_STUB_DIR/followup"
+  test "$(grep -c '^api --method POST repos/test/repo/issues ' "$GH_STUB_DIR/calls")" = 1
+  grep -Fx 'Original report' "$DV_STATE/$issue/report.md"
+  dv 'done' "$issue"
+}
+case_review_source_moved() {
+  review_source_fixture LN-214M
+  review_closing_issues '[{"number":214,"repository":{"nameWithOwner":"test/repo"}}]' > "$GH_STUB_DIR/closing-issues"
+  review_source_check LN-214M 214 11
+  git -C "$REPO" checkout -qb fixture-base
+  git -C "$REPO" worktree add -q "$DV_WORK/land" feature
+  jq --arg wt "$DV_WORK/land" '.worktree=$wt' "$DV_STATE/LN-214M/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/LN-214M/meta"
+  dv land LN-214M
+  test -f "$GH_STUB_DIR/merged"
+}
+case_review_source_named() {
+  review_source_fixture fix-login
+  # Read every page, ignore other repositories, and dedupe repeated references.
+  review_closing_issues '[{"number":1,"repository":{"nameWithOwner":"other/repo"}}]' > "$GH_STUB_DIR/closing-issues"
+  review_closing_issues '[{"number":73,"repository":{"nameWithOwner":"test/repo"}},{"number":73,"repository":{"nameWithOwner":"test/repo"}}]' >> "$GH_STUB_DIR/closing-issues"
+  review_source_check fix-login 73 9
+}
+case_review_source_numeric() {
+  review_source_fixture JOB-1
+  review_closing_issues '[{"number":73,"repository":{"nameWithOwner":"test/repo"}}]' > "$GH_STUB_DIR/closing-issues"
+  review_source_check JOB-1 73 9
+}
+case_review_source_meta() {
+  review_source_fixture LN-214M
+  jq '.source_issue=73' "$DV_STATE/LN-214M/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/LN-214M/meta"
+  review_closing_issues '[{"number":214,"repository":{"nameWithOwner":"test/repo"}}]' > "$GH_STUB_DIR/closing-issues"
+  review_source_check LN-214M 73 9
+  ! grep -q '^api graphql ' "$GH_STUB_DIR/calls"
+}
+case_review_source_invalid_meta() {
+  review_source_fixture LN-214M
+  jq '.source_issue="73junk"' "$DV_STATE/LN-214M/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/LN-214M/meta"
+  review_closing_issues '[{"number":214,"repository":{"nameWithOwner":"test/repo"}}]' > "$GH_STUB_DIR/closing-issues"
+  review_source_check LN-214M 214 11
+}
+case_review_source_unknown() {
+  review_source_fixture fix-login
+  dv pr-wait fix-login --foreground > "$CASE_DIR/result"
+  jq -e '.green and .review_handled and (.blocked|not)' "$CASE_DIR/result"
+  jq -e '.milestone==null and (.body|contains("Depends on")|not) and (.body|contains("P2 lib/example.sh:12"))' "$GH_STUB_DIR/followup"
+  # An unavailable API is also unresolved, not a P2/P3 delivery blocker.
+  touch "$GH_STUB_DIR/closing-issues-fail"
+  dv pr-wait fix-login --foreground > "$CASE_DIR/result"
+  dv 'done' fix-login
+  test "$(grep -c '^api --method POST repos/test/repo/issues ' "$GH_STUB_DIR/calls")" = 1
+  test "$(grep -c '^Warning: cannot resolve the source GitHub issue' "$DV_STATE/fix-login/report.md")" = 1
+  grep -Fx 'Original report' "$DV_STATE/fix-login/report.md"
+  ! grep -q '^api repos/test/repo/issues/' "$GH_STUB_DIR/calls"
+}
+case_review_source_start() {
+  repo source-header; herdr_setup
+  printf '# other-job = GitHub issue #1\n# LN-214M = GitHub issue #214 in test/repo\n' > "$CASE_DIR/brief"
+  dv start "$REPO" LN-214M source --brief "$CASE_DIR/brief"
+  wait_native LN-214M
+  jq -e '.source_issue==214' "$DV_STATE/LN-214M/meta"
+  printf '# fix-login = GitHub issue #73junk\n' > "$CASE_DIR/brief"
+  dv start "$REPO" fix-login source --brief "$CASE_DIR/brief"
+  wait_native fix-login
+  jq -e 'has("source_issue")|not' "$DV_STATE/fix-login/meta"
+}
 case_review_retry_arrives() {
   review_fixture
   # The automatic review did not arrive; the single retry produces a review.
