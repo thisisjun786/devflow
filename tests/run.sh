@@ -1891,7 +1891,9 @@ case_award_rejected_next() {
 case_award_new_round() {
   bidding_hosts; bidding_functions
   local host kind issue saved
-  export DV_HOSTS='hx-linux go2-linux'
+  # This case dispatches events directly. Failed-start cleanup can stop the
+  # wrapper mid-notification, so do not launch an unrelated queue writer.
+  export DV_HOSTS='hx-linux go2-linux' DV_KICK=true
   for kind in 'done' failed landed submitted; do
     issue="ROUND-$kind"
     for host in $DV_HOSTS; do
