@@ -367,7 +367,8 @@ bid_schedule_one() {
       printf '%s\n' "$reply" | jq -e 'type=="object" and (.score|type=="number") and (.status=="submitted" or .status=="rejected")' >/dev/null 2>&1; then
       case "$host" in hx|hx-linux) rank=0 ;; amd|amd-linux) rank=1 ;; go2|go2-linux) rank=2 ;; lina-os) rank=3 ;; gos|gos-linux) rank=4 ;; *) rank=5 ;; esac
       printf '%s\n' "$reply" | jq -c --arg host "$host" --arg manager "$DV_MANAGER_HOST" --argjson rank "$rank" \
-        '.host=$host | .rank=$rank | .manager=(if $host==$manager or $host=="lina-os" then 1 else 0 end)' >> "$bids"
+        --arg last "${DV_MANAGER_LAST:-1}" \
+        '.host=$host | .rank=$rank | .manager=(if $last!="0" and ($host==$manager or $host=="lina-os") then 1 else 0 end)' >> "$bids"
     else jq -cn --arg host "$host" '{host:$host,status:"rejected",reason:"no valid bid response"}' >> "$bids"; fi
   done
   # Keep scores within each group, but never let gos outrank the manager.
