@@ -98,12 +98,12 @@ cmd_start() {
     --arg host "$DV_HOST" --arg backend "$BACKEND" --arg token "${DV_AWARD_TOKEN:-}" --argjson started "$(now)" \
     '{issue:$issue,repo:$repo,worktree:$worktree,branch:$branch,base:$base,start_head:$start_head,agent:$agent,mode:$mode,slug:$slug,host:$host,started:$started,backend:$backend,status:"running"} +
     (if $token=="" then {} else {award_token:$token} end)' > "$S/meta"
-  if [ "$own_admission" = 1 ]; then owned_unlock "$DV_STATE/.admission-lock" "$$"; trap - EXIT; fi
   : > "$S/log"
   if ! launch_agent; then
     meta_set '.status="start-failed"'
     fail "$BACKEND startup failed; state retained for dv clean (no backend fallback)"
   fi
+  if [ "$own_admission" = 1 ]; then owned_unlock "$DV_STATE/.admission-lock" "$$"; trap - EXIT; fi
   printf '%s %s %s\n' "$ISSUE" "$BRANCH" "$WT"
 }
 launch_agent() {

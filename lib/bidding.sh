@@ -109,8 +109,10 @@ bid_settings() {
   [[ "$DV_BID_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_BID_TIMEOUT must be a positive integer'
   [[ "$DV_AWARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_AWARD_TIMEOUT must be a positive integer'
   [[ "$DV_MIN_MEMORY_MB" =~ ^[0-9]+$ ]] || fail 'DV_MIN_MEMORY_MB must be a nonnegative integer'
-  [[ "$DV_TARGET_LOAD" =~ ^[0-9]+([.][0-9]+)?$ ]] &&
-    jq -en --argjson target "$DV_TARGET_LOAD" '$target>0' >/dev/null || fail 'DV_TARGET_LOAD must be positive'
+  if ! [[ "$DV_TARGET_LOAD" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+    ! jq -en --argjson target "$DV_TARGET_LOAD" '$target>0' >/dev/null; then
+    fail 'DV_TARGET_LOAD must be positive'
+  fi
 }
 bid_capacity() {
   local resources=$1 active=$2 ceiling=$DV_MAX_JOBS

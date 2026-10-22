@@ -65,3 +65,24 @@ case_capacity_task() {
   grep -F 'host has no free task slots' "$CASE_DIR/task.log"
   test ! -d "$DV_STATE/CAP-3"
 }
+case_capacity_launch_reservation() {
+  capacity_fixture
+  jq '.load5=0' "$CASE_DIR/resources" > "$CASE_DIR/next"; mv "$CASE_DIR/next" "$CASE_DIR/resources"
+  DV_MAX_JOBS=1
+  launch_agent() {
+    # No agent PID exists yet. A competing start must still fail to acquire
+    # admission until this launcher publishes its process or returns failure.
+    bash -c '
+      DV_ENTRY="$ROOT/bin/dv"
+      source "$ROOT/lib/common.sh"
+      sleep() { :; }
+      if owned_lock "$DV_STATE/.admission-lock" "$$"; then
+        owned_unlock "$DV_STATE/.admission-lock" "$$"
+        printf "another start entered before launch completed\n" >&2
+        exit 1
+      fi
+    '
+  }
+  (cmd_start "$REPO" CAP-4 reservation --mode exec --brief "$CASE_DIR/brief")
+  test ! -d "$DV_STATE/.admission-lock"
+}
