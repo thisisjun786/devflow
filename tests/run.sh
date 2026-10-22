@@ -121,7 +121,7 @@ tmux() {
     printf 'new-session\n' >> "$CASE_DIR/tmux-start-calls"
     return "$DV_TEST_TMUX_RC"
   fi
-  command tmux "$@"
+  env tmux "$@"
 }
 ENV
   fi
@@ -174,12 +174,12 @@ tmux_fast_completion() {
   fi
   cat > "$CASE_DIR/fast-tmux-env" <<'ENV'
 tmux() {
-  command tmux "$@" || return
+  env tmux "$@" || return
   if [ "${1:-}" = -L ] && [ "${3:-}" = new-session ]; then
     local attempt
     # Delay only the launch reply until the synthetic wrapper has exited.
     for attempt in {1..100}; do
-      if ! command tmux -L "$DV_TMUX_SOCKET" has-session -t =dv-TF-1 2>/dev/null; then return 0; fi
+      if ! env tmux -L "$DV_TMUX_SOCKET" has-session -t =dv-TF-1 2>/dev/null; then return 0; fi
       sleep 0.1
     done
     return 1
