@@ -19,10 +19,15 @@ tmp_collect() {
   for root in "$@"; do
     [ -d "$root" ] || continue
     for dir in "$root"/dv-appserver.* "$root"/dv-qa.* "$root"/dv-host-probe.*; do
-      [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || continue
-      [ -f "$dir/owner.pid" ] && [ ! -L "$dir/owner.pid" ] && [ -O "$dir/owner.pid" ] || continue
+      [ -d "$dir" ] || continue
+      [ ! -L "$dir" ] || continue
+      [ -O "$dir" ] || continue
+      [ -f "$dir/owner.pid" ] || continue
+      [ ! -L "$dir/owner.pid" ] || continue
+      [ -O "$dir/owner.pid" ] || continue
       owner=$(cat "$dir/owner.pid" 2>/dev/null) || continue
-      [[ "$owner" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$owner" -gt 1 ] || continue
+      [[ "$owner" =~ ^[1-9][0-9]{0,9}$ ]] || continue
+      [ "$owner" -gt 1 ] || continue
       kill -0 "$owner" 2>/dev/null && continue
       # EPERM is not evidence of death (e.g. a PID reused by another user).
       [ -z "$(ps -p "$owner" -o pid= 2>/dev/null)" ] || continue
@@ -57,7 +62,7 @@ tmp_agent_environment() {
 tmp_usage_kb() {
   local usage root
   # /tmp is a symlink on macOS; find's default -P would only see the link.
-  root=$(cd "${1:-/tmp}" && pwd -P) || return 1
+  root=$(cd "$1" && pwd -P) || return 1
   usage=$(find "$root" -xdev \( -type d ! -user "$(id -un)" ! -path "$root" -prune \) -o \
     \( -user "$(id -un)" -type f -exec du -k {} + \) 2>/dev/null |
     awk '{sum+=$1} END {printf "%.0f\n", sum}') || return 1
@@ -75,7 +80,7 @@ tmp_quota_info() {
   if [ -z "$measured" ]; then
     quota=${DV_TMP_QUOTA_KB:-0}
     [[ "$quota" =~ ^[0-9]+$ ]] || fail 'DV_TMP_QUOTA_KB must be nonnegative KiB'
-    usage=$(tmp_usage_kb) || usage=null
+    usage=$(tmp_usage_kb /tmp) || usage=null
     measured=$(jq -cn --argjson usage "$usage" --argjson quota "$quota" \
       '{usage_kb:$usage,quota_kb:(if $quota>0 then $quota else null end),source:"configured-estimate"}')
   fi
