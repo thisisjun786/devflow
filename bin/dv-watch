@@ -69,6 +69,7 @@ finish() {
     while qa_alive "$pid"; do sleep 0.1; done
     wait "$pid" 2>/dev/null || true
   done
+  [ -z "$reconcile_pid" ] || wait "$reconcile_pid" 2>/dev/null || true
   reap
   rm -f "$DV_HOME/watch.pid"
   rmdir "$DV_HOME/.watch-lock"
@@ -83,6 +84,7 @@ last_stall_scan=${DV_WATCH_LAST_STALL_SCAN:-$last_scan}
 unset DV_WATCH_LAST_SCAN DV_WATCH_LAST_STALL_SCAN
 update_requested=0
 last_appserver_scan=0
+reconcile_pid=''
 last_metrics=0
 last_disk=0
 # Host-local clocks own the 30-minute cadence. Check due hosts more often so
@@ -298,7 +300,13 @@ while [ ! -e "$DV_HOME/stop" ]; do
     last_metrics=$(now)
   fi
   if [ $(( $(now) - last_stall_scan )) -ge "$stall_scan_interval" ]; then
-    reconcile; last_stall_scan=$(now)
+    # Remote status can take tens of seconds per host. Run the safety net in
+    # the background, one at a time, so it never delays queue dispatch.
+    if [ -z "$reconcile_pid" ] || ! kill -0 "$reconcile_pid" 2>/dev/null; then
+      [ -z "$reconcile_pid" ] || wait "$reconcile_pid" 2>/dev/null || true
+      reconcile & reconcile_pid=$!
+      last_stall_scan=$(now)
+    fi
   fi
   # Frequent stall scans must not shorten the self-update safety interval.
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then
@@ -368,6 +376,8 @@ while [ ! -e "$DV_HOME/stop" ]; do
   if [ ! -e "$DV_HOME/stop" ]; then
     if [ "$update_requested" = 1 ]; then DV_AUTO_UPDATE=$watch_auto_update self_update 0; update_requested=0; fi
     if [ "$(self_update_head)" != "$watch_commit" ]; then
+      # exec drops the job table; let an in-flight safety net finish first.
+      [ -z "$reconcile_pid" ] || wait "$reconcile_pid" 2>/dev/null || true
       metrics_stop
       export DV_WATCH_REEXEC_PID=$$ DV_WATCH_REEXEC_PIDS=$pids DV_WATCH_LAST_SCAN=$last_scan
       export DV_WATCH_REEXEC_MANAGER_PIDS=$manager_pids
