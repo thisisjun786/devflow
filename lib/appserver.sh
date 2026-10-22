@@ -53,7 +53,7 @@ appserver_available() {
   ( appserver_probe ) 2>/dev/null
 }
 appserver_probe() {
-  local AS_EVENTS=0 AS_SEQ=0 AS_IO AS_PID AS_SEND AS_RECEIVE AS_REPLY AS_CLASS AS_WRITER='' AS_LINE='' AS_PARTIAL='' rc=0
+  local AS_EVENTS=0 AS_SEQ=0 AS_IO AS_PID AS_SEND AS_RECEIVE AS_REPLY AS_CLASS AS_WRITER='' AS_LINE='' rc=0
   appserver_open || return 1
   trap appserver_close EXIT
   appserver_handshake || rc=$?
@@ -126,18 +126,21 @@ appserver_questions() {
   done
 }
 appserver_read_line() {
-  # Read one complete JSON-RPC line from fd 8 within $1 seconds. Bash `read`
-  # returns partial input on timeout; keep it and continue, so a multi-MB
-  # thread/read reply is assembled instead of dropped one second at a time.
-  # Bash 3.2 reports both timeout and EOF as status 1, so a non-zero status
-  # only means "no newline yet"; callers detect a dead server via kill -0.
-  local deadline=$(( $(now) + $1 )) chunk
-  AS_LINE=${AS_PARTIAL:-}; AS_PARTIAL=''
+  # The decoder publishes only complete WebSocket messages (max 16 MiB).
+  # Time out waiting for the first byte, then drain that local record without
+  # a timer: Bash 3.2 discards consumed bytes on a timed read. A slow/partial
+  # remote frame stays in the decoder and cannot block this drain.
+  local deadline=$(( $(now) + $1 )) first rest
+  AS_LINE=''
   while :; do
-    chunk=''
-    if IFS= read -r -t 1 chunk <&8; then AS_LINE+=$chunk; return 0; fi
-    AS_LINE+=$chunk
-    if [ "$(now)" -ge "$deadline" ]; then AS_PARTIAL=$AS_LINE; AS_LINE=''; return 1; fi
+    first=''
+    if IFS= read -r -n 1 -t 1 first <&8; then
+      rest=''
+      if [ -n "$first" ]; then IFS= read -r rest <&8 || return 1; fi
+      AS_LINE=$first$rest
+      return 0
+    fi
+    [ "$(now)" -lt "$deadline" ] || return 1
   done
 }
 appserver_rpc() {
@@ -355,7 +358,7 @@ cmd__appserver_run() {
   load_issue "$1"; require_worktree
   umask 077
   local AS_EVENTS=1 AS_SEQ=0 AS_THREAD='' AS_REPLY='{}' AS_CLASS=unknown AS_SNAPSHOT='{}' AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER=''
-  local AS_LINE='' AS_PARTIAL=''
+  local AS_LINE=''
   local instruction params id file operation text line last_poll=0
   # bin/dv captures HEAD before sourcing the libraries.
   local client_commit=${entry_commit:-} current_commit
@@ -437,7 +440,7 @@ cmd__appserver_run() {
 }
 appserver_status() (
   load_issue "$1"
-  local receipt AS_EVENTS=0 AS_SEQ=0 AS_THREAD AS_REPLY AS_CLASS AS_SNAPSHOT AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER='' AS_LINE='' AS_PARTIAL=''
+  local receipt AS_EVENTS=0 AS_SEQ=0 AS_THREAD AS_REPLY AS_CLASS AS_SNAPSHOT AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER='' AS_LINE=''
   if appserver_alive; then
     if receipt=$(appserver_request status); then printf '%s\n' "$receipt" | jq -c .reply; return; fi
   else

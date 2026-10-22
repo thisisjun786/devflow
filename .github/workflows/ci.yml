@@ -4,6 +4,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: Consecutive full-suite runs per OS (stop on first failure)
+        type: choice
+        default: '10'
+        options: ['1', '10']
 permissions:
   contents: read
 jobs:
@@ -11,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,4 +31,28 @@ jobs:
       - name: Shellcheck
         run: shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fixtures/*
       - name: Tests
-        run: bash tests/run.sh
+        env:
+          REPETITIONS: ${{ inputs.repetitions || '1' }}
+        run: |
+          # Exercise the system Bash, including macOS Bash 3.2, in children too.
+          export PATH="/bin:/usr/bin:/sbin:/usr/sbin:$PATH"
+          mkdir -p "$RUNNER_TEMP/devflow-ci"
+          bash --version
+          git rev-parse HEAD
+          case "$REPETITIONS" in 1|10) ;; *) exit 1 ;; esac
+          for ((run=1; run<=REPETITIONS; run++)); do
+            log="$RUNNER_TEMP/devflow-ci/run-$run.log"
+            if bash tests/run.sh > "$log" 2>&1; then
+              printf 'Run %s/%s: ' "$run" "$REPETITIONS"
+              tail -n 1 "$log" | tee -a "$RUNNER_TEMP/devflow-ci/results.txt"
+            else
+              tail -n 100 "$log"
+              exit 1
+            fi
+          done
+      - name: Full test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.os }}
+          path: ${{ runner.temp }}/devflow-ci/

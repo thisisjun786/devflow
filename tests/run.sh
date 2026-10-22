@@ -1517,20 +1517,37 @@ case_bid_readonly() {
 }
 case_submit_spread() {
   bidding_hosts
+  local ticks expected attempt
   # Scores on these real local fake hosts differ slightly; manager is always last.
   dv submit "$REPO" BID-1 one --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-2 two --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-3 three --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-4 four --brief "$CASE_DIR/brief"
-  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  : > "$CASE_DIR/watch-ticks"
+  BASH_ENV="$ROOT/tests/fixtures/watch-tick-env" dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_task BID-1 working; wait_task BID-2 working; wait_task BID-3 working
   test "$(jq -r .host "$DV_HOME/submissions/BID-3/task.json")" = lina-os
   jq -s -e '[.[].host]|unique|length==3' "$DV_HOME"/submissions/BID-{1,2,3}/task.json
   wait_file "$DV_HOME/submissions/BID-4/bids.json"
   wait_task BID-4 submitted
-  # Repeated local ticks never rebid an all-full queue.
-  sleep 0.5; cp "$CASE_DIR/ssh.calls" "$CASE_DIR/calls.before"
-  sleep 0.5; cmp "$CASE_DIR/calls.before" "$CASE_DIR/ssh.calls"
+  # bids.json can appear before scheduling commits its cursor. Wait until
+  # all four submissions are handled, then observe two complete idle ticks.
+  for attempt in {1..200}; do
+    [ "$(cat "$DV_HOME/cursor" 2>/dev/null)" = 4 ] && break
+    sleep 0.1
+  done
+  test "$(cat "$DV_HOME/cursor")" = 4
+  grep -E ' dv (bid|_award) ' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.before"
+  ticks=$(wc -l < "$CASE_DIR/watch-ticks"); expected=$((ticks + 2))
+  for attempt in {1..200}; do
+    ticks=$(wc -l < "$CASE_DIR/watch-ticks")
+    [ "$ticks" -ge "$expected" ] && break
+    sleep 0.1
+  done
+  test "$ticks" -ge "$expected"
+  # Status/maintenance RPCs do not constitute a new bid or award.
+  grep -E ' dv (bid|_award) ' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.after"
+  cmp "$CASE_DIR/calls.before" "$CASE_DIR/calls.after"
   host=$(jq -r .host "$DV_HOME/submissions/BID-1/task.json")
   DV_CONFIG="$CASE_DIR/hosts/$host/config" dv 'done' BID-1
   wait_task BID-1 completed; wait_task BID-4 working
@@ -1971,7 +1988,7 @@ for name in screen_locale_c screen_locale_utf8; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race; do
+for name in appserver_reader_legacy appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?

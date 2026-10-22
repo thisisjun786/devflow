@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Model Bash 3.2 timed read on modern Bash as well: consumed partial bytes
+# are not returned to the caller when the read times out.
+read() {
+  local read_name=${!#} read_before read_rc=0
+  read_before=${!read_name-}
+  # The caller supplies the read options unchanged.
+  # shellcheck disable=SC2162
+  builtin read "$@" || read_rc=$?
+  if [ "$read_rc" -gt 128 ]; then
+    printf -v "$read_name" '%s' "$read_before"
+    return 1
+  fi
+  return "$read_rc"
+}

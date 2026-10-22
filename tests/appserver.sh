@@ -290,18 +290,21 @@ case_appserver_read_partial() {
 set -euo pipefail
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/appserver.sh"
-AS_PARTIAL='' AS_LINE=''
+AS_LINE=''
 exec 8< <(printf '{"id":"a","result":{"x":"'; sleep 2.5; printf 'tail"}}\n'; printf '{"id":"b"}\n')
 appserver_read_line 10
 [ "$AS_LINE" = '{"id":"a","result":{"x":"tail"}}' ]
 appserver_read_line 5
 [ "$AS_LINE" = '{"id":"b"}' ]
-# A deadline that expires mid-line keeps the fragment for the next call.
-exec 8< <(printf '{"id":"c",'; sleep 2.5; printf '"ok":1}\n')
+# A remote frame split across the deadline is buffered by the decoder.
+AS_IO="$CASE_DIR/partial-frame"; mkdir "$AS_IO"
+exec 8< <({ printf '\201\021{"id":"c",'; sleep 2.5; printf '"ok":1}\210\000'; } | appserver_ws_receive 0)
+decoder=$!
 if appserver_read_line 1; then exit 1; fi
-[ -n "$AS_PARTIAL" ]
+[ -z "$AS_LINE" ]
 appserver_read_line 10
 [ "$AS_LINE" = '{"id":"c","ok":1}' ]
+wait "$decoder"
 READ_PARTIAL
 }
 case_appserver_large_reply() {
@@ -594,16 +597,8 @@ case_appserver_sender_partial() {
 }
 appserver_sender_legacy() (
   # Exercise Bash 3.2's timeout contract on Linux CI's newer Bash too.
-  read() {
-    local read_name=${!#} read_before read_rc=0
-    read_before=${!read_name-}
-    builtin read "$@" || read_rc=$?
-    if [ "$read_rc" -gt 128 ]; then
-      printf -v "$read_name" '%s' "$read_before"
-      return 1
-    fi
-    return "$read_rc"
-  }
+  # shellcheck source=tests/fixtures/legacy-read-env
+  source "$ROOT/tests/fixtures/legacy-read-env"
   "case_appserver_sender_$1"
 )
 case_appserver_sender_legacy_idle() { appserver_sender_legacy idle; }
@@ -967,4 +962,19 @@ case_appserver_stale_done_recover() {
   appserver_age
   dv _appserver-watch
   jq -se '[.[]|select(.method=="turn/start")]|length==2' "$CASE_DIR/server/requests"
+}
+
+case_appserver_reader_legacy() {
+  BASH_ENV="$ROOT/tests/fixtures/legacy-read-env" DV_ENTRY="$ROOT/bin/dv" bash -s <<'READ_LEGACY'
+set -euo pipefail
+source "$ROOT/lib/common.sh"
+source "$ROOT/lib/appserver.sh"
+AS_LINE=''
+# The decoder has the complete frame, but its local pipe write is descheduled.
+exec 8< <(printf '{"id":"a","result":{"x":"'; sleep 2; printf 'tail"}}\n'; printf '{"id":"b"}\n')
+appserver_read_line 10
+[ "$AS_LINE" = '{"id":"a","result":{"x":"tail"}}' ]
+appserver_read_line 5
+[ "$AS_LINE" = '{"id":"b"}' ]
+READ_LEGACY
 }
