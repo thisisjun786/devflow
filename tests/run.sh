@@ -1552,7 +1552,12 @@ case_submit_spread() {
   wait_task BID-4 submitted
   # Repeated local ticks never rebid an all-full queue.
   sleep 0.5; cp "$CASE_DIR/ssh.calls" "$CASE_DIR/calls.before"
-  sleep 0.5; cmp "$CASE_DIR/calls.before" "$CASE_DIR/ssh.calls"
+  sleep 0.5
+  # Status and App Server scans may finish asynchronously during these ticks.
+  # Only another bid would violate the all-full queue contract.
+  grep ' dv bid ' "$CASE_DIR/calls.before" > "$CASE_DIR/bids.before"
+  grep ' dv bid ' "$CASE_DIR/ssh.calls" > "$CASE_DIR/bids.after"
+  cmp "$CASE_DIR/bids.before" "$CASE_DIR/bids.after"
   host=$(jq -r .host "$DV_HOME/submissions/BID-1/task.json")
   DV_CONFIG="$CASE_DIR/hosts/$host/config" dv 'done' BID-1
   wait_task BID-1 completed; wait_task BID-4 working
@@ -1778,6 +1783,9 @@ case_award_rejected_next() {
 }
 case_award_new_round() {
   bidding_hosts; bidding_functions
+  # This case supplies every event directly through bid_event. Do not let
+  # failed fake agents race cleanup while writing an unused watcher queue.
+  export DV_KICK=true
   local host kind issue saved
   export DV_HOSTS='hx-linux go2-linux'
   for kind in 'done' failed landed submitted; do
