@@ -6,7 +6,7 @@
 - 검증: `tests/run.sh`, `shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fixtures/*`.
 - 보고서에는 변경, red/green과 명령 결과, 남은 한계를 씁니다. 커밋은 `<ISSUE>: ...` 형식입니다.
 - 실제 이슈 전달은 해당 브리프의 승인을 따릅니다. base에 직접 push·force push·원격 브랜치 삭제는 금지합니다.
-- 리뷰는 최종 `codex review --base main` 한 번 또는 PR 봇 리뷰 한 번입니다. P0·P1만 한 번 고치고 재리뷰하지 않습니다.
+- GitHub 병합 전에는 현재 PR head의 CI 성공과 최신 Codex 리뷰의 P0·P1 0건을 요구합니다. 이슈 #167에 따라 P0·P1 수정·push·새 head 리뷰를 반복하며, `DV_REVIEW_ROUNDS`(기본 4회) 상한에서 남은 지적은 관리자가 처리합니다. P2·P3은 후속 이슈로 남깁니다. 원격 없는 로컬 저장소는 최종 `codex review --base main` 한 번과 P0·P1 수정 한 번으로 제한하고 재리뷰하지 않습니다.
 - 상태 파일과 사용자 설정을 덮어쓰지 않고, dirty worktree는 제거하지 않습니다.
 
 ## CI

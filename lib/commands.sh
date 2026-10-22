@@ -661,7 +661,14 @@ revive_agent() {
       printf 'Continue in the existing worktree %s on branch %s.\n' "$WT" "$BRANCH"
     fi
     printf 'Read %s/brief.md and, if present, %s/report.md for context.\n' "$S" "$S"
-    printf 'This continues the same request; preserve %s/review-fix.sent and the one-fix-per-PR limit.\n' "$S"
+    printf 'This continues the same request; preserve %s/review-fix.sent.\n' "$S"
+    if [ "$KIND" != task ]; then
+      if is_github; then
+        printf 'Preserve %s/pr-loop.json review round counts. Each new head requires a fresh Codex review; fix P0/P1 within DV_REVIEW_ROUNDS before completion.\n' "$S"
+      else
+        printf 'Keep the single local review and one P0/P1 correction limit; do not request another local review.\n'
+      fi
+    fi
     printf 'Do not create a new branch or force push. Finish with dv done %s.\n' "$ISSUE"
   } > "$S/revive/prompt.md"
   # Cleanup belongs to the previous run. Publish this before launching so all
