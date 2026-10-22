@@ -25,8 +25,17 @@ review_snapshot() {
   mv "$tmp" "$file"
 }
 review_parse() {
-  local file=$1 head=$2
-  jq --arg head "$head" --arg bots "$DV_REVIEW_BOTS" '
+  local file=$1 head=$2 sha resolved prefixes='[]'
+  local receipt_pattern='^\*\*Reviewed commit:\*\*[[:blank:]]+`(?<sha>[0-9a-fA-F]{7,40})`[[:space:]]*$'
+  # Bind abbreviations to Git objects, not just matching text: two distinct
+  # commits can share seven digits. Unknown or ambiguous prefixes fail closed.
+  while IFS= read -r sha; do
+    resolved=$(git rev-parse --disambiguate="$sha" 2>/dev/null) || continue
+    [ "$resolved" = "$head" ] || continue
+    prefixes=$(printf '%s\n' "$prefixes" | jq --arg sha "$sha" '.+[$sha]')
+  done < <(jq -r --arg pattern "$receipt_pattern" '[.issue_comments[]? | .body // "" | split("\n")[] |
+    capture($pattern).sha | ascii_downcase | select(length<40)] | unique[]' "$file")
+  jq --arg head "$head" --arg bots "$DV_REVIEW_BOTS" --arg pattern "$receipt_pattern" --argjson prefixes "$prefixes" '
     # The legacy setting may still include Devin. It can never replace Codex.
     def bot: . as $login | (test("codex";"i") and endswith("[bot]")) and
       (($bots|split(",")) | any(.[]; . as $pattern | $pattern!="" and ($login|test($pattern;"i"))));
@@ -35,6 +44,10 @@ review_parse() {
         .string | capture("(?<severity>P[0-3])";"i").severity | ascii_upcase] | unique[] |
       {severity:.,path:($item.path // "review"),line:($item.line // $item.original_line // "summary"),
        body:$line,id:$item.id,source:$source};
+    def review_findings($review):
+      [($review | select(.!=null) | findings("summary")),
+       (.inline_comments[]? | select($review!=null and .commit_id==$head and .pull_request_review_id==$review.id and
+         .user.login==$review.user.login) | findings("inline"))];
     . as $snapshot |
     [.reviews[]? | select((.user.login // "" | bot) and .commit_id==$head and
       (.state=="COMMENTED" or .state=="APPROVED" or .state=="CHANGES_REQUESTED"))] |
@@ -44,6 +57,13 @@ review_parse() {
       (try ((.body | capture("<!-- codex-review-state:v1 (?<json>.*?) -->";"s").json | fromjson).code_review) catch empty) as $state |
       select($state!=null and $state.commit_sha==$head) | {comment:$comment,state:$state}] |
     sort_by(.comment.updated_at,.comment.id) | last as $summary |
+    [$snapshot.issue_comments[]? | select((.user.login // "" | bot) and
+      ((.body // "") | contains("<!-- codex-review-receipt:v1 -->") and
+        contains("Codex Review: Didn\u0027t find any major issues"))) |
+      . as $comment | (.body | split("\n")[] | capture($pattern).sha | ascii_downcase) as $sha |
+      select(($head | startswith($sha)) and (($sha|length)==40 or ($prefixes|index($sha))!=null)) |
+      $comment | select((.updated_at // .created_at // "")!="" and ([findings("receipt")]|length)==0)] |
+    sort_by((.updated_at // .created_at),.id) | last as $receipt |
     ($summary!=null and ($rest==null or ($summary.comment.updated_at // "")>=($rest.submitted_at // ""))) as $fresh |
     (if $fresh and $summary.state.status=="completed" and $summary.state.has_any_findings==true and
        ($summary.state.has_unresolved_findings|type)=="boolean" then
@@ -59,12 +79,25 @@ review_parse() {
        ($summary.state.has_any_findings|type)!="boolean" or ($summary.state.has_unresolved_findings|type)!="boolean" or
        ($summary.state.has_any_findings==false and $summary.state.has_unresolved_findings!=false)) then null
      else $rest end) as $review |
-    [($review | select(.!=null) | findings("summary")),
-     ($snapshot.inline_comments[]? | select($review!=null and .commit_id==$head and .pull_request_review_id==$review.id and
-       .user.login==$review.user.login) | findings("inline"))] as $findings |
+    ($snapshot | review_findings($review)) as $findings |
+    # A completed metadata-only summary may be published after the receipt,
+    # carrying old-head flags. Its edit time cannot invalidate a clean review.
+    # Running/incomplete summaries and actual current-head findings still gate it.
+    (if $receipt!=null and ($findings|length)==0 and
+        ($receipt.updated_at // $receipt.created_at)>($rest.submitted_at // "") and
+        (($receipt.updated_at // $receipt.created_at)>($summary.comment.updated_at // "") or
+         ($summary.state.status=="completed" and $summary.state.has_any_findings==true and
+          ($summary.state.has_unresolved_findings|type)=="boolean" and ($summary_findings|length)==0)) then
+       # An incomplete summary may have hidden the REST review above. A
+       # receipt cannot erase its findings just because selection returned null.
+       if $review==null and ($snapshot | review_findings($rest) | length)>0 then $rest
+       else $receipt + {id:("receipt-"+($receipt.id|tostring)),source:"receipt"} end
+     else $review end) as $review |
+    ($snapshot | review_findings($review)) as $findings |
     {id:($review.id // null),head:$head,
      exists:($review!=null and
-       (($fresh and $summary.state.has_any_findings==true and ($findings|length)==0)|not)),
+       ($review.source=="receipt" or
+         (($fresh and $summary.state.has_any_findings==true and ($findings|length)==0)|not))),
      source:($review.source // "review"),summary:($review.body // $summary.comment.body // ""),findings:$findings,
      high:[$findings[] | select(.severity=="P0" or .severity=="P1")],
      low:[$findings[] | select(.severity=="P2" or .severity=="P3")]} |
