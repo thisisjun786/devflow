@@ -292,6 +292,12 @@ cmd_pr_wait() {
   # Native exec and App Server clients own their recovery. Neither backend
   # should enter the terminal revival path after a PR wait.
   case "$BACKEND" in exec|appserver) return 0 ;; esac
+  # Releasing the PR lock can admit the exiting wrapper's second waiter.
+  # Serialize recovery too, so it cannot report a live revival as blocked
+  # before that revival has published its new agent.pid.
+  owned_lock "$S/.pr-recovery" "$$" || return 0
+  trap 'owned_unlock "$S/.pr-recovery" "$$"' EXIT
+  [ ! -d "$S/revive" ] || return 0
   local pid
   pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
