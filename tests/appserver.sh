@@ -41,6 +41,26 @@ CLIENT
   test -d "$fixture"
   rm "$fixture/state/T-1/appserver/client.pid"
 }
+case_teardown_wait_tmux() {
+  needs_tmux
+  local fixture="$CASE_DIR/teardown" launcher stopped=false
+  mkdir -p "$fixture/state" "$fixture/home"
+  cat > "$CASE_DIR/late-pane" <<'PANE'
+#!/usr/bin/env bash
+trap 'sleep 0.3; mkdir -p "$DV_STATE/late-write"; touch "$CASE_DIR/pane-stopped"; exit 0' TERM HUP
+touch "$CASE_DIR/pane-ready"
+while :; do sleep 0.1; done
+PANE
+  launcher=$(printf '%q ' env "DV_STATE=$fixture/state" "CASE_DIR=$CASE_DIR" bash "$CASE_DIR/late-pane")
+  tmux -L "$DV_TMUX_SOCKET" new-session -d -s late-pane "$launcher"
+  wait_file "$CASE_DIR/pane-ready"
+  CASE_DIR="$fixture" DV_STATE="$fixture/state" DV_HOME="$fixture/home" DV_TEST_KEEP=0 teardown
+  [ ! -f "$CASE_DIR/pane-stopped" ] || stopped=true
+  # Also join the deliberately delayed writer on a red run, before outer cleanup.
+  wait_file "$CASE_DIR/pane-stopped"
+  test "$stopped" = true
+  test ! -e "$fixture"
+}
 appserver_setup() {
   repo appserver "${1:-}"
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0

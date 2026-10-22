@@ -55,11 +55,21 @@ teardown_stop_pidfile() {
 }
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
-  local pidfile rc=0
+  local pidfile pane_pid rc=0
   for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
     teardown_stop_pidfile "$pidfile" || rc=1
   done
-  if command -v tmux >/dev/null; then tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true; fi
+  if command -v tmux >/dev/null; then
+    # kill-server returns before pane shutdown handlers finish. Observe live
+    # panes on this case's private socket, stop and join them before deleting
+    # any fixture state (including the simulated remote-host state trees).
+    for pane_pid in $(tmux -L "$DV_TMUX_SOCKET" list-panes -a -F '#{pane_pid} #{pane_dead}' 2>/dev/null | awk '$2==0 {print $1}' || true); do
+      pidfile="$CASE_DIR/tmux-pane-$pane_pid.pid"
+      printf '%s\n' "$pane_pid" > "$pidfile"
+      teardown_stop_pidfile "$pidfile" || rc=1
+    done
+    tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true
+  fi
   # Shutdown handlers can still publish receipts/exited markers after TERM.
   # Preserve their directory if termination cannot be confirmed.
   if [ "$rc" != 0 ]; then printf 'Retained live fixture: %s\n' "$CASE_DIR" >&2; return 1; fi
@@ -2044,7 +2054,7 @@ for name in appserver_reader_legacy appserver_sender_idle appserver_sender_parti
     else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
   fi
 done
-for name in task_tmux_fast_completion code_tmux_fast_completion code_tmux_fast_revival task_tmux_stale_completion code_tmux_stale_completion task_tmux_socket_failed code_tmux_socket_failed task_tmux_session_missing code_tmux_session_missing task_tmux_new_session_failed code_tmux_new_session_failed task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_launch_race task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace; do
+for name in teardown_wait_tmux task_tmux_fast_completion code_tmux_fast_completion code_tmux_fast_revival task_tmux_stale_completion code_tmux_stale_completion task_tmux_socket_failed code_tmux_socket_failed task_tmux_session_missing code_tmux_session_missing task_tmux_new_session_failed code_tmux_new_session_failed task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_launch_race task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?
