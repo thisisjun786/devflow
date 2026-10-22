@@ -81,7 +81,7 @@ stall_recover() {
     "$DV_ROOT/bin/dv" _stall-recover "$issue" "$id" "$token"
   else
     remote=$(shell_join dv _stall-recover "$issue" "$id" "$token")
-    ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$remote"
+    timeout "${DV_STATUS_TIMEOUT:-15}" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$remote"
   fi
 }
 

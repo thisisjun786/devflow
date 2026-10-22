@@ -242,9 +242,9 @@ stack_landed_event() {
   # candidate's own repository. Unrelated landed events cannot bypass a base.
   for host in $(printf '%s\n' "$DV_HOST $DV_HOSTS" | tr ' ' '\n' | sort -u); do
     if [ "$host" = "$DV_HOST" ]; then
-      rows=$("$DV_ROOT/bin/dv" status --json) || continue
+      rows=$(timeout "${DV_STATUS_TIMEOUT:-15}" "$DV_ROOT/bin/dv" status --json) || continue
     else
-      rows=$(ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" 'dv status --json') || continue
+      rows=$(timeout "${DV_STATUS_TIMEOUT:-15}" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" 'dv status --json') || continue
     fi
     # An unavailable host is retried by the existing status reconciliation;
     # it must not hold the landed queue cursor and unrelated stacks hostage.

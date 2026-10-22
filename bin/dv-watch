@@ -233,7 +233,7 @@ reconcile() {
           dv _pr-wait-start "$issue" >> "$DV_HOME/reconcile.log" 2>&1 || true
         else
           remote=$(shell_join dv _pr-wait-start "$issue")
-          ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$remote" >> "$DV_HOME/reconcile.log" 2>&1 || true
+          timeout "${DV_STATUS_TIMEOUT:-15}" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$remote" >> "$DV_HOME/reconcile.log" 2>&1 || true
         fi
       done < <(printf '%s\n' "$rows" | jq -r '.[] | select(.status=="pr") | .issue')
       while IFS= read -r row; do
