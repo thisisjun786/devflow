@@ -2120,7 +2120,7 @@ for name in codex_allowlist codex_persisted_trust codex_trust_conflict codex_tru
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin; do
+for name in question_wait_pid_cleanup question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
     result=$?

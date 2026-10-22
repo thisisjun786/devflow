@@ -6,6 +6,24 @@ question_async_reply() {
     [{answer:"choice",questionItemId:(["request_user_input_async",$call,$index]|tojson)}] |
     {type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:("<send_user_message_question_reply>\n"+tojson+"\n</send_user_message_question_reply>")}]}}' >> "$codex_record"
 }
+case_question_wait_pid_cleanup() {
+  cat > "$CASE_DIR/question-pid-env" <<'ENV'
+printf() {
+  # Preserve the fixture's exact format; hold only its PID publication.
+  # shellcheck disable=SC2059
+  builtin printf "$@"
+  if [ "${request:-}" = cli:agent:wait ] && [ "$#" = 2 ] && [ "$2" = "$$" ]; then
+    touch "$CASE_DIR/wait-pid-published"
+    while :; do env sleep 0.05; done
+  fi
+}
+ENV
+  export BASH_ENV="$CASE_DIR/question-pid-env"
+  question_setup
+  wait_file "$CASE_DIR/wait-pid-published"
+  # Stopping the agent must reap the paused subscriber and remove its marker.
+  question_finish
+}
 case_question_async_ack() {
   question_record_setup
   jq -n '{questions:[{title:"First?",options:["A","B"]},{title:"Second?",options:["C","D"]}]}' > "$CASE_DIR/exact-question.json"
