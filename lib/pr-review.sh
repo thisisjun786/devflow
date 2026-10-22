@@ -119,11 +119,20 @@ review_require_clean() (
   review_followup "$pr" "$result"
   rm "$result"
 )
+# The issue a PR closes is the follow-up's dependency. A moved job keeps its
+# key with a suffix (LN-214M), so the key's tail is not always a number:
+# prefer the PR body's Closes line, then the key's leading digits.
+review_source_issue() {
+  local number=''
+  [ ! -f "$S/pr.md" ] || number=$(grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' "$S/pr.md" | head -1 | grep -oE '[0-9]+$')
+  [ -n "$number" ] || number=$(printf '%s\n' "${ISSUE##*-}" | grep -oE '^[0-9]+' || true)
+  printf '%s\n' "$number"
+}
 review_followup() {
   local pr=$1 result=$2 endpoint repository number marker issues existing body payload response milestone link tmp remote_body
   jq -e '.clean and (.low|length)>0' "$result" >/dev/null || return 0
   endpoint=$(review_endpoint "$pr"); repository=${endpoint%/pulls/*}
-  number=${ISSUE##*-}
+  number=$(review_source_issue)
   [[ "$number" =~ ^[0-9]+$ ]] || fail 'cannot identify the source issue for review follow-up'
   marker="<!-- devflow-review-followup: $pr -->"
   issues=$(mktemp "$S/.followup-issues.XXXXXX")
