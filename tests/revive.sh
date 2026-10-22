@@ -166,12 +166,12 @@ case_revive_undetected() {
   if dv send RV-1 'do not replace active command'; then return 1; fi
   test ! -d "$RV_STATE/revive"
 }
-case_revive_branch_guard() {
+case_revive_worktree_guard() {
   revive_setup; revive_dead
-  git -C "$RV_WT" checkout -qb unexpected
-  if dv send RV-1 'stay on original branch'; then return 1; fi
+  mv "$RV_WT" "$CASE_DIR/moved-worktree"
+  if dv send RV-1 'stay in original worktree'; then return 1; fi
   test ! -d "$RV_STATE/revive"
-  test "$(cat "$RV_WT/dirty")" = 'unfinished work'
+  test "$(cat "$CASE_DIR/moved-worktree/dirty")" = 'unfinished work'
 }
 case_revive_goal_no_done() {
   revive_setup; revive_dead

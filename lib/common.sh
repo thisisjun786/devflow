@@ -88,6 +88,17 @@ owned_unlock() {
 require_worktree() {
   [ -d "$WT" ] || fail 'worktree is missing'
   [ "${KIND:-code}" != task ] || return 0
+  if [ "${1:-}" = --allow-branch-change ]; then
+    # Steering follows the worker's checkout, not its original branch. Still
+    # reject a replaced directory or a checkout belonging to another repo.
+    local root common expected
+    root=$(cd "$WT" && pwd -P)
+    [ "$(git -C "$WT" rev-parse --show-toplevel)" = "$root" ] || fail 'worktree path changed'
+    common=$(cd "$WT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
+    expected=$(cd "$REPO" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
+    [ "$common" = "$expected" ] || fail 'worktree repository changed'
+    return 0
+  fi
   [ "$(git -C "$WT" symbolic-ref --short HEAD)" = "$BRANCH" ] || fail 'worktree branch changed'
 }
 require_clean() { [ -z "$(git -C "$1" status --porcelain)" ] || fail "uncommitted files: $1"; }
