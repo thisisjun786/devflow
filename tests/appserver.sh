@@ -141,7 +141,12 @@ appserver_reexec_delivery() {
   test -f "$state/outbox/$id.finished"
   if [ "$outcome" = accepted ]; then test "$rc" = 0; else test "$rc" != 0; fi
   appserver_wait_updated
-  wait_file "$state/outbox/queued.finished"
+  # queued.json sorts before the new request.*.json status request. Its reply
+  # therefore observes the queued mutation's receipt and completion marker,
+  # including an unknown RPC that legitimately consumes the full deadline.
+  dv status AS-1 --json > "$CASE_DIR/after-queue-status"
+  test -f "$state/outbox/queued.finished"
+  jq -e '.[0].alive' "$CASE_DIR/after-queue-status"
   jq -e --arg outcome "$outcome" '.outcome==$outcome' "$state/outbox/queued.receipt"
   jq -se '[.[]|select(.method=="turn/steer")]|length==2 and all(.[]; .params.threadId=="thread-1")' "$CASE_DIR/server/requests"
   jq -se '[.[]|select(.method=="thread/start" or .method=="thread/goal/set" or .method=="turn/start")]|length==3' "$CASE_DIR/server/requests"
