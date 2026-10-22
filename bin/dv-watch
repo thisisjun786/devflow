@@ -82,7 +82,6 @@ cursor=0
 [ ! -f "$DV_HOME/cursor" ] || cursor=$(cat "$DV_HOME/cursor")
 touch "$DV_HOME/kick.q" "$DV_HOME/seen"
 last_scan=${DV_WATCH_LAST_SCAN:-0}
-last_stall_scan=${DV_WATCH_LAST_STALL_SCAN:-$last_scan}
 unset DV_WATCH_LAST_SCAN DV_WATCH_LAST_STALL_SCAN
 update_requested=0
 last_metrics=0
@@ -254,6 +253,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   available=$(wc -l < "$DV_HOME/kick.q")
+  reconcile_requested=0
   stall_reason=''; line=''
   while [ "$cursor" -lt "$available" ] && [ ! -e "$DV_HOME/stop" ]; do
     if [ "$cursor" -ge "$(wc -l < "$DV_HOME/kick.q")" ]; then stall_reason='queue shortened before read'; break; fi
@@ -269,6 +269,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then stall_reason='bid_event failed'; break; fi
       # Stack candidates are discovered by the bounded host reconciliation.
       # Never repeat an inline fleet status scan for each done/landed event.
+      case "$(printf '%s\n' "$line" | jq -r .kind)" in done|landed) reconcile_requested=1 ;; esac
       if [ "$(printf '%s\n' "$line" | jq -r .kind)" = submitted ]; then
         metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
@@ -304,6 +305,9 @@ while [ ! -e "$DV_HOME/stop" ]; do
     if self_update_landed "$line"; then update_requested=1; fi
   done
   watch_stall "$stall_reason" "$line"
+  # Coalesce a batch of landed/done wakeups, including events arriving while
+  # a host is busy, into one following pass through the same host slot.
+  if [ "$reconcile_requested" = 1 ]; then reconcile_request; fi
   # Resolve legacy slot conflicts before handing fallback records to workers.
   manager_conflict_recover
   manager_fallback_recover
@@ -318,7 +322,6 @@ while [ ! -e "$DV_HOME/stop" ]; do
       metrics_stop
       export DV_WATCH_REEXEC_PID=$$ DV_WATCH_REEXEC_PIDS=$pids DV_WATCH_LAST_SCAN=$last_scan
       export DV_WATCH_REEXEC_MANAGER_PIDS=$manager_pids
-      export DV_WATCH_LAST_STALL_SCAN=$last_stall_scan
       export DV_AUTO_UPDATE=$watch_auto_update
       exec "$DV_ROOT/bin/dv-watch" "$@"
     fi

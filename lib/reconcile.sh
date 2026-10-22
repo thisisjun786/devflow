@@ -8,6 +8,13 @@ reconcile_alive() {
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null &&
     ps -o args= -p "$pid" 2>/dev/null | grep -Fq -- "dv _reconcile-host $host "
 }
+reconcile_request() {
+  local host dir
+  for host in $(printf '%s\n' "$DV_HOST $DV_HOSTS" | tr ' ' '\n' | sort -u); do
+    dir=$(reconcile_dir "$host"); mkdir -p "$dir"
+    touch "$dir/requested"
+  done
+}
 reconcile_start() {
   local host dir pid at status_due recovery_due last_status last_recovery
   at=$(now)
@@ -20,9 +27,11 @@ reconcile_start() {
     last_recovery=$(cat "$dir/recovery-at" 2>/dev/null) || last_recovery=0
     status_due=0; recovery_due=0
     if [ $((at - last_status)) -ge "$stall_scan_interval" ]; then status_due=1; fi
+    if [ -f "$dir/requested" ] && [ ! -f "$dir/timed-out" ]; then status_due=1; fi
     if [ $((at - last_recovery)) -ge "$DV_APPSERVER_POLL" ]; then recovery_due=1; fi
     case " $DV_HOSTS " in *" $host "*) ;; *) recovery_due=0 ;; esac
     [ "$status_due:$recovery_due" != 0:0 ] || continue
+    if [ "$status_due" = 1 ]; then rm -f "$dir/requested" "$dir/timed-out"; fi
     [ "$status_due" = 0 ] || printf '%s\n' "$at" > "$dir/status-at"
     [ "$recovery_due" = 0 ] || printf '%s\n' "$at" > "$dir/recovery-at"
     "$DV_ROOT/bin/dv" _reconcile-host "$host" "$stall_scan_interval" "$status_due" "$recovery_due" >> "$DV_HOME/reconcile.log" 2>&1 &
@@ -45,11 +54,16 @@ cmd__reconcile_host() {
   # The deadline covers status AND its follow-up RPCs. Descendants cannot keep
   # SSH pipes or the host slot alive after timeout. No retry within this round.
   bid_limit "$DV_STATUS_TIMEOUT" reconcile_host "$@" || rc=$?
-  if [ "$rc" = 137 ]; then printf 'reconcile host=%s timeout after %ss; skipped this round\n' "$1" "$DV_STATUS_TIMEOUT"
+  if [ "$rc" = 137 ]; then
+    touch "$(reconcile_dir "$1")/timed-out"
+    printf 'reconcile host=%s timeout after %ss; skipped this round\n' "$1" "$DV_STATUS_TIMEOUT"
   elif [ "$rc" != 0 ]; then printf 'reconcile host=%s failed (exit %s); skipped this round\n' "$1" "$rc"; fi
 }
 reconcile_host() {
-  local host=$1 interval=$2 status_due=$3 recovery_due=$4 rows row issue head id event_host token recovered
+  local host=$1 interval=$2 status_due=$3 recovery_due=$4 rows row issue head id event_host token recovered dir
+  dir=$(reconcile_dir "$host")
+  owned_lock "$dir/.run" "$$" || return 1
+  trap 'owned_unlock "$dir/.run" "$$"' EXIT
   if [ "$status_due" = 1 ]; then
     rows=$(bid_rpc "$host" status --json < /dev/null) || return 1
     printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null || return 1
