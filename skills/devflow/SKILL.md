@@ -12,9 +12,9 @@ herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISS
 1. 구체적인 요구와 완료 기준을 brief 파일로 쓰고 `dv start <repo> <ISSUE> <slug> --brief FILE`로 시작합니다. Codex 기본은 goal입니다. 필요하면 `--agent claude|devin` 또는 Codex `--mode exec`, `--base BRANCH`를 선택합니다.
 2. 에이전트는 실패 시험을 먼저 남기고 개발·관련 시험·커밋·보고서를 마칩니다. GitHub면 `dv pr`, 마지막에 `dv done`을 호출합니다.
 3. 감시 호스트의 `dv-kick`은 이벤트를 파일에 쓰기만 합니다. `dv-watch`가 3초마다 로컬 큐를 읽고 시온 작업자를 최대 4개 실행합니다. 30분마다 상태 조회로 유실된 done 이벤트만 보완합니다(자기 호스트는 ssh 없이). 모델 폴링을 하지 않습니다. 10-19부터 감시 호스트는 lina-os(systemd user `dev.devflow.watch.service`, `DV_KICK_HOST=lina-os`)입니다.
-4. done에서 보고서·diff·시험을 직접 확인합니다. GitHub는 PR이 없으면 `dv pr`, 로컬은 `dv review` 한 번을 실행합니다. PR 체크와 봇 리뷰 완료/시간 초과는 pr-ready 이벤트로 받습니다.
-5. 리뷰 P0·P1만 `dv send <ISSUE> '<수정 지시>'`로 한 번 처리합니다. 이슈 상태 폴더에 review-fix.sent를 남겨 후속 이벤트에서도 중복 수정·재리뷰를 막습니다. 수정 후 커밋·관련 시험·PR push(`dv pr`)·done까지 지시합니다. 종료된 tmux는 자동 재시작하지 않으므로 차단으로 기록합니다.
-6. 현재 PR head의 CI 전체가 초록이면 `dv land`로 저장소가 허용하는 병합 방식(squash 우선)을 사용합니다. 로컬은 `.devflow` 또는 설정의 `DV_TEST_CMD`를 후보 병합 결과에서 통과한 뒤 base를 갱신합니다. fast-forward 기본이며 `DV_LAND_MODE=merge`는 merge 커밋입니다. 원격 브랜치는 남습니다.
+4. GitHub 작업자는 `dv pr-wait <ISSUE> --foreground`의 CI와 현재 head의 최신 Codex 리뷰를 읽습니다. P0·P1을 수정·시험·커밋·push하고 새 리뷰를 기다리는 루프를 반복합니다. 첫 리뷰는 PR-open 자동 트리거, 이후는 devflow의 `@codex review` 댓글입니다. `DV_REVIEW_BOTS=codex`, `DV_REVIEW_ROUNDS=4`가 기본입니다.
+5. 같은 head 재조회는 회차를 늘리지 않습니다. 상한에 P0·P1이 남으면 `review-rounds`와 열린 지적으로 차단하며 관리자가 처리합니다. 리뷰가 `DV_REVIEW_WAIT` 동안 없으면 한 번 더 요청하고 다시 기다린 뒤 `review-timeout`으로 차단합니다. P2·P3은 최종 리뷰에서 PR당 후속 이슈 하나로 같은 저장소·같은 milestone에 남깁니다(파일:줄·한 줄 내용, `Depends on #<원 이슈>`). 후속 번호는 report.md와 PR 본문에 기록하며 병합을 막지 않습니다.
+6. 현재 PR head의 CI 전체가 초록이고 최신 Codex 리뷰에 P0·P1이 없으면 `dv land`로 저장소가 허용하는 병합 방식(squash 우선)을 사용합니다. 로컬은 `.devflow` 또는 설정의 `DV_TEST_CMD`를 후보 병합 결과에서 통과한 뒤 base를 갱신합니다. fast-forward 기본이며 `DV_LAND_MODE=merge`는 merge 커밋입니다. 원격 브랜치는 남습니다.
 7. 이슈에 결과를 한 줄 남깁니다. 준에게 보내는 알림(준 10-22 "보내는 메시지 정돈해라"): 합친 결과는 바로 보내지 않고 `~/.local/state/devflow-mac/digest.tsv`에 `시각\t저장소\t쉬운 말 한 줄`로 덧붙인다. `~/dv/bin/sion-digest`가 09·12·15·18·21·00시에 저장소별로 묶어 한 통 보낸다(user timer `sion-digest`). 바로 보내는 건 준만 할 수 있는 일(돈·계정·공개·되돌릴 수 없는 일)과 시온이 풀 수 없는 막힘뿐, 두 줄(무엇이 막혔나 / 준이 할 일). 재시도·충돌·리뷰 수정처럼 시온이 처리할 막힘은 알리지 않고 처리한다. 번호·경로·PR·시험 개수·CI 같은 말을 쓰지 않는다.
 
 | 명령 | 용도 |
@@ -28,14 +28,15 @@ herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISS
 | `dv clean ISSUE` | 깨끗한 worktree와 herdr/tmux 정리, 머지된 로컬 브랜치만 삭제 |
 | `dv kick kind ISSUE [msg]` | 이벤트 재전송; 전송 실패는 events.log에 기록 |
 
-확인은 이벤트 host·issue·head와 현재 meta를 대조한 뒤 합니다. 보고서 주소만으로 시험 통과를 추정하지 않습니다. CI가 없거나 건너뜀·대기·실패면 land하지 않습니다. 한 번 수정한 P0·P1이 남거나 시험 실패면 차단입니다. base 직접 push, force push, 원격 브랜치 삭제를 하지 않습니다.
+확인은 이벤트 host·issue·head와 현재 meta를 대조한 뒤 합니다. 보고서 주소만으로 시험 통과를 추정하지 않습니다. CI가 없거나 건너뜀·대기·실패면 land하지 않습니다. GitHub done과 land는 현재 head의 최신 Codex 리뷰를 다시 검증합니다. pr-loop.json의 회차 기록을 보존하며 --review-handled로 과거 리뷰나 시간 초과를 승인할 수 없습니다. 원격 없는 로컬 저장소는 dv review 한 번 후 P0·P1 수정·시험을 확인해 병합합니다. base 직접 push, force push, 원격 브랜치 삭제를 하지 않습니다.
 
 ## devflow의 범위 (준 10-21)
 - devflow는 리나 개발의 일부이고, 실제로 쓰면서 계속 고친다(devflow#93).
 - 목적은 하나다. 자동화 관점에서 작업이 끊기지 않게 한다.
 - 작업 자체는 하네스로 만들지 않는다. 구현 방법, 쪼개기·묶기, 지시 해석, 순서·마일스톤 판단은 Codex·Claude Code·관리 세션의 판단을 믿고 맡긴다.
 - devflow 코드에는 배관만 넣는다. 시작, 확실한 메시지 전달, 상태를 사실대로 읽기, 멈춤·죽음 감지와 복구, 초록일 때 병합, 보고가 여기에 해당한다.
-- 규칙·템플릿·계획기·게이트는 넣지 않는다(#95~97은 이 이유로 닫았다).
+- 작업 자체를 통제하는 규칙·템플릿·계획기·게이트는 넣지 않는다(#95~97은 이 이유로 닫았다).
+- 현재 head의 CI·Codex 리뷰 조건(#167)은 전달 배관의 병합 조건으로 관리한다.
 - 실사용에서 본 문제가 배관이 아니면 에이전트 지시문이나 리나 설계로 보낸다.
 
 ## 실사용에서 확인된 것 (10-18, 10-19)

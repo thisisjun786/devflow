@@ -28,7 +28,7 @@ setup() {
   export GH_STUB_DIR="$CASE_DIR/gh" PATH="$ROOT/tests/fixtures:$ROOT/bin:$PATH"
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
   mkdir -p "$GH_STUB_DIR" "$DV_STATE" "$DV_WORK" "$DV_HOME"
-  printf '[]\n' > "$GH_STUB_DIR/reviews"
+  printf '"auto"\n' > "$GH_STUB_DIR/reviews"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
   trap teardown EXIT
@@ -277,16 +277,10 @@ case_pr_public_body() {
   cmp "$DV_STATE/T-41/pr.md" "$GH_STUB_DIR/live-body"
   if grep -q -- "$DV_STATE" "$GH_STUB_DIR/live-body"; then return 1; fi
 }
-case_late_review_rule() {
-  # A bot re-review after the single review-fix round must not park a green PR
-  # waiting for an owner decision; both sides of the hand-off say so.
-  grep -Fq '자동 재리뷰가 새 P0·P1을 달면 두 번째 수정을 하지 않고' "$ROOT/templates/rules.md"
-  grep -Fq '이것은 차단 사유가 아닙니다' "$ROOT/templates/rules.md"
-  grep -Fq '자동 재리뷰가 단 새 P0·P1' "$ROOT/templates/worker-prompt.md"
-  grep -Fq '두 번째 수정 요청이나 재리뷰는 보내지 않습니다' "$ROOT/templates/worker-prompt.md"
-  # Recovery goes back through the work session so dv done evidence exists.
-  grep -Fq 'late-review.sent' "$ROOT/templates/worker-prompt.md"
-  grep -F '자동 재리뷰가 단 새 P0·P1' "$ROOT/templates/worker-prompt.md" | grep -Fq 'dv done <ISSUE>'
+case_review_loop_rule() {
+  grep -Fq 'DV_REVIEW_ROUNDS' "$ROOT/templates/rules.md"
+  grep -Fq 'review-rounds' "$ROOT/templates/worker-prompt.md"
+  ! grep -Fq 'late-review.sent' "$ROOT/templates/worker-prompt.md"
 }
 case_blocked_event_ids() {
   # Two different block reasons at the same head and award are two events;
@@ -760,8 +754,8 @@ case_pr_ready() {
   test "$(grep -c 'pr create' "$GH_STUB_DIR/calls")" = 1
   jq '.[0:1]' "$GH_STUB_DIR/reviews" > "$GH_STUB_DIR/reviews.one"
   mv "$GH_STUB_DIR/reviews.one" "$GH_STUB_DIR/reviews"
-  dv pr-wait P-1
-  jq -e '(.bot_review|not) and .review_handled and (.review_timed_out|not)' "$DV_STATE/P-1/pr-ready.json"
+  if dv pr-wait P-1; then return 1; fi
+  jq -e '(.bot_review|not) and (.review_handled|not) and .review_timed_out and .blocked' "$DV_STATE/P-1/pr-ready.json"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"}]' > "$GH_STUB_DIR/checks"
   if dv land P-1; then return 1; fi
 }
@@ -2055,7 +2049,7 @@ for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metri
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in pr_worker_stale_recovery pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_no_rereview pr_worker_revive_exec pr_worker_exit_race pr_worker_late_waiter pr_worker_exec_missing_pr pr_worker_native_exec; do
+for name in review_summary_new_findings review_summary_latest_low review_summary_complete_low review_legacy_bot stack_review_update stack_review_recover review_clean_summary review_summary_guards review_summary_api_failure review_other_bot review_ci_first review_badges review_current review_summary review_land_missing review_land_latest review_timeout review_rounds review_e2e review_followup review_retry_arrives review_done_live review_api_failure review_latest_inline pr_worker_stale_recovery pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_revive_policy pr_worker_requires_review pr_worker_revive_exec pr_worker_exit_race pr_worker_late_waiter pr_worker_exec_missing_pr pr_worker_native_exec; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
@@ -2107,7 +2101,7 @@ for name in claude_stale_server claude_stale_server_empty claude_profile_onboard
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
-for name in stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body late_review_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
+for name in stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
@@ -2127,4 +2121,6 @@ done
 printf 'pass=%s skip=%s fail=%s\n' "$pass" "$skip" "$fail"
 [ "$fail" -eq 0 ]
 }
+# shellcheck source=tests/review-loop.sh
+source "$ROOT/tests/review-loop.sh"
 main "$@"

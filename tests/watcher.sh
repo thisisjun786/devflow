@@ -161,7 +161,7 @@ case_pr_wait_failed_checks() {
   pr_fixture
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"StatusContext","state":"ERROR"}]\n' > "$GH_STUB_DIR/checks"
   dv pr-wait P-1
-  jq -e '(.green|not) and .review_timed_out' "$DV_STATE/P-1/pr-ready.json"
+  jq -e '(.green|not) and (.review_timed_out|not) and .ci_rounds==1' "$DV_STATE/P-1/pr-ready.json"
   jq -e '.status=="pr"' "$DV_STATE/P-1/meta"
 }
 case_watch_retry() {
