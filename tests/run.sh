@@ -31,7 +31,7 @@ setup() {
   printf '"auto"\n' > "$GH_STUB_DIR/reviews"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
-  trap teardown EXIT
+  trap 'teardown "$?"' EXIT
 }
 teardown_stop_pidfile() {
   local pidfile=$1 pid attempt state
@@ -55,7 +55,7 @@ teardown_stop_pidfile() {
 }
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
-  local pidfile pane_pid rc=0
+  local pidfile pane_pid rc=0 case_result=${1:-0} diagnostic
   for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
     teardown_stop_pidfile "$pidfile" || rc=1
   done
@@ -73,6 +73,17 @@ teardown() {
   # Shutdown handlers can still publish receipts/exited markers after TERM.
   # Preserve their directory if termination cannot be confirmed.
   if [ "$rc" != 0 ]; then printf 'Retained live fixture: %s\n' "$CASE_DIR" >&2; return 1; fi
+  if [ "$case_result" != 0 ] && [ "$case_result" != 77 ]; then
+    # Preserve evidence for rare startup failures instead of losing it at EXIT.
+    for diagnostic in "$DV_STATE"/*/log "$DV_STATE"/*/appserver/outbox/*.receipt "$CASE_DIR/server/requests"; do
+      [ -f "$diagnostic" ] || continue
+      printf 'Failure diagnostic: %s\n' "$diagnostic" >&2
+      tail -c 8192 "$diagnostic" >&2
+      printf '\n' >&2
+    done
+    printf 'Retained failed fixture: %s\n' "$CASE_DIR" >&2
+    return 0
+  fi
   if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$CASE_DIR"; else rm -rf "$CASE_DIR"; fi
 }
 repo() {
@@ -588,7 +599,18 @@ case_kick_pull() {
   remote_q="$CASE_DIR/rq/kick.q"
   event() { jq -cn --arg i "$1" --arg m "$2" '{id:("box:"+$i+":done:h"),kind:"done",issue:$i,message:$m,host:"box",head:"h",time:1}'; }
   lines() { if [ -f "$DV_HOME/kick.q" ]; then wc -l < "$DV_HOME/kick.q" | tr -d ' '; else echo 0; fi; }
-  until_lines() { for _ in {1..100}; do [ "$(lines)" = "$1" ] && return 0; sleep 0.1; done; return 1; }
+  until_lines() {
+    local checkpoint
+    for _ in {1..100}; do
+      checkpoint=''
+      if [ -f "$DV_HOME/pull-box.offset" ]; then read -r checkpoint _ < "$DV_HOME/pull-box.offset"; fi
+      # The queue append precedes the reconnect checkpoint. Killing the pull
+      # between them deliberately leaves an uncheckpointed event to replay.
+      if [ "$(lines)" = "$1" ] && [ "$checkpoint" = "${2:-$1}" ]; then return 0; fi
+      sleep 0.1
+    done
+    return 1
+  }
   # Stop only this case's pull (its EXIT trap ends ssh/tail); never pkill by pattern.
   stop_pull() { kill "$!" 2>/dev/null || true; wait "$!" 2>/dev/null || true; }
   { event P-1 ''; event P-2 'two words'; } > "$remote_q"
@@ -608,8 +630,18 @@ case_kick_pull() {
   dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 5; stop_pull
   # A replaced queue (new inode) restarts from its first line.
   event P-6 '' > "$remote_q.new"; mv "$remote_q.new" "$remote_q"
-  dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 6; stop_pull
+  dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 6 1; stop_pull
   jq -se '[.[].issue]==["P-1","P-2","P-3","P-4","P-5","P-6"]' "$DV_HOME/kick.q"
+}
+case_kick_pull_checkpoint() {
+  cat > "$CASE_DIR/delayed-checkpoint-env" <<'ENV'
+mv() {
+  if [ "${2:-}" = "$DV_HOME/pull-box.offset" ]; then env sleep 0.3; fi
+  env mv "$@"
+}
+ENV
+  export BASH_ENV="$CASE_DIR/delayed-checkpoint-env"
+  case_kick_pull
 }
 case_watch_pull() {
   export SSH_FIXTURE_EXEC=1 DV_PULL_HOSTS=box DV_PULL_RETRY=1 DV_WATCH_INTERVAL=0.1
@@ -2248,7 +2280,7 @@ for name in claude_stale_server claude_stale_server_empty claude_profile_onboard
     else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
   fi
 done
-for name in stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
+for name in stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull kick_pull_checkpoint watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
   if bash "$0" --case "$name"; then
     pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else
