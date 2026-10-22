@@ -110,9 +110,19 @@ bid_settings() {
   [[ "$DV_AWARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_AWARD_TIMEOUT must be a positive integer'
   [[ "$DV_MIN_MEMORY_MB" =~ ^[0-9]+$ ]] || fail 'DV_MIN_MEMORY_MB must be a nonnegative integer'
 }
+bid_work_writable() {
+  local path=$DV_WORK
+  # Stay read-only: missing components can be created only below a writable,
+  # searchable directory. Files and dangling symlinks are not usable ancestors.
+  while [ ! -e "$path" ] && [ ! -L "$path" ]; do
+    [ "$path" != / ] && [ "$path" != . ] || return 1
+    path=$(dirname "$path")
+  done
+  [ -d "$path" ] && [ -w "$path" ] && [ -x "$path" ]
+}
 cmd_bid() {
   bid_settings
-  local repo='' agent=$DV_AGENT json=0 resources capacity active ready=false backend=false trust=true root
+  local repo='' agent=$DV_AGENT json=0 resources capacity active ready=false backend=false trust=true root writable=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -126,6 +136,7 @@ cmd_bid() {
   [ -n "$capacity" ] || capacity=$(printf '%s' "$resources" | jq '[1,(.cores/8|floor)]|max')
   [[ "$capacity" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
   active=$(bid_active)
+  if bid_work_writable; then writable=true; fi
   bid_repo "$repo"
   [ -n "$repo" ] || BID_REPO_OK=true
   if bid_agent "$agent"; then ready=true; fi
@@ -140,12 +151,13 @@ cmd_bid() {
   fi
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
-    --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" --argjson min_disk "$DV_MIN_DISK_GB" \
+    --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" --argjson min_disk "$DV_MIN_DISK_GB" --argjson writable "$writable" \
     '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready,capacity:$capacity,active:$active,free_slots:([0,($capacity-$active)]|max)} |
     ([.disk_available_gb,.cache_disk_available_gb]|map(select(.!=null))|min) as $disk |
-    .reason=(if .free_slots==0 then "full" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
+    .reason=(if .free_slots==0 then "full" elif $writable|not then "worktree dir not writable" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
     .status=(if .reason=="" then "submitted" else "rejected" end) |
-    .score=(100*.free_slots/.capacity - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
+    # Keep normal-load scores; each core-equivalent above 1.5 costs 100 more.
+    .score=(100*.free_slots/.capacity - 20*.load5/.cores - 100*([0,(.load5/.cores-1.5)]|max) + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
       (if $min_disk>0 and $disk!=null then [0,20*(2*$min_disk-$disk)/$min_disk]|max else 0 end))' |
     if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason]|@tsv'; fi
 }
@@ -242,7 +254,7 @@ cmd__receipt() {
 }
 cmd__award() (
   bid_settings
-  local request issue dir token deadline repo agent mode slug base bid rc=0 status head history='' retry=false
+  local request issue dir token deadline repo agent mode slug base bid rc=0 status head history='' retry=false error message
   request=$(cat); printf '%s\n' "$request" | bid_request_valid || fail 'invalid award'
   issue=$(printf '%s\n' "$request" | jq -r .issue)
   token=$(printf '%s\n' "$request" | jq -er '.token|select(type=="string")')
@@ -274,15 +286,20 @@ cmd__award() (
   if [ "$retry" = true ]; then
     history=$(mktemp -d "$dir/failed.XXXXXX")
     mv "$dir/receipt.json" "$dir/request.json" "$dir/brief.md" "$history/"
+    [ ! -f "$dir/startup.err" ] || mv "$dir/startup.err" "$history/"
     [ ! -e "$DV_STATE/$issue" ] || mv "$DV_STATE/$issue" "$history/state"
   fi
   mkdir -p "$dir"
   printf '%s\n' "$request" > "$dir/request.json"
   printf '%s\n' "$request" | jq -r .brief > "$dir/brief.md"
   printf '%s\n' "$request" | jq '{token,status:"starting"}' > "$dir/receipt.json"
+  : > "$dir/startup.err"
   if ! printf '%s\n' "$bid" | jq -e .repo_cloned >/dev/null; then
-    mkdir -p "$DV_REPO_ROOT"
-    bid_limit "$DV_AWARD_TIMEOUT" git clone -- "$repo" "$(printf '%s\n' "$bid" | jq -r .repo)" >&2 || rc=$?
+    {
+      if mkdir -p "$DV_REPO_ROOT"; then
+        bid_limit "$DV_AWARD_TIMEOUT" git clone -- "$repo" "$(printf '%s\n' "$bid" | jq -r .repo)" >&2 || rc=$?
+      else rc=$?; fi
+    } 2>> "$dir/startup.err"
   fi
   repo=$(printf '%s\n' "$bid" | jq -r .repo)
   mode=$(printf '%s\n' "$request" | jq -r .mode); slug=$(printf '%s\n' "$request" | jq -r .slug); base=$(printf '%s\n' "$request" | jq -r .base)
@@ -292,8 +309,9 @@ cmd__award() (
   [ -z "$base" ] || args+=(--base "$base")
   if [ "$rc" = 0 ] && [ "$(now)" -lt "$deadline" ]; then
     # The wrapper writes agent.started only after startup has been confirmed.
-    DV_AWARD_TOKEN="$token" "$DV_ROOT/bin/dv" "${args[@]}" >&2 || rc=$?
+    DV_AWARD_TOKEN="$token" "$DV_ROOT/bin/dv" "${args[@]}" >&2 2>> "$dir/startup.err" || rc=$?
   else rc=1; fi
+  cat "$dir/startup.err" >&2
   while [ "$rc" = 0 ] && [ "$(now)" -lt "$deadline" ]; do
     if [ -f "$DV_STATE/$issue/agent.exit" ]; then
       [ "$(cat "$DV_STATE/$issue/agent.exit")" = 0 ] || rc=1
@@ -318,7 +336,18 @@ cmd__award() (
   [ ! -f "$DV_STATE/$issue/meta" ] || head=$(jq -r '.head // .start_head' "$DV_STATE/$issue/meta")
   jq -n --arg status "$status" --arg token "$token" --arg head "$head" '{status:$status,token:$token,head:$head}' > "$dir/.receipt"
   mv "$dir/.receipt" "$dir/receipt.json"
-  if [ "$status" = failed ]; then DV_AWARD_TOKEN="$token" "$DV_ROOT/bin/dv" kick failed "$issue" 'Award startup failed; safe to reassign' >&2; fi
+  if [ "$status" = failed ]; then
+    local logs=("$dir/startup.err")
+    [ ! -f "$DV_STATE/$issue/log" ] || logs+=("$DV_STATE/$issue/log")
+    # Git progress can precede the diagnostic; asynchronous agent failures can
+    # appear only in the issue log. Fall back to the first nonempty line.
+    error=$(awk 'NF && first=="" {first=$0}
+      tolower($0) ~ /(^|[^[:alnum:]_])(error|fatal|failed|denied|cannot|not found)([^[:alnum:]_]|$)/ {print; found=1; exit}
+      END {if (!found) print first}' "${logs[@]}")
+    message='Award startup failed; safe to reassign'
+    [ -z "$error" ] || message="$message: $error"
+    DV_AWARD_TOKEN="$token" "$DV_ROOT/bin/dv" kick failed "$issue" "$message" >&2
+  fi
   cat "$dir/receipt.json"
 )
 bid_hosts() {

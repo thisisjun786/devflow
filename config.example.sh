@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # ~/.config/devflow/config.sh. Shell code: use only trusted configuration.
 # ${VAR:=default} keeps environment overrides, including test agent commands.
-if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOME/dv/wt}"; fi
+if { [ -d /scratch ] && [ -w /scratch ] && [ -x /scratch ]; } ||
+   { [ -d /scratch/dv-wt ] && [ -w /scratch/dv-wt ] && [ -x /scratch/dv-wt ]; }; then
+  : "${DV_WORK:=/scratch/dv-wt}"
+else
+  : "${DV_WORK:=$HOME/dv/wt}"
+fi
 : "${DV_STATE:=$HOME/.local/state/devflow}"
 : "${DV_HOME:=$HOME/.local/state/devflow-mac}"
 : "${DV_HOST:=$(hostname -s)}"
