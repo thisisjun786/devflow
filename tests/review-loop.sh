@@ -657,3 +657,23 @@ case_review_receipt_ambiguous() {
   review_receipt_parse "$head"
   jq -e '(.exists|not) and (.clean|not)' "$CASE_DIR/result"
 }
+
+case_review_followup_source() {
+  # Retain the moved-job regression using authoritative closing references.
+  review_fixture
+  export S="$DV_STATE/P-1"
+  local pr='https://github.com/test/repo/pull/1'
+  # shellcheck source=/dev/null
+  source "$ROOT/lib/pr-review.sh"
+  ISSUE=LN-214M
+  review_closing_issues '[{"number":214,"repository":{"nameWithOwner":"test/repo"}}]' > "$GH_STUB_DIR/closing-issues"
+  test "$(review_source_issue "$pr" test/repo)" = 214
+  review_closing_issues '[]' > "$GH_STUB_DIR/closing-issues"
+  # A suffixed key alone must not invent a source issue number.
+  test -z "$(review_source_issue "$pr" test/repo)"
+  ISSUE=P-7
+  test "$(review_source_issue "$pr" test/repo)" = 7
+  ISSUE=LN-212M
+  review_closing_issues '[{"number":300,"repository":{"nameWithOwner":"test/repo"}}]' > "$GH_STUB_DIR/closing-issues"
+  test "$(review_source_issue "$pr" test/repo)" = 300
+}
