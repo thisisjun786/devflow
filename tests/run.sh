@@ -1989,7 +1989,7 @@ source "$ROOT/tests/status-nonblocking.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
-for name in status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single; do
+for name in status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

@@ -119,3 +119,24 @@ case_status_cache_live() {
   dv status AS-1 | grep 'status_age=[0-9].*s'
   trap teardown EXIT
 }
+
+case_recovery_sweep_progress() {
+  bidding_functions
+  local n rc
+  for n in 1 2; do
+    mkdir -p "$DV_STATE/SWEEP-$n/appserver"
+    printf '{"issue":"SWEEP-%s","backend":"appserver","status":"running"}\n' "$n" > "$DV_STATE/SWEEP-$n/meta"
+  done
+  appserver_request() {
+    printf '%s\n' "$ISSUE" >> "$CASE_DIR/sweep-attempts"
+    sleep 60
+  }
+  for n in 1 2 3; do
+    rc=0
+    bid_limit 1 cmd__appserver_watch || rc=$?
+    test "$rc" = 137
+  done
+  cat "$CASE_DIR/sweep-attempts"
+  printf 'SWEEP-1\nSWEEP-2\nSWEEP-1\n' > "$CASE_DIR/expected-sweep"
+  cmp "$CASE_DIR/expected-sweep" "$CASE_DIR/sweep-attempts"
+}

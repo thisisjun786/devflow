@@ -745,12 +745,21 @@ appserver_require_stopped() {
   appserver_request stop >/dev/null || fail 'App Server turn stop is unconfirmed; worktree retained'
 }
 cmd__appserver_watch() (
-  local path
+  local path after='' pass candidate
   [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be positive seconds'
-  for path in "$DV_STATE"/*/meta; do
-    [ -f "$path" ] || continue
-    jq -e '.backend=="appserver" and (.status=="running" or .status=="pr" or .status=="waiting-capacity")' "$path" >/dev/null || continue
-    load_issue "$(jq -r .issue "$path")"
-    appserver_request recover >/dev/null || true
+  [ ! -f "$DV_STATE/.appserver-watch-after" ] || read -r after < "$DV_STATE/.appserver-watch-after" || true
+  for pass in after wrap; do
+    for path in "$DV_STATE"/*/meta; do
+      [ -f "$path" ] || continue
+      candidate=${path%/meta}; candidate=${candidate##*/}
+      if [ "$pass" = after ]; then [[ "$candidate" > "$after" ]] || continue
+      else [[ "$candidate" > "$after" ]] && continue; fi
+      jq -e '.backend=="appserver" and (.status=="running" or .status=="pr" or .status=="waiting-capacity")' "$path" >/dev/null || continue
+      load_issue "$candidate"
+      # Advance BEFORE waiting: a host deadline may kill this sweep while an
+      # early client is unresponsive. The next round starts with its successor.
+      printf '%s\n' "$candidate" | appserver_atomic "$DV_STATE/.appserver-watch-after"
+      appserver_request recover >/dev/null || true
+    done
   done
 )
