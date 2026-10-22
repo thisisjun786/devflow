@@ -103,15 +103,24 @@ qa_settings() (
   jq -cn --arg enabled "$DV_QA" --arg agent "$DV_QA_AGENT" '{enabled:($enabled=="1"),agent:$agent}'
 )
 qa_merged_pr() {
-  local repository=$1 head=$2 base=${3:-} result attempt
+  local repository=$1 head=$2 base=${3:-} result attempt reason
   # GitHub can associate the merge commit with its PR after the landed event.
   # Keep the latest-base selection for coalesced jobs, but bound the wait.
   for attempt in 1 2 3 4 5 6; do
-    result=$(gh api "repos/$repository/commits/$head/pulls") || return 1
-    result=$(jq -c --arg base "$base" '[.[] | select(.merged_at!=null and
-      ($base=="" or .base.ref==$base))] | sort_by(.merged_at) | last' <<< "$result") || return 1
-    if [ "$result" != null ]; then printf '%s\n' "$result"; return 0; fi
-    printf 'QA pr lookup: no merged PR for %s at %s (attempt %s/6)\n' "$repository" "$head" "$attempt" >&2
+    if ! result=$(gh api "repos/$repository/commits/$head/pulls"); then
+      reason='request failed'
+    elif ! result=$(jq -cs --arg base "$base" '
+      if length==1 and (.[0]|type)=="array" then .[0]
+      else error("expected a PR array") end |
+      [.[] | select(.merged_at!=null and ($base=="" or .base.ref==$base))] |
+      sort_by(.merged_at) | last' <<< "$result"); then
+      reason='invalid PR response'
+    elif [ "$result" != null ]; then
+      printf '%s\n' "$result"; return 0
+    else
+      reason='no merged PR'
+    fi
+    printf 'QA pr lookup: %s for %s at %s (attempt %s/6)\n' "$reason" "$repository" "$head" "$attempt" >&2
     [ "$attempt" = 6 ] || sleep 5
   done
   return 1

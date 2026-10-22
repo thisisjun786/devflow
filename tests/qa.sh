@@ -266,7 +266,7 @@ qa_direct_fixture() {
   mkdir "$CASE_DIR/qa-bin"
   cat > "$CASE_DIR/qa-bin/sleep" <<'SLEEP'
 #!/usr/bin/env bash
-[ "$*" != 5 ] || exit 0
+if [ "$*" = 5 ]; then printf '%s\n' "$*" >> "$CASE_DIR/qa-delays"; exit 0; fi
 exec /bin/sleep "$@"
 SLEEP
   chmod +x "$CASE_DIR/qa-bin/sleep"
@@ -320,6 +320,52 @@ case_qa_base_lookup_blocked() {
   jq -e '.status=="blocked" and (.failure_reason|contains("pr lookup"))' "$qa_dir/meta"
   grep 'QA failed at pr lookup' "$qa_dir/log"
 }
+qa_lookup_response_retry() {
+  local response=$1 base_lookup=${2:-false} expected_calls=2
+  qa_direct_fixture
+  if [ "$base_lookup" = true ]; then
+    jq '.base=""' "$qa_dir/running.json" > "$CASE_DIR/request.tmp"
+    mv "$CASE_DIR/request.tmp" "$qa_dir/running.json"
+    # Base discovery succeeds; the second lookup at the checked-out head fails.
+    printf 'ok\n' > "$GH_STUB_DIR/qa-pull-responses"
+    expected_calls=3
+  fi
+  printf '%s\n' "$response" >> "$GH_STUB_DIR/qa-pull-responses"
+  qa_direct_run
+  test "$qa_rc" = 0
+  test "$(cat "$GH_STUB_DIR/qa-pull-count")" = "$expected_calls"
+  test "$(cat "$CASE_DIR/qa-delays")" = 5
+  test "$(wc -l < "$CASE_DIR/qa-runs" | tr -d ' ')" = 1
+  jq -e '.pr==7 and .base=="main" and .milestone.title=="M1" and .status=="done"' "$DV_STATE"/QA-*/meta
+}
+case_qa_request_retry() { qa_lookup_response_retry fail; }
+case_qa_empty_reply_retry() { qa_lookup_response_retry empty; }
+case_qa_invalid_reply_retry() { qa_lookup_response_retry invalid; }
+case_qa_second_lookup_retry() { qa_lookup_response_retry fail true; }
+qa_lookup_response_blocked() {
+  local response=$1 base_lookup=${2:-false} attempt record
+  qa_direct_fixture
+  if [ "$base_lookup" = true ]; then
+    jq '.base=""' "$qa_dir/running.json" > "$CASE_DIR/request.tmp"
+    mv "$CASE_DIR/request.tmp" "$qa_dir/running.json"
+  fi
+  for attempt in 1 2 3 4 5 6; do
+    printf '%s\n' "$response" >> "$GH_STUB_DIR/qa-pull-responses"
+  done
+  qa_direct_run
+  test "$qa_rc" = 1
+  test "$(cat "$GH_STUB_DIR/qa-pull-count")" = 6
+  test "$(wc -l < "$CASE_DIR/qa-delays" | tr -d ' ')" = 5
+  test ! -f "$CASE_DIR/qa-runs"
+  if [ "$base_lookup" = true ]; then record="$qa_dir/meta"
+  else record=$(find "$DV_STATE" -path '*/QA-*/meta' -print); fi
+  jq -e '.status=="blocked" and (.failure_reason|contains("pr lookup"))' "$record"
+  test -f "$qa_dir/running.json"
+  grep 'QA failed at pr lookup' "$qa_dir/log"
+}
+case_qa_request_blocked() { qa_lookup_response_blocked fail; }
+case_qa_empty_reply_blocked() { qa_lookup_response_blocked empty; }
+case_qa_base_request_blocked() { qa_lookup_response_blocked fail true; }
 case_qa_milestone_graphql() {
   qa_direct_fixture; qa_without_pr_milestone
   qa_direct_run
