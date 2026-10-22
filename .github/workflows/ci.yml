@@ -11,6 +11,11 @@ on:
         type: choice
         default: '5'
         options: ['1', '5']
+      test_case:
+        description: Full suite or a focused portability diagnostic
+        type: choice
+        default: full
+        options: [full, heavy_priority]
 permissions:
   contents: read
 jobs:
@@ -33,6 +38,7 @@ jobs:
       - name: Tests
         env:
           REPETITIONS: ${{ inputs.repetitions || '1' }}
+          TEST_CASE: ${{ inputs.test_case || 'full' }}
         run: |
           # Exercise the system Bash, including macOS Bash 3.2, in children too.
           export PATH="/bin:/usr/bin:/sbin:/usr/sbin:$PATH"
@@ -40,9 +46,11 @@ jobs:
           bash --version
           git rev-parse HEAD
           case "$REPETITIONS" in 1|5) ;; *) exit 1 ;; esac
+          test_args=()
+          case "$TEST_CASE" in full) ;; heavy_priority) test_args=(--case "$TEST_CASE") ;; *) exit 1 ;; esac
           for ((run=1; run<=REPETITIONS; run++)); do
             log="$RUNNER_TEMP/devflow-ci/run-$run.log"
-            if bash tests/run.sh > "$log" 2>&1; then
+            if bash tests/run.sh "${test_args[@]}" > "$log" 2>&1; then
               printf 'Run %s/%s: ' "$run" "$REPETITIONS"
               tail -n 1 "$log" | tee -a "$RUNNER_TEMP/devflow-ci/results.txt"
             else
