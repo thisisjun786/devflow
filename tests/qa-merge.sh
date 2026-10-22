@@ -165,17 +165,20 @@ qa_spread_teardown() {
 case_qa_merge_spread() {
   qa_merge_fixture
   trap qa_spread_teardown EXIT
+  export BASH_ENV="$ROOT/tests/fixtures/qa-summary-race"
   export SSH_BIDDING=1 DV_HOSTS='hx-linux go2-linux' DV_AWARD_TIMEOUT=10 DV_BID_TIMEOUT=5
   local host repository issue request dir
   git config --file "$GIT_CONFIG_GLOBAL" url."$CASE_DIR/remote.git".insteadOf https://github.com/test/repo.git
   git config --file "$GIT_CONFIG_GLOBAL" --add url."$CASE_DIR/remote.git".insteadOf https://github.com/test/other.git
   for host in hx-linux go2-linux; do
-    mkdir -p "$CASE_DIR/hosts/$host"
+    mkdir -p "$CASE_DIR/hosts/$host/gh"
+    cp "$GH_STUB_DIR/qa-pr" "$GH_STUB_DIR/qa-comments" "$CASE_DIR/hosts/$host/gh/"
     cat > "$CASE_DIR/hosts/$host/config" <<CONFIG
 DV_HOST=$host
 DV_STATE='$CASE_DIR/hosts/$host/state'
 DV_WORK='$CASE_DIR/hosts/$host/work'
 DV_MAX_JOBS=1
+GH_STUB_DIR='$CASE_DIR/hosts/$host/gh'
 CONFIG
   done
   for repository in test/repo test/other; do
