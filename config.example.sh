@@ -82,3 +82,4 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_QA_AGENT_CMD:=}" # optional command receiving the QA prompt path
 : "${DV_QA_COALESCE:=600}" # quiet seconds before bidding one QA for accumulated merges
 : "${DV_QA_BASE:=}" # QA base; empty uses the registered repository's remote default
+: "${DV_MANAGER_LAST=1}" # 1: the manager host (lina-os) bids only after work hosts; 0: it competes on score like the others

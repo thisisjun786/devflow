@@ -321,6 +321,20 @@ case_appserver_large_reply() {
   dv clean AS-1
   test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
 }
+case_appserver_status_landed_cheap() {
+  # Finished jobs must not cost an App Server round trip on every dv status;
+  # the watcher reconciles every host each minute and history only grows.
+  appserver_setup
+  printf 'complete\n' > "$CASE_DIR/server/goal"
+  printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"completed","items":[],"error":null}]}}' > "$CASE_DIR/server/thread.json"
+  dv 'done' AS-1
+  dv clean AS-1
+  jq '.status="landed"' "$DV_STATE/AS-1/meta" > "$CASE_DIR/meta"; mv "$CASE_DIR/meta" "$DV_STATE/AS-1/meta"
+  : > "$CASE_DIR/server/requests"
+  dv status --json | jq -e '.[0] | .status=="landed" and .agent_status=="gone" and .alive==false'
+  dv status AS-1 --json >/dev/null
+  test ! -s "$CASE_DIR/server/requests"
+}
 case_appserver_failed() {
   appserver_setup
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"failed","items":[],"error":{"message":"model failed","codexErrorInfo":"other"}}]}}' > "$CASE_DIR/server/thread.json"
