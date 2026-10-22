@@ -45,7 +45,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_LAND_METHOD:=}" # GitHub: empty = auto; squash, merge or rebase
 : "${DV_TEST_CMD:=}" # required for local land; .devflow may supply it
 : "${DV_REVIEW_WAIT:=300}" # maximum seconds after checks for bot reviews
-: "${DV_REVIEW_BOTS:=devin,codex}" # comma-separated required author regexes (all must review this head)
+: "${DV_REVIEW_BOTS:=codex}" # comma-separated required author regexes (all must review this head)
 : "${DV_POLL_INTERVAL:=10}" # PR review interval
 : "${DV_POLISH:=1}" # 0 disables optional PR prose polishing
 : "${DV_POLISH_CMD:=}" # shell command; receives the prompt as its last argument
