@@ -123,6 +123,8 @@ case_status_cache_live() {
 case_recovery_sweep_progress() {
   bidding_functions
   local n rc
+  # Model live clients so the watcher reaches the recovery request path.
+  appserver_alive() { return 0; }
   for n in 1 2; do
     mkdir -p "$DV_STATE/SWEEP-$n/appserver"
     printf '{"issue":"SWEEP-%s","backend":"appserver","status":"running"}\n' "$n" > "$DV_STATE/SWEEP-$n/meta"

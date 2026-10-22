@@ -19,6 +19,8 @@ if [ "${1:-}" != --json ]; then
 [ "${1:-}" = app-server ] || exit 1
 [ "${2:-}" = proxy ] || exit 1
 command -v nc >/dev/null || { echo 'App Server socket tests require OpenBSD nc' >&2; exit 1; }
+date +%s >> "$CASE_DIR/server/connections"
+[ ! -f "$CASE_DIR/server/offline" ] || exit 1
 # Two shell processes exchange JSON-RPC through a real Unix socket, using
 # the same stdio-to-socket boundary as `codex app-server proxy`.
 socket_dir=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-as.XXXXXX")
@@ -27,6 +29,7 @@ exec 6<> "$socket_dir/in" 7<> "$socket_dir/out"
 bash "$0" --peer < "$socket_dir/in" > "$socket_dir/out" 6>&- 7>&- & peer=$!
 # Relative socket names avoid sun_path limits even under a long scratch root.
 (cd "$socket_dir" && exec nc -lU socket) < "$socket_dir/out" > "$socket_dir/in" 6>&- 7>&- & listener=$!
+printf '%s\n' "$listener" > "$CASE_DIR/server/daemon.pid"
 client=''
 # EXIT invokes this callback; older ShellCheck reports SC2317, newer SC2329.
 # shellcheck disable=SC2317,SC2329

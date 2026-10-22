@@ -7,6 +7,13 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
       count=0
       [ ! -f "$GH_STUB_DIR/qa-pull-count" ] || count=$(cat "$GH_STUB_DIR/qa-pull-count")
       count=$((count + 1)); printf '%s\n' "$count" > "$GH_STUB_DIR/qa-pull-count"
+      if [ -f "$GH_STUB_DIR/qa-pull-responses" ]; then
+        case "$(sed -n "${count}p" "$GH_STUB_DIR/qa-pull-responses")" in
+          fail) printf '{truncated'; printf 'unexpected end of JSON input\n' >&2; exit 1 ;;
+          empty) exit 0 ;;
+          invalid) printf '{truncated'; exit 0 ;;
+        esac
+      fi
       if [ -f "$GH_STUB_DIR/qa-empty-pulls" ] && [ "$count" -le "$(cat "$GH_STUB_DIR/qa-empty-pulls")" ]; then
         printf '[]\n'
       else jq -s . "$GH_STUB_DIR/qa-pr"; fi
@@ -45,6 +52,30 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
   esac
 fi
 case "$*" in
+  'api --paginate repos/'*/issues/*/comments)
+    [ ! -f "$GH_STUB_DIR/issue-comments-fail" ] || exit 1
+    if [ -f "$GH_STUB_DIR/issue-comments" ]; then cat "$GH_STUB_DIR/issue-comments"; else printf '[]\n'; fi ;;
+  'api --paginate repos/'*/reviews)
+    [ ! -f "$GH_STUB_DIR/reviews-fail" ] || exit 1
+    head=$(git rev-parse HEAD)
+    [ ! -f "$GH_STUB_DIR/head" ] || head=$(cat "$GH_STUB_DIR/head")
+    jq --arg head "$head" 'if .=="auto" then [{id:1,user:{login:"chatgpt-codex-connector[bot]"},commit_id:$head,state:"COMMENTED",submitted_at:"2026-10-22T01:00:00Z",body:"Looks good"}]
+      else to_entries | map(.key as $i | .value | .user //= .author | .commit_id //= .commit.oid | .id //= ($i+1) | .state //= "COMMENTED" | .submitted_at //= "2026-10-22T01:00:00Z") end' "$GH_STUB_DIR/reviews" ;;
+  'pr comment '* )
+    if [ -f "$GH_STUB_DIR/review-on-request" ]; then
+      jq --arg head "$(git rev-parse HEAD)" '[.[-1] | .id+=1 | .commit_id=$head | .body="Looks good"]' "$GH_STUB_DIR/reviews" > "$GH_STUB_DIR/reviews.tmp"
+      mv "$GH_STUB_DIR/reviews.tmp" "$GH_STUB_DIR/reviews"
+      printf '[]\n' > "$GH_STUB_DIR/comments"
+    fi ;;
+  'api --paginate repos/'*'/issues?state=all&per_page=100')
+    if [ -f "$GH_STUB_DIR/followups" ]; then cat "$GH_STUB_DIR/followups"; else printf '[]\n'; fi ;;
+  'api repos/'*'/issues/'*' --jq .milestone.number // null') printf '7\n' ;;
+  'api --method POST repos/'*'/issues --input '*|'api --method PATCH repos/'*'/issues/'*' --input '*)
+    jq '.+{number:20,html_url:"https://github.com/test/repo/issues/20"}' "$6" > "$GH_STUB_DIR/followup"
+    jq -s '.' "$GH_STUB_DIR/followup" > "$GH_STUB_DIR/followups"
+    cat "$GH_STUB_DIR/followup" ;;
+  'api repos/'*'/pulls/'*' --jq .body // ""')
+    if [ -f "$GH_STUB_DIR/live-body" ]; then cat "$GH_STUB_DIR/live-body"; fi ;;
   'api --paginate repos/'*/comments)
     [ ! -f "$GH_STUB_DIR/comments-fail" ] || exit 1
     if [ -f "$GH_STUB_DIR/comments" ]; then cat "$GH_STUB_DIR/comments"; else printf '[]\n'; fi ;;
