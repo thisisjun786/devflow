@@ -56,7 +56,7 @@ teardown_stop_pidfile() {
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
   local pidfile rc=0
-  for pidfile in "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
+  for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
     teardown_stop_pidfile "$pidfile" || rc=1
   done
   if command -v tmux >/dev/null; then tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true; fi
@@ -1539,6 +1539,8 @@ case_bid_readonly() {
 }
 case_submit_spread() {
   bidding_hosts
+  # This case tests placement/rebidding; startup deadlines have separate tests.
+  export DV_BID_TIMEOUT=10 DV_AWARD_TIMEOUT=30
   # Scores on these real local fake hosts differ slightly; manager is always last.
   dv submit "$REPO" BID-1 one --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-2 two --brief "$CASE_DIR/brief"
@@ -1990,10 +1992,16 @@ source "$ROOT/tests/watcher-stuck.sh"
 source "$ROOT/tests/task.sh"
 # shellcheck source=tests/capacity.sh
 source "$ROOT/tests/capacity.sh"
+# shellcheck source=tests/heavy.sh
+source "$ROOT/tests/heavy.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
 for name in config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
+for name in heavy_serial heavy_kill heavy_slots heavy_status heavy_command heavy_priority heavy_config heavy_waiter_probe; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
@@ -2057,7 +2065,7 @@ for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metri
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
-for name in pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_no_rereview pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
+for name in pr_worker_stale_recovery pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_no_rereview pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done

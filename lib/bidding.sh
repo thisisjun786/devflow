@@ -50,8 +50,8 @@ bid_resources() {
   cache=$(disk_cache_path) || cache=''
   [ -z "$cache" ] || cache_free=$(disk_available_gb "$cache" || echo null)
   jq -cn --argjson cores "$cores" --argjson load "${load:-0}" --argjson memory "${memory:-0}" \
-    --argjson disk "$(disk_available_gb || echo null)" --arg cache "$cache" --argjson cache_free "$cache_free" \
-    '{cores:$cores,load5:$load,memory_available_mb:$memory,disk_available_gb:$disk,
+    --argjson disk "$(disk_available_gb || echo null)" --arg cache "$cache" --argjson cache_free "$cache_free" --argjson heavy "$(heavy_snapshot)" \
+    '{cores:$cores,load5:$load,memory_available_mb:$memory,disk_available_gb:$disk,heavy:$heavy,
       go_cache_path:(if $cache=="" then null else $cache end),cache_disk_available_gb:$cache_free}'
 }
 bid_remote_repo() {
@@ -159,7 +159,7 @@ cmd_bid() {
     # Keep normal-load scores; each core-equivalent above 1.5 costs 100 more.
     .score=(100*.free_slots/.capacity - 20*.load5/.cores - 100*([0,(.load5/.cores-1.5)]|max) + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
       (if $min_disk>0 and $disk!=null then [0,20*(2*$min_disk-$disk)/$min_disk]|max else 0 end))' |
-    if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason]|@tsv'; fi
+    if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason,("heavy="+(.heavy.in_use|tostring)+"/"+(.heavy.slots|tostring)+" waiting="+(.heavy.waiting|tostring))]|@tsv'; fi
 }
 cmd_submit() {
   [ "$#" -ge 3 ] || fail 'usage: dv submit REPO ISSUE slug --brief FILE [--agent AGENT] [--mode MODE] [--base BASE]'
