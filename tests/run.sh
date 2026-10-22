@@ -1495,6 +1495,15 @@ source "$ROOT/tests/codex-startup.sh"
 # shellcheck source=tests/codex-trust.sh
 source "$ROOT/tests/codex-trust.sh"
 
+failed_start_fixture() {
+  # Failed receipt tests must observe wrapper exit before start acknowledges.
+  # Preserve any outer scheduling fault injection used by a regression run.
+  {
+    if [ -n "${BASH_ENV:-}" ]; then printf 'source %q\n' "$BASH_ENV"; fi
+    printf 'source %q\n' "$ROOT/tests/fixtures/failed-start-env"
+  } > "$CASE_DIR/failed-start-env"
+  export BASH_ENV="$CASE_DIR/failed-start-env"
+}
 bidding_hosts() {
   needs_tmux; repo bidding
   export SSH_BIDDING=1 DV_MANAGER_HOST=test-host DV_HOSTS='lina-os go2-linux hx-linux'
@@ -1579,7 +1588,7 @@ case_submit_spread() {
   if dv submit "$REPO" BID-1 one --brief "$CASE_DIR/brief"; then return 1; fi
 }
 case_submit_failover() {
-  bidding_hosts
+  bidding_hosts; failed_start_fixture
   touch "$CASE_DIR/hosts/hx-linux/offline"
   # A launch error (missing base) must not prevent trying another bidder.
   cat >> "$CASE_DIR/hosts/go2-linux/config" <<EOF
@@ -1796,14 +1805,7 @@ case_award_rejected_next() {
 case_award_new_round() {
   bidding_hosts; bidding_functions
   local host kind issue saved
-  # Keep this receipt/retry test independent of which process runs first:
-  # the start RPC must observe the deliberately failed wrapper's final exit.
-  # Compose an outer fault-injection environment when this case is stressed.
-  {
-    if [ -n "${BASH_ENV:-}" ]; then printf 'source %q\n' "$BASH_ENV"; fi
-    printf 'source %q\n' "$ROOT/tests/fixtures/failed-start-env"
-  } > "$CASE_DIR/failed-start-env"
-  export BASH_ENV="$CASE_DIR/failed-start-env"
+  failed_start_fixture
   export DV_HOSTS='hx-linux go2-linux'
   for kind in 'done' failed landed submitted; do
     issue="ROUND-$kind"
