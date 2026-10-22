@@ -405,11 +405,12 @@ case_review_receipt_findings() {
       done
     done
   done
-  # A newer incomplete or opaque summary cannot be satisfied by an old receipt.
+  # A newer running or invalid summary cannot be satisfied by an old receipt.
   printf '[]\n' > "$GH_STUB_DIR/reviews"
   printf '[]\n' > "$GH_STUB_DIR/comments"
-  for source in completed running; do
+  for source in unknown running; do
     review_summary_set "$head" "$source" true
+    if [ "$source" = unknown ]; then review_summary_set "$head" completed null; fi
     review_receipt_set "${head:0:7}"
     jq '.[0] |= (.created_at="2026-10-22T02:00:00Z" | .updated_at=.created_at)' "$GH_STUB_DIR/receipt" > "$CASE_DIR/receipt"
     jq -s 'add' "$GH_STUB_DIR/issue-comments" "$CASE_DIR/receipt" > "$CASE_DIR/comments"
@@ -453,4 +454,51 @@ case_review_receipt_arrives() {
   jq -e --arg head "$head" '.requests[$head].retried==false and .review_handled' "$DV_STATE/P-1/pr-loop.json"
   jq -e '.green and .review.clean and (.review_timed_out|not) and (.blocked|not)' "$CASE_DIR/result"
   ! grep -q '^pr comment ' "$GH_STUB_DIR/calls"
+}
+
+case_review_receipt_incomplete() {
+  review_fixture
+  local head source severity status
+  head=$(git -C "$REPO" rev-parse HEAD)
+  for source in rest inline; do
+    for severity in P0 P1; do
+      for status in running unknown inconsistent; do
+        review_set 1 "$severity"
+        if [ "$source" = rest ]; then
+          jq --arg p "$severity" '.[0].body="["+$p+"] Current head blocker"' "$GH_STUB_DIR/reviews" > "$CASE_DIR/reviews"
+          mv "$CASE_DIR/reviews" "$GH_STUB_DIR/reviews"
+          printf '[]\n' > "$GH_STUB_DIR/comments"
+        fi
+        case "$status" in
+          running) review_summary_set "$head" running null ;;
+          unknown) review_summary_set "$head" completed null ;;
+          inconsistent)
+            review_summary_set "$head" completed false
+            jq '.[0].body|=sub("has_unresolved_findings\\\":false";"has_unresolved_findings\":true")' "$GH_STUB_DIR/issue-comments" > "$CASE_DIR/comments"
+            mv "$CASE_DIR/comments" "$GH_STUB_DIR/issue-comments" ;;
+        esac
+        review_receipt_set "${head:0:7}"
+        jq -s 'add' "$GH_STUB_DIR/issue-comments" "$GH_STUB_DIR/receipt" > "$CASE_DIR/comments"
+        mv "$CASE_DIR/comments" "$GH_STUB_DIR/issue-comments"
+        review_receipt_parse "$head"
+        jq -e --arg p "$severity" '.exists and (.clean|not) and .high[0].severity==$p' "$CASE_DIR/result"
+      done
+    done
+  done
+}
+
+case_review_receipt_metadata() {
+  local head=2a4c2d9000000000000000000000000000000000000 time
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
+  printf '[{"id":101,"commit_id":"old-head","pull_request_review_id":1,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"[P1] Old head"}]\n' > "$GH_STUB_DIR/comments"
+  review_receipt_set "${head:0:10}"
+  # PR #188 publishes the metadata-only completed summary three seconds after
+  # its clean receipt. Later security activity can edit that comment again.
+  for time in 2026-10-22T04:00:00Z 2026-10-22T04:00:03Z 2026-10-22T05:00:00Z; do
+    review_summary_set "$head" completed true
+    jq --arg time "$time" '.[0].updated_at=$time' "$GH_STUB_DIR/issue-comments" > "$CASE_DIR/summary"
+    jq -s 'add' "$CASE_DIR/summary" "$GH_STUB_DIR/receipt" > "$GH_STUB_DIR/issue-comments"
+    review_receipt_parse "$head"
+    jq -e '.exists and .clean and .source=="receipt" and .findings==[]' "$CASE_DIR/result"
+  done
 }

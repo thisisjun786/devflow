@@ -35,6 +35,10 @@ review_parse() {
         .string | capture("(?<severity>P[0-3])";"i").severity | ascii_upcase] | unique[] |
       {severity:.,path:($item.path // "review"),line:($item.line // $item.original_line // "summary"),
        body:$line,id:$item.id,source:$source};
+    def review_findings($review):
+      [($review | select(.!=null) | findings("summary")),
+       (.inline_comments[]? | select($review!=null and .commit_id==$head and .pull_request_review_id==$review.id and
+         .user.login==$review.user.login) | findings("inline"))];
     . as $snapshot |
     [.reviews[]? | select((.user.login // "" | bot) and .commit_id==$head and
       (.state=="COMMENTED" or .state=="APPROVED" or .state=="CHANGES_REQUESTED"))] |
@@ -67,16 +71,21 @@ review_parse() {
        ($summary.state.has_any_findings|type)!="boolean" or ($summary.state.has_unresolved_findings|type)!="boolean" or
        ($summary.state.has_any_findings==false and $summary.state.has_unresolved_findings!=false)) then null
      else $rest end) as $review |
-    [($review | select(.!=null) | findings("summary")),
-     ($snapshot.inline_comments[]? | select($review!=null and .commit_id==$head and .pull_request_review_id==$review.id and
-       .user.login==$review.user.login) | findings("inline"))] as $findings |
-    # Clean receipts fill the REST gap only after the latest review activity.
-    # Keep actual current-head findings; stale summary flags alone are not findings.
+    ($snapshot | review_findings($review)) as $findings |
+    # A completed metadata-only summary may be published after the receipt,
+    # carrying old-head flags. Its edit time cannot invalidate a clean review.
+    # Running/incomplete summaries and actual current-head findings still gate it.
     (if $receipt!=null and ($findings|length)==0 and
         ($receipt.updated_at // $receipt.created_at)>($rest.submitted_at // "") and
-        ($receipt.updated_at // $receipt.created_at)>($summary.comment.updated_at // "") then
-       $receipt + {id:("receipt-"+($receipt.id|tostring)),source:"receipt"}
+        (($receipt.updated_at // $receipt.created_at)>($summary.comment.updated_at // "") or
+         ($summary.state.status=="completed" and $summary.state.has_any_findings==true and
+          ($summary.state.has_unresolved_findings|type)=="boolean" and ($summary_findings|length)==0)) then
+       # An incomplete summary may have hidden the REST review above. A
+       # receipt cannot erase its findings just because selection returned null.
+       if $review==null and ($snapshot | review_findings($rest) | length)>0 then $rest
+       else $receipt + {id:("receipt-"+($receipt.id|tostring)),source:"receipt"} end
      else $review end) as $review |
+    ($snapshot | review_findings($review)) as $findings |
     {id:($review.id // null),head:$head,
      exists:($review!=null and
        ($review.source=="receipt" or
