@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 start_fixture_work() {
-  local issue=$1 agent=$2 pid
+  local issue=$1 agent=$2 pid work_result='' work_status_file=''
   rm -f "$CASE_DIR/server/work.done" "$CASE_DIR/server/work.exit"
   (
     # Only this worker publishes its exit; pre-exec children may inherit EXIT.
