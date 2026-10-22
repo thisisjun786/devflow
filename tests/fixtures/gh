@@ -45,6 +45,9 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
   esac
 fi
 case "$*" in
+  'api --paginate repos/'*/issues/*/comments)
+    [ ! -f "$GH_STUB_DIR/issue-comments-fail" ] || exit 1
+    if [ -f "$GH_STUB_DIR/issue-comments" ]; then cat "$GH_STUB_DIR/issue-comments"; else printf '[]\n'; fi ;;
   'api --paginate repos/'*/reviews)
     [ ! -f "$GH_STUB_DIR/reviews-fail" ] || exit 1
     head=$(git rev-parse HEAD)

@@ -186,3 +186,98 @@ case_review_ci_first() {
   jq -e '(.green|not) and .ci_rounds==1 and .review_rounds==0 and (.review_timed_out|not)' "$CASE_DIR/result"
   ! grep -q '^pr comment ' "$GH_STUB_DIR/calls"
 }
+case_review_legacy_bot() {
+  # Existing config files are preserved by install and override env defaults.
+  printf 'DV_REVIEW_BOTS=devin,codex\n' > "$DV_CONFIG"
+  case_review_other_bot
+}
+case_stack_review_update() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  touch "$GH_STUB_DIR/explicit-review-2"
+  local original
+  original=$(git -C "$DV_WORK/stack-2" rev-parse HEAD)
+  stack_waiting 2; dv land S-1
+  if dv land S-2; then return 1; fi
+  jq -e '.stack_resume.status=="sent" and .status=="running"' "$DV_STATE/S-2/meta"
+  grep -F 'clean current-head Codex review' "$DV_STATE/S-2/sent-input"
+  test "$(git -C "$DV_WORK/stack-2" rev-parse HEAD)" != "$original"
+  # The old review cannot satisfy the new head. Fake review service responds
+  # only once the resumed worker has green CI and explicitly requests review.
+  stack_green 2
+  grep -Fx 'pr comment https://github.com/test/repo/pull/2 --body @codex review' "$GH_STUB_DIR/calls"
+  jq -e --arg old "$original" '.head!=$old and .green and .review.clean' "$DV_STATE/S-2/pr-ready.json"
+  dv land S-2
+  test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
+}
+review_summary_set() {
+  local head=$1 status=$2 any=$3 login=${4:-chatgpt-codex-connector[bot]}
+  jq -n --arg head "$head" --arg status "$status" --argjson any "$any" --arg login "$login" \
+    '[{id:10,user:{login:$login},updated_at:"2026-10-22T03:00:00Z",body:("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 "+({code_review:{commit_sha:$head,status:$status,has_any_findings:$any,has_unresolved_findings:$any}}|tojson)+" -->\n## Codex Review Summary")}]' > "$GH_STUB_DIR/issue-comments"
+}
+case_review_clean_summary() {
+  review_fixture
+  # A newer review with no suggestions may be delivered only as a summary;
+  # the REST review and inline P1 here belong to the older review on this head.
+  review_set 1 P1
+  review_summary_set "$(git -C "$REPO" rev-parse HEAD)" completed false
+  dv pr-wait P-1 --foreground > "$CASE_DIR/result"
+  jq -e '.review.clean and .review.source=="summary" and .review.high==[]' "$CASE_DIR/result"
+  dv 'done' P-1
+}
+case_review_summary_guards() {
+  review_fixture
+  local head variant
+  head=$(git -C "$REPO" rev-parse HEAD)
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
+  for variant in running old unknown findings human security; do
+    review_summary_set "$head" completed false
+    case "$variant" in
+      running) review_summary_set "$head" running null ;;
+      old) review_summary_set old completed false ;;
+      unknown) review_summary_set "$head" completed null ;;
+      findings) review_summary_set "$head" completed true ;;
+      human) review_summary_set "$head" completed false codex-user ;;
+      security) sed 's/code_review/security_review/g' "$GH_STUB_DIR/issue-comments" > "$CASE_DIR/security"; mv "$CASE_DIR/security" "$GH_STUB_DIR/issue-comments" ;;
+    esac
+    jq -n --slurpfile reviews "$GH_STUB_DIR/reviews" --slurpfile comments "$GH_STUB_DIR/issue-comments" \
+      '{reviews:$reviews[0],issue_comments:$comments[0],inline_comments:[]}' > "$CASE_DIR/snapshot"
+    (
+      DV_ENTRY="$ROOT/bin/dv"
+      source "$ROOT/lib/common.sh"
+      source "$ROOT/lib/pr-review.sh"
+      review_parse "$CASE_DIR/snapshot" "$head"
+    ) > "$CASE_DIR/result"
+    jq -e '(.clean|not) and (.exists|not)' "$CASE_DIR/result"
+  done
+  # A new running code review also invalidates an older clean receipt.
+  review_set 1 ''
+  review_summary_set "$head" running null
+  if dv pr-wait P-1 --foreground > "$CASE_DIR/result"; then return 1; fi
+  jq -e '.review_timed_out and (.review_handled|not)' "$CASE_DIR/result"
+}
+case_review_summary_api_failure() {
+  review_fixture
+  touch "$GH_STUB_DIR/issue-comments-fail"
+  if dv pr-wait P-1 --foreground; then return 1; fi
+  test ! -f "$DV_STATE/P-1/pr-ready.json"
+}
+case_stack_review_recover() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  touch "$GH_STUB_DIR/explicit-review-2"
+  local original head
+  original=$(git -C "$DV_WORK/stack-2" rev-parse HEAD)
+  stack_waiting 2; dv land S-1
+  # Simulate termination after the owned merge/push, before worker handoff.
+  git -C "$DV_WORK/stack-2" fetch -q origin dev
+  git -C "$DV_WORK/stack-2" merge --no-edit origin/dev
+  git -C "$DV_WORK/stack-2" push -q origin stack-2
+  head=$(git -C "$DV_WORK/stack-2" rev-parse HEAD)
+  jq --arg head "$head" --arg original "$original" '.head=$head | .status="ready" | .stack_update_head=$head | .stack_update_from=$original' "$DV_STATE/S-2/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/S-2/meta"
+  if dv land S-2; then return 1; fi
+  jq -e '.stack_resume.status=="sent" and .status=="running"' "$DV_STATE/S-2/meta"
+  stack_green 2
+  grep -Fx 'pr comment https://github.com/test/repo/pull/2 --body @codex review' "$GH_STUB_DIR/calls"
+  dv land S-2
+  test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
+}

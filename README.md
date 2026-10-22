@@ -159,6 +159,8 @@ revive는 자동 재시작/exec 재시도 횟수, resume은 살아 있는 에이
 
 작업자는 foreground 결과의 review.high(P0/P1), review.low(P2/P3), summary와 inline_comments를 읽습니다. P0·P1을 수정·시험·커밋한 뒤 dv pr과 foreground 대기를 반복합니다. 첫 리뷰는 PR-open 자동 트리거, 이후 head는 devflow의 `@codex review` 댓글로 요청합니다. `DV_REVIEW_BOTS=codex`, `DV_REVIEW_ROUNDS=4`가 기본입니다. 같은 head 재조회는 회차를 늘리지 않으며, 상한에 P0·P1이 남으면 `review-rounds`와 열린 지적을 blocked로 보내 관리자가 처리합니다. `pr-loop.json`은 리뷰·CI 회차와 요청·시간 초과 기록을 보존합니다. 서로 다른 head의 세 번째 CI 실패도 차단합니다. `--review-handled`는 호환 옵션이며 현재 head의 깨끗한 리뷰만 인정합니다. 조상 head 리뷰나 시간 초과를 승인할 수 없습니다.
 
+Codex의 지적 없는 리뷰가 REST review 대신 summary 댓글로 전달되면 현재 head의 code_review 상태가 completed이고 두 findings 플래그가 false인 경우에만 인정합니다. 진행 중·이전 head·보안 리뷰만 있는 요약은 통과하지 않습니다. 기존 DV_REVIEW_BOTS=devin,codex 설정을 보존해도 다른 봇이 Codex 리뷰를 대체하지 못합니다. 자동 stack 병합으로 head가 바뀌면 기존 작업자 재개 경로에서 새 CI·Codex 리뷰·필요한 수정과 done을 완료해야 합니다.
+
 최종 리뷰의 P2·P3은 PR당 후속 이슈 하나로 같은 저장소·원 이슈와 같은 milestone에 기록합니다. 파일:줄·한 줄 지적과 `Depends on #<원 이슈>`를 본문에 적고 report.md와 PR 본문에 후속 번호를 남깁니다. 재실행 시 공개 마커로 기존 이슈를 찾아 중복 생성을 피합니다. P2·P3은 병합을 차단하지 않습니다.
 
 PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 다시 확인합니다. 체크가 초록이 된 뒤 `DV_REVIEW_WAIT`의 Codex 리뷰 제한 시간이 시작됩니다. 리뷰가 없으면 한 번 더 `@codex review`를 요청하고 같은 시간만큼 기다린 뒤 `review-timeout`으로 차단합니다. 시간 초과는 성공이 아닙니다. CI가 아예 없는 PR은 체크 등록을 계속 기다립니다. `dv pr`의 대기자는 Linux에서 `setsid`로 분리하며, `setsid`가 없는 환경에서는 Bash job control로 별도 프로세스 그룹을 만듭니다. `.pr-wait`의 PID 소유자가 죽었으면 다음 대기자가 잠금을 회수합니다. 30분 상태 안전망도 `pr` 상태의 호스트에서 대기자 생존을 확인하고 필요하면 다시 시작합니다.

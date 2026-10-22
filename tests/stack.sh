@@ -25,7 +25,8 @@ stack_pr() {
   jq -n --arg head "$head" '{head:$head,done_at:2,checks:"green",review:"handled"}' > "$DV_STATE/S-$number/done.json"
   printf '{"url":"https://github.com/test/repo/pull/%s"}\n' "$number" > "$DV_STATE/S-$number/pr.json"
   jq -n --arg body "$body" --arg head "$head" --slurpfile checks "$GH_STUB_DIR/checks" \
-    '{body:$body,state:"OPEN",baseRefName:"dev",checked_head:$head,reviews:[],statusCheckRollup:$checks[0]}' > "$GH_STUB_DIR/pr-$number.json"
+    '{body:$body,state:"OPEN",baseRefName:"dev",checked_head:$head,reviews:[{id:1,user:{login:"chatgpt-codex-connector[bot]"},commit_id:$head,state:"COMMENTED",body:"Looks good"}],statusCheckRollup:$checks[0]}' > "$GH_STUB_DIR/pr-$number.json"
+  jq -n --arg head "$head" '{initial_head:$head,review_head:$head,review_handled:true,reviewed_heads:[$head],failed_heads:[],requests:{}}' > "$DV_STATE/S-$number/pr-loop.json"
 }
 stack_waiting() {
   if dv land "S-$1" > "$CASE_DIR/land-$1.log" 2>&1; then
@@ -63,6 +64,10 @@ stack_green() {
   done
   [ "$pushed" = true ] || return 1
   jq --arg head "$head" '.checked_head=$head' "$file" > "$file.tmp"; mv "$file.tmp" "$file"
+  if [ ! -f "$GH_STUB_DIR/explicit-review-$1" ]; then
+    jq --arg head "$head" '.reviews=[{id:2,user:{login:"chatgpt-codex-connector[bot]"},commit_id:$head,state:"COMMENTED",body:"Looks good"}]' "$file" > "$file.review"
+    mv "$file.review" "$file"
+  fi
   if [ "$resumed" = true ]; then
     dv pr-wait "S-$1" --foreground > "$CASE_DIR/ready-$1.json"
     dv pr-wait "S-$1" --foreground --review-handled > "$CASE_DIR/handled-$1.json"
@@ -218,6 +223,7 @@ case_stack_checks() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   stack_waiting 2; dv land S-1
   if dv land S-2; then return 1; fi
+  stack_green 2 # Finish the resumed worker before exercising land-only CI guards.
   local checks
   for checks in '[]' \
     '[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]' \
@@ -576,12 +582,14 @@ case_stack_auto_done_merge() {
   if dv land S-2; then return 1; fi
   approved=$(jq -r .stack_head "$DV_STATE/S-2/meta")
   jq -e --arg head "$completed" '.stack_update_from==$head and .stack_update_head==.head and .head!=$head' "$DV_STATE/S-2/meta"
-  # Another base advance while CI is pending must retain the completion that
-  # authorized our own merge chain, not authorize unrelated worker commits.
+  # Once resumed for review, the worker owns further base changes. The
+  # automatic land queue cannot reuse completion from the earlier episode.
   printf 'advance\n' > "$REPO/advance"
   git -C "$REPO" add advance; git -C "$REPO" commit -qm advance
   git -C "$REPO" push -q origin dev
-  if dv _stack-land S-2 "$approved"; then return 1; fi
+  local updated; updated=$(git -C "$DV_WORK/stack-2" rev-parse HEAD)
+  dv _stack-land S-2 "$approved"
+  test "$(git -C "$DV_WORK/stack-2" rev-parse HEAD)" = "$updated"
   jq -e --arg head "$completed" '.stack_update_from==$head' "$DV_STATE/S-2/meta"
   stack_green 2
   dv _stack-land S-2 "$approved"

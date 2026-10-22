@@ -68,6 +68,15 @@ stack_land_gate() {
       return 75
     fi
   done
+  # Recover an owned merge whose process stopped before review handoff.
+  # Its old completion cannot authorize the new head, even if dependencies
+  # are already present and the fast path below would otherwise accept it.
+  if [ "$current" = "$head" ] && stack_completion "$head" &&
+    [ "$(jq -r .head "$S/done.json")" != "$head" ]; then
+    stack_waiting_base
+    meta_set '.stack_review_pending=true'
+    return 75
+  fi
   # A pushed head that already contains every dependency merge and still
   # merges cleanly with the base needs no base update. Merging a moving base on
   # each attempt resets CI so it never lands. A conflicting base keeps the
@@ -101,6 +110,14 @@ stack_land_gate() {
     git -C "$WT" push origin "$BRANCH:refs/heads/$BRANCH" || return 1
   fi
   meta_set --arg head "$head" '.head=$head'
+  # An automatic merge changes the reviewed head after the worker has
+  # finished. Reuse the stack continuation so a worker owns CI and any
+  # new P0/P1 fixes; an idle App Server cannot be revived by pr-wait alone.
+  if [ "$head" != "$update_from" ] && stack_completion "$head"; then
+    stack_waiting_base
+    meta_set '.stack_review_pending=true'
+    return 75
+  fi
   # cmd_land now queries CI again and pins the merge to this updated head.
 }
 stack_conflict_send() {
@@ -113,6 +130,14 @@ stack_conflict_send() {
     printf 'dv: stack conflict request failed; see stack-conflict.log\n' >&2
     return 1
   }
+}
+stack_review_send() {
+  jq -e '.stack_review_pending==true' "$S/meta" >/dev/null || return 0
+  local key
+  key=$(stack_resume_key < "$S/meta") || return 1
+  rmdir "$S/.operation"
+  trap - EXIT
+  "$DV_ROOT/bin/dv" _stack-resume "$ISSUE" "$key"
 }
 cmd_stack_land() {
   [ "$#" = 2 ] || fail 'usage: dv _stack-land ISSUE approved-head'
@@ -187,7 +212,7 @@ cmd_stack_resume() {
     return 75
   fi
   # A fast worker may already have published pr/ready. Do not overwrite it.
-  meta_set '.stack_resume.status="sent" | if .status=="waiting-base" then .status="running" else . end'
+  meta_set '.stack_resume.status="sent" | del(.stack_review_pending) | if .status=="waiting-base" then .status="running" else . end'
 }
 stack_worker() {
   local event=$1 host issue head remote command=_stack-land
