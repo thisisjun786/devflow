@@ -287,12 +287,13 @@ appserver_answer() {
   appserver_write_end
   appserver_receipt "$id"
 }
-appserver_alive() {
+appserver_alive() { appserver_client_alive_at "$S" "$ISSUE"; }
+appserver_client_alive_at() {
   local pid
-  [ -f "$S/appserver/client.pid" ] || return 1
-  pid=$(cat "$S/appserver/client.pid")
+  [ -f "$1/appserver/client.pid" ] || return 1
+  pid=$(cat "$1/appserver/client.pid")
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null &&
-    ps -o args= -p "$pid" 2>/dev/null | grep -Fq -- "dv _appserver-run $ISSUE"
+    ps -o args= -p "$pid" 2>/dev/null | grep -Fq -- "dv _appserver-run $2"
 }
 appserver_request() {
   local operation=$1 text=${2:-} request id deadline receipt
