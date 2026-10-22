@@ -12,33 +12,79 @@ appserver_proxy() {
 appserver_open() {
   [[ "$DV_APPSERVER_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || return 1
   command -v openssl >/dev/null || return 1
-  AS_IO=$(mktemp -d "${TMPDIR:-/tmp}/dv-appserver.XXXXXX")
-  mkfifo "$AS_IO/in" "$AS_IO/out" "$AS_IO/raw-in" "$AS_IO/raw-out"
+  AS_IO=$(mktemp -d "${TMPDIR:-/tmp}/dv-appserver.XXXXXX") || return 1
+  mkfifo "$AS_IO/in" "$AS_IO/out" "$AS_IO/raw-in" "$AS_IO/raw-out" || { appserver_close; return 1; }
   AS_SEND='' AS_RECEIVE=''
   appserver_proxy < "$AS_IO/raw-in" > "$AS_IO/raw-out" & AS_PID=$!
   exec 7> "$AS_IO/raw-in" 6< "$AS_IO/raw-out"
-  if ! appserver_ws_upgrade; then appserver_close; return 1; fi
+  # A proxy can die before reading the upgrade. Contain SIGPIPE in a child.
+  if ! (appserver_ws_upgrade); then appserver_close; return 1; fi
   appserver_ws_send 1 < "$AS_IO/in" >&7 6>&- 7>&- & AS_SEND=$!
   exec 9> "$AS_IO/in"
   appserver_ws_receive 0 <&6 > "$AS_IO/out" 6>&- 7>&- 9>&- & AS_RECEIVE=$!
   exec 8< "$AS_IO/out" 6>&- 7>&-
 }
 appserver_close() {
-  if [ -n "${AS_WRITER:-}" ]; then
-    kill "$AS_WRITER" 2>/dev/null || true
-    wait "$AS_WRITER" 2>/dev/null || true
-  fi
+  local pid
   exec 6>&- 7>&- 8>&- 9>&-
-  kill "$AS_PID" ${AS_SEND:+"$AS_SEND"} ${AS_RECEIVE:+"$AS_RECEIVE"} 2>/dev/null || true
-  wait "$AS_PID" 2>/dev/null || true
-  [ -z "$AS_SEND" ] || wait "$AS_SEND" 2>/dev/null || true
-  [ -z "$AS_RECEIVE" ] || wait "$AS_RECEIVE" 2>/dev/null || true
-  rm -rf "$AS_IO"
+  for pid in "${AS_WRITER:-}" "${AS_PID:-}" "${AS_SEND:-}" "${AS_RECEIVE:-}"; do
+    [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
+  done
+  for pid in "${AS_WRITER:-}" "${AS_PID:-}" "${AS_SEND:-}" "${AS_RECEIVE:-}"; do
+    [ -z "$pid" ] || wait "$pid" 2>/dev/null || true
+  done
+  [ -z "${AS_IO:-}" ] || rm -rf "$AS_IO"
+  AS_WRITER='' AS_PID='' AS_SEND='' AS_RECEIVE='' AS_IO=''
+}
+appserver_connected() {
+  local pid
+  for pid in "${AS_PID:-}" "${AS_SEND:-}" "${AS_RECEIVE:-}"; do
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  done
+}
+appserver_reconnect() {
+  local delay=1 previous_turn=''
+  if [ -f "$S/appserver/snapshot.json" ]; then
+    previous_turn=$(jq -r '.turn_id // empty' "$S/appserver/snapshot.json")
+  fi
+  appserver_close
+  while :; do
+    if appserver_open && appserver_handshake; then
+      appserver_rpc thread/resume "$(jq -cn --arg thread "$AS_THREAD" '{threadId:$thread}')"
+      if [ "$AS_CLASS" = accepted ]; then
+        appserver_resume_lost_turn "$previous_turn"
+        # Time without a connection is not evidence that the turn stalled.
+        now > "$S/appserver/activity"
+        return 0
+      fi
+    fi
+    appserver_close
+    printf 'App Server connection unavailable; retrying thread %s in %ss\n' "$AS_THREAD" "$delay" >&2
+    sleep "$delay"
+    delay=$((delay * 2)); [ "$delay" -le 30 ] || delay=30
+  done
+}
+appserver_resume_lost_turn() {
+  local previous_turn=$1 id
+  [ -n "$previous_turn" ] || return 0
+  appserver_snapshot
+  appserver_connected || return 0
+  jq -e '.status=="running" or .status=="pr"' "$S/meta" >/dev/null || return 0
+  if [ -f "$S/appserver/blocked" ] || appserver_done_current; then return 0; fi
+  # Resume only a turn known to be active before disconnect and explicitly
+  # interrupted now. Completed, failed and uncertain turns keep their policies.
+  printf '%s\n' "$AS_SNAPSHOT" | jq -e --arg turn "$previous_turn" '
+    .thread.status.type=="idle" and .turn.id==$turn and .turn.status=="interrupted" and
+    .turn_id==null and (.question_pending|not) and .goal.status!="complete"' >/dev/null || return 0
+  id="reconnect-$(printf '%s' "$previous_turn" | cksum | awk '{print $1 "-" $2}')"
+  [ ! -f "$S/appserver/outbox/$id.receipt" ] || return 0
+  # The normal mutation receipt prevents replay even if this reply is lost.
+  appserver_deliver "$id" 'Continue the interrupted request in this worktree. Preserve existing changes.' 1
 }
 appserver_handshake() {
   appserver_rpc initialize '{"clientInfo":{"name":"devflow","version":"1"},"capabilities":{"experimentalApi":true}}'
   [ "$AS_CLASS" = accepted ] || return 1
-  printf '%s\n' '{"method":"initialized"}' >&9
+  (printf '%s\n' '{"method":"initialized"}' >&9)
 }
 appserver_write() {
   # Never block the reader on a full pipe. The RPC deadline also bounds writes.
@@ -142,7 +188,9 @@ appserver_read_line() {
       AS_LINE=$first$rest
       return 0
     fi
-    [ "$(now)" -lt "$deadline" ] || return 1
+    if { [ -n "${AS_PID:-}" ] && ! appserver_connected; } || [ "$(now)" -ge "$deadline" ]; then
+      return 1
+    fi
   done
 }
 appserver_rpc() {
@@ -168,7 +216,7 @@ appserver_rpc() {
         appserver_write_end; return 0
       fi
       appserver_event "$line"
-    elif ! kill -0 "$AS_PID" 2>/dev/null; then break; fi
+    elif ! appserver_connected; then break; fi
   done
   appserver_write_end
 }
@@ -287,7 +335,7 @@ appserver_answer() {
       if printf '%s\n' "$line" | jq -e --argjson id "$request" --arg thread "$AS_THREAD" '.method=="serverRequest/resolved" and .params.requestId==$id and .params.threadId==$thread' >/dev/null; then
         AS_CLASS=accepted AS_REPLY=$line; break
       fi
-    elif ! kill -0 "$AS_PID" 2>/dev/null; then break; fi
+    elif ! appserver_connected; then break; fi
   done
   appserver_write_end
   appserver_receipt "$id"
@@ -337,8 +385,11 @@ appserver_request() {
   cat "$request.receipt"
   jq -e '.outcome=="accepted"' "$request.receipt" >/dev/null
 }
-appserver_start() {
+appserver_start() (
   local deadline client
+  owned_lock "$S/.appserver-start" "$$" || return 1
+  trap 'owned_unlock "$S/.appserver-start" "$$"' EXIT
+  appserver_alive && return 0
   [[ "$DV_APPSERVER_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_APPSERVER_TIMEOUT must be positive seconds'
   [[ "$DV_APPSERVER_POLL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_APPSERVER_POLL must be positive seconds'
   mkdir -p "$S/appserver/outbox" "$S/appserver/questions"
@@ -356,14 +407,17 @@ appserver_start() {
     kill -0 "$client" 2>/dev/null && [ "$(now)" -le "$deadline" ] || return 1
     sleep 0.1
   done
-}
+)
 cmd__appserver_run() {
   load_issue "$1"
   if jq -e '.thread_id|type=="string"' "$S/meta" >/dev/null; then
     require_worktree --allow-branch-change
   else require_worktree; fi
   umask 077
-  local AS_EVENTS=1 AS_SEQ=0 AS_THREAD='' AS_REPLY='{}' AS_CLASS=unknown AS_SNAPSHOT='{}' AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER=''
+  local AS_EVENTS=1 AS_SEQ=0 AS_THREAD='' AS_REPLY='{}' AS_CLASS=unknown AS_SNAPSHOT='{}'
+  # EXIT also runs after this function returns; transport handles must survive
+  # the function's local scope so cleanup can still reap every child.
+  AS_IO='' AS_PID='' AS_SEND='' AS_RECEIVE='' AS_WRITER=''
   local AS_LINE=''
   local instruction params id file operation text line last_poll=0
   # bin/dv captures HEAD before sourcing the libraries.
@@ -371,13 +425,13 @@ cmd__appserver_run() {
   DV_APPSERVER_SOCKET=$(jq -r --arg socket "$DV_APPSERVER_SOCKET" '.appserver_socket // $socket' "$S/meta")
   AS_THREAD=$(jq -r '.thread_id // ""' "$S/meta")
   printf '%s\n' "$$" > "$S/appserver/client.pid"
-  appserver_open || return 1
   trap 'appserver_close; touch "$S/appserver/exited"; rm -f "$S/appserver/client.pid"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  appserver_handshake || return 1
+  rm -f "$S/appserver/exited"
   instruction="Read $S/brief.md and complete everything it asks. Finish with dv done $ISSUE."
   if [ -z "$AS_THREAD" ]; then
+    appserver_open && appserver_handshake || return 1
     params=$(jq -cn --arg cwd "$WT" --arg model "$DV_CODEX_MODEL" --arg effort "$DV_CODEX_EFFORT" \
       --arg config "$DV_CONFIG" --arg state "$DV_STATE" --arg work "$DV_WORK" --arg home "$DV_HOME" --arg host "$DV_HOST" --arg path "$DV_ROOT/bin:$PATH" \
       '{cwd:$cwd,model:$model,approvalPolicy:"never",sandbox:"danger-full-access",config:{model_reasoning_effort:$effort,
@@ -398,14 +452,15 @@ cmd__appserver_run() {
       else return 1; fi
     fi
   else
-    appserver_rpc thread/resume "$(jq -cn --arg thread "$AS_THREAD" '{threadId:$thread}')"
-    [ "$AS_CLASS" = accepted ] || return 1
+    appserver_reconnect
   fi
   now > "$S/appserver/activity"
   touch "$S/agent.started"
   printf '%s\n' "$$" > "$S/appserver/ready"
-  while kill -0 "$AS_PID" 2>/dev/null && kill -0 "$AS_SEND" 2>/dev/null && kill -0 "$AS_RECEIVE" 2>/dev/null; do
+  while :; do
+    if ! appserver_connected; then appserver_reconnect; last_poll=0; fi
     for file in "$S/appserver/outbox/"*.json; do
+      appserver_connected || break
       [ -f "$file" ] || continue
       id=${file##*/}; id=${id%.json}
       [ ! -f "$S/appserver/outbox/$id.receipt" ] || continue
@@ -450,7 +505,6 @@ cmd__appserver_run() {
       fi
     fi
   done
-  cmd_kick blocked "$ISSUE" 'App Server connection ended; inspect unknown receipts before reconnecting'
 }
 appserver_status() (
   load_issue "$1"
@@ -687,6 +741,14 @@ cmd__appserver_watch() (
     [ -f "$path" ] || continue
     jq -e '.backend=="appserver" and (.status=="running" or .status=="pr" or .status=="waiting-capacity")' "$path" >/dev/null || continue
     load_issue "$(jq -r .issue "$path")"
+    if ! appserver_alive; then
+      jq -e '.status=="running" and (.thread_id|type)=="string"' "$S/meta" >/dev/null || continue
+      if [ -f "$S/appserver/blocked" ] || appserver_done_current; then continue; fi
+      # Claim before launch: repeated/concurrent scans get one attempt per job.
+      (set -C; printf '%s\n' "$(now)" > "$S/appserver/watch-restart.sent") 2>/dev/null || continue
+      appserver_start || true
+      continue
+    fi
     appserver_request recover >/dev/null || true
   done
 )
