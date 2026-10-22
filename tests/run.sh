@@ -13,11 +13,22 @@ setup() {
   printf '{"skipDangerousModePermissionPrompt":true}\n' > "$HOME/.claude/settings.json"
   export DV_CONFIG="$CASE_DIR/config.sh" DV_STATE="$CASE_DIR/state" DV_WORK="$CASE_DIR/work" DV_HOME="$CASE_DIR/home"
   export DV_KICK="$ROOT/bin/dv-kick" DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"
-  export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
+  export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
   export DV_AUTO_UPDATE=0
-  export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5 DV_APPSERVER_TIMEOUT=1
+  export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5
+  # Ordinary lifecycle tests use the product's deadlines, even on a busy host.
+  # Isolate the defaults so sourcing config cannot change other fixture values.
+  # Cases that exercise timeout behavior select their short deadline explicitly.
+  read -r DV_START_WAIT DV_APPSERVER_TIMEOUT < <(
+    unset DV_START_WAIT DV_APPSERVER_TIMEOUT
+    # Checked separately; avoid expanding every setting into test dataflow.
+    # shellcheck source=/dev/null
+    source "$ROOT/config.example.sh"
+    printf '%s %s\n' "$DV_START_WAIT" "$DV_APPSERVER_TIMEOUT"
+  )
+  export DV_START_WAIT DV_APPSERVER_TIMEOUT
   unset DV_MODE
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF DV_CAPACITY_MAX_WAIT
   unset CODEX_HOME
@@ -1223,7 +1234,7 @@ case_herdr_cleanup_owner() (
   test ! -d "$question_tmp"; test ! -f "$S/question.pending"
 )
 case_herdr_goal_retry() {
-  repo goal-retry; herdr_setup; export DV_START_WAIT=4
+  repo goal-retry; herdr_setup
   mkdir -p "$CASE_DIR/herdr"
   printf 'retry\n' > "$CASE_DIR/herdr/goal-mode"
   dv start "$REPO" HG-1 native

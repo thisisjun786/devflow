@@ -5,7 +5,6 @@
 revive_setup() {
   repo revive
   herdr_setup
-  export DV_START_WAIT=2
   dv start "$REPO" RV-1 followup --mode goal
   wait_native RV-1
   RV_STATE="$DV_STATE/RV-1"

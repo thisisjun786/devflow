@@ -374,7 +374,7 @@ ENV
 task_appserver_setup() {
   task_setup
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
-  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=2 DV_APPSERVER_POLL=1
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_POLL=1
   export DV_TRUSTED_REPOS="$CASE_DIR/Desk project"
   mkdir -p "$CASE_DIR/server" "$HOME/.codex"
   printf 'idle\n' > "$CASE_DIR/server/status"

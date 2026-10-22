@@ -200,7 +200,7 @@ case_capacity_legacy_terminal() {
 }
 case_capacity_appserver_rpc() {
   capacity_clock_setup
-  export DV_APP_CAPACITY_RPC=2 DV_APPSERVER_TIMEOUT_CASE=5
+  export DV_APP_CAPACITY_RPC=2
   appserver_setup
   touch "$CASE_DIR/server/recovery-work"
   capacity_status_wait AS-1

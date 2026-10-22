@@ -64,8 +64,8 @@ PANE
 appserver_setup() {
   repo appserver "${1:-}"
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
-  # Socket startup and JSON-RPC framing need scheduling slack on busy CI hosts.
-  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-5}
+  # Only timeout-path tests override the product default supplied by setup.
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-$DV_APPSERVER_TIMEOUT}
   export DV_APPSERVER_POLL=1 DV_STALL_AFTER=300
   mkdir -p "$CASE_DIR/server"
   printf 'idle\n' > "$CASE_DIR/server/status"
@@ -119,7 +119,6 @@ appserver_wait_updated() {
 }
 appserver_reexec_delivery() {
   local outcome=$1 sender rc=0 state id
-  printf 'DV_APPSERVER_TIMEOUT=5\n' > "$DV_CONFIG"
   appserver_checkout_setup
   state="$DV_STATE/AS-1/appserver"
   printf '%s\n' "$outcome" > "$CASE_DIR/server/outcome"
@@ -282,7 +281,10 @@ appserver_send_outcome() {
 }
 case_appserver_accepted() { appserver_send_outcome accepted; }
 case_appserver_refused() { appserver_send_outcome refused; }
-case_appserver_unknown() { appserver_send_outcome unknown; }
+case_appserver_unknown() {
+  # The fake peer receives the mutation but deliberately never replies.
+  DV_APPSERVER_TIMEOUT_CASE=5 appserver_send_outcome unknown
+}
 case_appserver_idle_send() {
   appserver_setup
   printf 'idle\n' > "$CASE_DIR/server/status"
@@ -351,9 +353,7 @@ READ_PARTIAL
 case_appserver_large_reply() {
   # A multi-MB thread/read reply arrives over many one-second reads. It must be
   # assembled, not dropped, so status, clean and land see the real state.
-  # The job client starts in setup; give it a production-scale RPC budget so
-  # slow CI hosts still assemble the reply across many one-second reads.
-  DV_APPSERVER_TIMEOUT_CASE=30 appserver_setup
+  appserver_setup
   head -c 1500000 /dev/zero | tr '\0' 'x' > "$CASE_DIR/big.txt"
   jq -cn --rawfile big "$CASE_DIR/big.txt" '{thread:{id:"thread-1",status:{type:"idle"},
     turns:[{id:"turn-1",status:"completed",error:null,
@@ -425,7 +425,7 @@ case_appserver_question() {
 case_appserver_auto() {
   repo automatic
   unset DV_CODEX_MODE
-  export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=2
+  export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/appserver"
   mkdir -p "$CASE_DIR/server"
   printf 'idle\n' > "$CASE_DIR/server/status"
   dv start "$REPO" AS-1 automatic
@@ -467,7 +467,7 @@ case_appserver_close_unset() {
   )
 }
 case_appserver_daemon_restart() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  appserver_setup
   local state="$DV_STATE/AS-1/appserver" client attempts
   client=$(cat "$state/client.pid")
   touch "$CASE_DIR/server/offline"
@@ -503,7 +503,7 @@ appserver_wait_reconnected() {
   return 1
 }
 case_appserver_watch_dead_client() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  appserver_setup
   local state="$DV_STATE/AS-1/appserver" client replacement watcher proxy_file proxy_pid
   cp "$CASE_DIR/server/proxy.pid" "$CASE_DIR/initial-proxy.pid"
   client=$(cat "$state/client.pid")
@@ -537,7 +537,7 @@ case_appserver_watch_dead_client() {
   done
 }
 case_appserver_daemon_lost_turn() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  appserver_setup
   local state="$DV_STATE/AS-1/appserver"
   dv status AS-1 --json | jq -e '.[0].appserver.turn_id=="turn-1"'
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"interrupted","items":[]}]}}' > "$CASE_DIR/server/thread.json"
@@ -557,7 +557,7 @@ case_appserver_daemon_lost_turn() {
   test "$(cat "$CASE_DIR/server/turn-count")" = 2
 }
 case_appserver_reconnect_stall_clock() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  appserver_setup
   printf '0\n' > "$DV_STATE/AS-1/appserver/activity"
   kill "$(cat "$CASE_DIR/server/daemon.pid")"
   appserver_wait_reconnected
@@ -566,7 +566,7 @@ case_appserver_reconnect_stall_clock() {
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
 }
 case_appserver_disconnect_unknown() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  appserver_setup
   local sender rc=0
   touch "$CASE_DIR/server/hold-mutation"
   dv send AS-1 once > "$CASE_DIR/receipt" & sender=$!
