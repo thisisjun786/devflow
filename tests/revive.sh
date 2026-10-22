@@ -60,6 +60,8 @@ then verify and finish.'
   jq -e --arg message "$message" --arg s "$RV_STATE" '.args[-1] | startswith($message) and contains($s+"/brief.md") and contains($s+"/report.md")' "$RV_STATE/revived-input.json"
   test ! -e "$RV_WT/SHOULD_NOT_EXIST"
   revive_preserved
+  grep -F 'single local review and one P0/P1 correction limit' "$RV_STATE/revive/prompt.md"
+  ! grep -F 'pr-loop.json review round counts' "$RV_STATE/revive/prompt.md"
 }
 case_revive_live() {
   revive_setup
