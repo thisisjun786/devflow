@@ -89,6 +89,8 @@ appserver_event() {
     item/started|item/completed|item/*/delta|item/*Delta)
       if printf '%s\n' "$line" | jq -e '.params.item.type!="userMessage"' >/dev/null; then
         turn=$(printf '%s\n' "$line" | jq -r '.params.turnId // empty')
+        if [ -n "$turn" ] && jq -e --arg turn "$turn" '.capacity.turn_id==$turn' "$S/meta" >/dev/null &&
+          printf '%s\n' "$line" | jq -e '.params.item.type!="error"' >/dev/null; then capacity_clear; fi
         if [ -n "$turn" ] && [ -f "$S/appserver/recovery" ]; then
           printf '%s\n' "$turn" >> "$S/appserver/recovery-progress"
           appserver_recovery_progress
@@ -290,12 +292,13 @@ appserver_answer() {
   appserver_write_end
   appserver_receipt "$id"
 }
-appserver_alive() {
+appserver_alive() { appserver_client_alive_at "$S" "$ISSUE"; }
+appserver_client_alive_at() {
   local pid
-  [ -f "$S/appserver/client.pid" ] || return 1
-  pid=$(cat "$S/appserver/client.pid")
+  [ -f "$1/appserver/client.pid" ] || return 1
+  pid=$(cat "$1/appserver/client.pid")
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null &&
-    ps -o args= -p "$pid" 2>/dev/null | grep -Fq -- "dv _appserver-run $ISSUE"
+    ps -o args= -p "$pid" 2>/dev/null | grep -Fq -- "dv _appserver-run $2"
 }
 appserver_request() {
   local operation=$1 text=${2:-} request id deadline receipt
@@ -341,7 +344,7 @@ appserver_start() {
   mkdir -p "$S/appserver/outbox" "$S/appserver/questions"
   chmod 700 "$S/appserver"
   [[ "$DV_RECOVER_MAX" =~ ^[1-9][0-9]*$ ]] || fail 'DV_RECOVER_MAX must be a positive integer'
-  [[ "$DV_CAPACITY_BACKOFF" =~ ^[1-9][0-9]*$ ]] || fail 'DV_CAPACITY_BACKOFF must be positive seconds'
+  capacity_validate
   if command -v setsid >/dev/null; then
     nohup setsid "$DV_ROOT/bin/dv" _appserver-run "$ISSUE" >> "$S/log" 2>&1 < /dev/null &
     client=$!
@@ -385,7 +388,12 @@ cmd__appserver_run() {
     if [ "$AS_CLASS" != accepted ] && ! printf '%s\n' "$AS_REPLY" | jq -e '.error.code==-32601' >/dev/null; then return 1; fi
     params=$(jq -cn --arg thread "$AS_THREAD" --arg text "$instruction" --rawfile brief "$S/brief.md" --arg effort "$DV_CODEX_EFFORT" '{threadId:$thread,input:[{type:"text",text:($text+"\n\n"+$brief),text_elements:[]}],effort:$effort}')
     appserver_mutate initial-turn turn/start "$params"
-    [ "$AS_CLASS" = accepted ] || return 1
+    if [ "$AS_CLASS" != accepted ]; then
+      if [ "$AS_CLASS" = refused ] && printf '%s\n' "$AS_REPLY" | jq -c .error | capacity_error; then
+        printf '%s\n' "$AS_REPLY" | jq -c '{params:{error:.error}}' | appserver_atomic "$S/appserver/error.json"
+        printf '%s\n' "$params" | jq -r '.input[0].text' | appserver_atomic "$S/appserver/capacity-prompt"
+      else return 1; fi
+    fi
   else
     appserver_rpc thread/resume "$(jq -cn --arg thread "$AS_THREAD" '{threadId:$thread}')"
     [ "$AS_CLASS" = accepted ] || return 1
@@ -433,6 +441,9 @@ cmd__appserver_run() {
       appserver_snapshot; appserver_questions; last_poll=$(now)
       if [ -f "$S/appserver/blocked" ] && [ ! -f "$S/appserver/recoveries.json" ]; then
         appserver_recover legacy-recovery
+      elif jq -e '.capacity!=null' "$S/meta" >/dev/null ||
+        printf '%s\n' "$AS_SNAPSHOT" | jq -c '[.error,.turn.items[]?.error]' | capacity_error; then
+        appserver_recover "capacity-$(now)"
       fi
     fi
   done
@@ -463,9 +474,7 @@ appserver_recovery_info() {
   local info='{"recoveries":0,"last_recovery_reason":null}' retry=null
   if [ -f "$S/appserver/recoveries.json" ]; then info=$(cat "$S/appserver/recoveries.json")
   elif [ -f "$S/appserver/recovery" ]; then info='{"recoveries":1,"last_recovery_reason":"legacy"}'; fi
-  if [ -f "$S/appserver/capacity-since" ]; then
-    retry=$(( $(cat "$S/appserver/capacity-since") + DV_CAPACITY_BACKOFF ))
-  fi
+  retry=$(jq -r '.capacity.next_try_at // "null"' "$S/meta")
   # shellcheck disable=SC2031
   AS_SNAPSHOT=$(printf '%s\n%s\n' "$AS_SNAPSHOT" "$info" | jq -sc --argjson retry "$retry" '.[0] + .[1] + {capacity_retry_at:$retry}')
 }
@@ -475,7 +484,7 @@ appserver_recovery_progress() {
   turn=$(jq -r '.turn_id // empty' "$S/appserver/recovery")
   # An uncertain receipt, an old turn, or turn/started alone is not progress.
   if [ -n "$turn" ] && grep -Fxq -- "$turn" "$S/appserver/recovery-progress"; then
-    rm -f "$S/appserver/recovery" "$S/appserver/recovery-progress" "$S/appserver/capacity-since"
+    rm -f "$S/appserver/recovery" "$S/appserver/recovery-progress"
   fi
 }
 appserver_blocked() {
@@ -484,6 +493,9 @@ appserver_blocked() {
   last=$(printf '%s\n' "$AS_SNAPSHOT" | jq -r '.last_agent_message // empty')
   if [ -z "$last" ] && [ -f "$S/appserver/last-agent-message" ]; then last=$(cat "$S/appserver/last-agent-message"); fi
   cmd_kick blocked "$ISSUE" "$message${last:+; last agent message: $last}"
+  if jq -e '.capacity!=null' "$S/meta" >/dev/null; then
+    meta_set --arg reason "$message" '.status="blocked" | .failure_reason=$reason | .capacity.next_try_at=null'
+  fi
   touch "$S/appserver/blocked"
 }
 appserver_done_current() {
@@ -495,12 +507,12 @@ appserver_done_current() {
   jq -e --arg head "$head" '.head==$head' "$S/done.json" >/dev/null 2>&1
 }
 appserver_recover() {
-  local id=$1 state last params reason text=continue count turn
+  local id=$1 state last params reason text=continue count turn capacity_rc
   AS_CLASS=accepted AS_REPLY='{}'
   # A queued watch may outlive dv done or a prior recovery decision.
-  if [ -f "$S/appserver/blocked" ] && [ -f "$S/appserver/recoveries.json" ]; then return 0; fi
+  if [ -f "$S/appserver/blocked" ] && { [ -f "$S/appserver/recoveries.json" ] || jq -e '.capacity!=null' "$S/meta" >/dev/null; }; then return 0; fi
   if appserver_done_current; then return 0; fi
-  jq -e '.status=="running" or .status=="pr"' "$S/meta" >/dev/null || return 0
+  jq -e '.status=="running" or .status=="pr" or .status=="waiting-capacity"' "$S/meta" >/dev/null || return 0
   appserver_snapshot
   state=$(printf '%s\n' "$AS_SNAPSHOT" | jq -r .agent_status)
   AS_CLASS=accepted AS_REPLY='{}'
@@ -518,13 +530,15 @@ appserver_recover() {
   case "$state" in
     failed)
       reason=failed
-      if printf '%s\n' "$AS_SNAPSHOT" | jq -e '
-        [.error, .turn.items[]?.error] | any(..;
-          (type=="string" and test("capacity|rate.?limit|usageLimitExceeded|too many requests";"i")) or
-          (type=="object" and (.httpStatusCode==429 or .statusCode==429)))' >/dev/null; then
+      if printf '%s\n' "$AS_SNAPSHOT" | jq -c '[.error,.turn.items[]?.error]' | capacity_error; then
         reason=capacity
       fi ;;
     idle|goal-complete|idle-with-goal-active|working)
+      # A new turn with real output or a completed request ends this episode.
+      # Merely accepting turn/start must not reset a persistent provider limit.
+      if printf '%s\n' "$AS_SNAPSHOT" | jq -e '.turn.status=="completed" or any(.turn.items[]?; .type!="userMessage" and .type!="error")' >/dev/null; then
+        capacity_clear
+      fi
       last=$(cat "$S/appserver/activity")
       [ $(( $(now) - last )) -ge "$DV_STALL_AFTER" ] || return 0
       reason=stalled
@@ -538,6 +552,24 @@ appserver_recover() {
       fi ;;
     *) return 0 ;;
   esac
+  if [ "$reason" = capacity ]; then
+    if [ -f "$S/appserver/recovery" ] && jq -e '.turn_id==null' "$S/appserver/recovery" >/dev/null; then
+      appserver_blocked 'App Server recovery outcome is unknown; no automatic replay'
+      return 0
+    fi
+    capacity_rc=0; capacity_poll || capacity_rc=$?
+    case "$capacity_rc" in
+      1) return 0 ;;
+      2) capacity_block; touch "$S/appserver/blocked"; return 0 ;;
+    esac
+    text='Continue the interrupted request in this worktree. Preserve existing changes.'
+    if [ -f "$S/appserver/capacity-prompt" ]; then
+      text="$text The original request follows:
+$(cat "$S/appserver/capacity-prompt")"
+    fi
+    capacity_resume
+  else
+  capacity_clear
   if [ -f "$S/appserver/recovery" ]; then
     appserver_blocked 'App Server recovery made no new progress; no automatic replay'
     return 0
@@ -547,11 +579,6 @@ appserver_recover() {
     appserver_blocked "App Server recovery budget exhausted ($count/$DV_RECOVER_MAX)"
     return 0
   fi
-  if [ "$reason" = capacity ]; then
-    if [ ! -f "$S/appserver/capacity-since" ]; then now > "$S/appserver/capacity-since"; fi
-    last=$(cat "$S/appserver/capacity-since")
-    [ $(( $(now) - last )) -ge "$DV_CAPACITY_BACKOFF" ] || return 0
-  else rm -f "$S/appserver/capacity-since"; fi
   case "$reason" in
     failed) cmd_kick failed "$ISSUE" "$(printf '%s\n' "$AS_SNAPSHOT" | jq -c '.error // {message:"App Server turn failed"}')" ;;
     stalled|idle-without-done) cmd_kick stalled "$ISSUE" 'App Server job has no new items and no dv done' ;;
@@ -559,10 +586,11 @@ appserver_recover() {
   # Persist the episode and budget BEFORE attempting any mutation. Unknown
   # outcomes stay consumed, including across a client restart.
   printf '{"turn_id":null}\n' | appserver_atomic "$S/appserver/recovery"
-  rm -f "$S/appserver/recovery-progress" "$S/appserver/capacity-since"
+  rm -f "$S/appserver/recovery-progress"
   jq -cn --argjson count "$((count + 1))" --arg reason "$reason" \
     '{recoveries:$count,last_recovery_reason:$reason}' | appserver_atomic "$S/appserver/recoveries.json"
   if [ "$reason" = idle-without-done ]; then touch "$S/appserver/idle-continuation"; fi
+  fi
   if printf '%s\n' "$AS_SNAPSHOT" | jq -e '.thread.status.type=="active" or .turn_id!=null' >/dev/null; then
     # shellcheck disable=SC2031
     if ! params=$(printf '%s\n' "$AS_SNAPSHOT" | jq -ce --arg thread "$AS_THREAD" 'select(.turn_id!=null) | {threadId:$thread,turnId:.turn_id}'); then
@@ -582,7 +610,16 @@ appserver_recover() {
   fi
   appserver_deliver "$id" "$text" 1
   if [ "$AS_CLASS" != accepted ]; then
-    appserver_blocked 'App Server continuation was not accepted; recovery will not be retried'
+    if [ "$reason" = capacity ] && [ "$AS_CLASS" = refused ] &&
+      printf '%s\n' "$AS_REPLY" | jq -c .error | capacity_error; then
+      printf '%s\n' "$AS_REPLY" | jq -c '{params:{error:.error}}' | appserver_atomic "$S/appserver/error.json"
+      capacity_rc=0; capacity_poll || capacity_rc=$?
+      if [ "$capacity_rc" = 2 ]; then capacity_block; touch "$S/appserver/blocked"; fi
+    else appserver_blocked 'App Server continuation was not accepted; recovery will not be retried'; fi
+  elif [ "$reason" = capacity ]; then
+    rm -f "$S/appserver/capacity-prompt"
+    turn=$(printf '%s\n' "$AS_REPLY" | jq -r '.result.turn.id')
+    meta_set --arg turn "$turn" 'if .capacity!=null then .capacity.turn_id=$turn else . end'
   else
     turn=$(printf '%s\n' "$AS_REPLY" | jq -r '.result.turn.id')
     jq -cn --arg turn "$turn" '{turn_id:$turn}' | appserver_atomic "$S/appserver/recovery"
@@ -645,7 +682,7 @@ cmd__appserver_watch() (
   [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be positive seconds'
   for path in "$DV_STATE"/*/meta; do
     [ -f "$path" ] || continue
-    jq -e '.backend=="appserver" and (.status=="running" or .status=="pr")' "$path" >/dev/null || continue
+    jq -e '.backend=="appserver" and (.status=="running" or .status=="pr" or .status=="waiting-capacity")' "$path" >/dev/null || continue
     load_issue "$(jq -r .issue "$path")"
     appserver_request recover >/dev/null || true
   done

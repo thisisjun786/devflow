@@ -8,6 +8,10 @@ if [ -f "$DV_CONFIG" ]; then
 fi
 # shellcheck source=config.example.sh
 source "$DV_ROOT/config.example.sh"
+# shellcheck source=lib/capacity.sh
+source "$DV_ROOT/lib/capacity.sh"
+# shellcheck source=lib/heavy.sh
+source "$DV_ROOT/lib/heavy.sh"
 # shellcheck source=lib/claude.sh
 source "$DV_ROOT/lib/claude.sh"
 # shellcheck source=lib/codex.sh

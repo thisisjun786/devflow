@@ -19,7 +19,7 @@ stall_reconcile() {
       ([$host,$row.issue]|tojson) as $key |
       ([$row.started,$row.award_token,$row.herdr_pane]|tojson) as $generation |
       if ($row.issue|type)!="string" or ($row.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")|not) then .
-      elif $row.status!="running" or $row.done_at!=null or $row.cleaned_at!=null or $row.goal_active==true or
+      elif $row.status!="running" or $row.capacity_detected==true or $row.done_at!=null or $row.cleaned_at!=null or $row.goal_active==true or
            ($row.agent_status=="working" and $row.goal_stalled!=true) or
            ($row.agent_status=="blocked" or $row.agent_status=="done") then del(.[$key])
       elif ($row.alive!=true and $row.agent_dead!=true) or
@@ -44,6 +44,12 @@ stall_reconcile() {
   fi
   if ! mv "$tmp.next" "$state"; then rm -f "$tmp" "$tmp.next"; return 1; fi
   rm "$tmp"
+  # Existing terminal sessions launched before capacity supervision was added
+  # use the same nonblocking wait through the already-running watcher.
+  while IFS= read -r row; do
+    stall_recover "$host" "$row" || true
+  done < <(printf '%s\n' "$rows" | jq -c '.[] | select((.backend=="tmux" or .backend=="herdr") and
+    (.capacity_detected==true or .capacity!=null)) | {row:.,id:"capacity"}')
   # Persist IDs before delivery. If interrupted after append, the queue itself
   # is the acknowledgement and the next scan cannot append the event twice.
   while IFS= read -r row; do
@@ -52,7 +58,7 @@ stall_reconcile() {
     head=$(printf '%s\n' "$row" | jq -r '.row.head // .row.start_head // ""')
     token=$(printf '%s\n' "$row" | jq -r '.row.award_token // ""')
     id=$(printf '%s\n' "$row" | jq -r .id)
-    metrics_stall_notify stalled "$issue" "Agent idle, absent, Goal stalled or model at capacity for at least $DV_STALL_AFTER seconds; inspect the current pane and log" \
+    metrics_stall_notify stalled "$issue" "Agent idle, absent, Goal stalled for at least $DV_STALL_AFTER seconds; inspect the current pane and log" \
       "$event_host" "$head" "$id" "$token" || continue
     tmp=$(mktemp "$DV_HOME/.stalls.XXXXXX") || return 1
     if ! jq --arg id "$id" 'with_entries(if .value.id==$id then .value.emitted=true else . end)' "$state" > "$tmp" ||
@@ -82,8 +88,29 @@ stall_recover() {
 cmd__stall_recover() (
   [ "$#" -eq 3 ] || fail 'usage: dv _stall-recover ISSUE EPISODE TOKEN'
   load_issue "$1"; issue_lock; require_worktree
-  local episode=$2 token=$3 row attempts=0 last=0 time tmp
+  local episode=$2 token=$3 row attempts=0 last=0 time tmp supervisor capacity_rc
   row=$(cmd_status "$ISSUE" --json | jq -c '.[0]') || return 1
+  if printf '%s\n' "$row" | jq -e --arg token "$token" '
+    (.status=="running" or .status=="waiting-capacity") and .done_at==null and .cleaned_at==null and
+    (.award_token // "")==$token and .question_pending!=true and .alive==true and
+    (.capacity_detected==true or .capacity!=null)' >/dev/null; then
+    supervisor=$(cat "$S/capacity-supervisor.pid" 2>/dev/null) || supervisor=''
+    if [[ "$supervisor" =~ ^[1-9][0-9]*$ ]] && kill -0 "$supervisor" 2>/dev/null; then return 0; fi
+    if ! printf '%s\n' "$row" | jq -e '.capacity_detected' >/dev/null; then
+      capacity_clear
+      row=$(cmd_status "$ISSUE" --json | jq -c '.[0]') || return 1
+    else
+    capacity_rc=0; capacity_poll || capacity_rc=$?
+    case "$capacity_rc" in
+      0)
+        capacity_resume
+        if [ "$(jq -r .agent "$S/meta")" = codex ]; then send_text '/goal resume'
+        else send_text 'Continue the interrupted request in this worktree. Preserve existing changes.'; fi ;;
+      2) capacity_block ;;
+    esac
+    return 0
+    fi
+  fi
   # Revalidate on the issue host, including token, completion and current
   # activity, before sending input or touching the existing revive path.
   # A current stalled banner can outlast herdr's working state; the most recent

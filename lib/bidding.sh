@@ -50,8 +50,8 @@ bid_resources() {
   cache=$(disk_cache_path) || cache=''
   [ -z "$cache" ] || cache_free=$(disk_available_gb "$cache" || echo null)
   jq -cn --argjson cores "$cores" --argjson load "${load:-0}" --argjson memory "${memory:-0}" \
-    --argjson disk "$(disk_available_gb || echo null)" --arg cache "$cache" --argjson cache_free "$cache_free" \
-    '{cores:$cores,load5:$load,memory_available_mb:$memory,disk_available_gb:$disk,
+    --argjson disk "$(disk_available_gb || echo null)" --arg cache "$cache" --argjson cache_free "$cache_free" --argjson heavy "$(heavy_snapshot)" \
+    '{cores:$cores,load5:$load,memory_available_mb:$memory,disk_available_gb:$disk,heavy:$heavy,
       go_cache_path:(if $cache=="" then null else $cache end),cache_disk_available_gb:$cache_free}'
 }
 bid_remote_repo() {
@@ -85,8 +85,8 @@ bid_active() {
     # Release on this run's completion before its done event wakes scheduling;
     # historical or manual completions must still leave the revival counted.
     jq -c --arg revived "$revived" 'select(.cleaned_at==null and
-      (if $revived!="" then .done_episode!=$revived and .status!="landed" and .status!="cancelled"
-       else .done_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required") end))' "$path"
+      (.status=="waiting-capacity" or (if $revived!="" then .done_episode!=$revived and .status!="landed" and .status!="cancelled"
+       else .done_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required") end)))' "$path"
   done | jq -s length
 }
 bid_agent() {
@@ -147,7 +147,7 @@ cmd_bid() {
     .status=(if .reason=="" then "submitted" else "rejected" end) |
     .score=(100*.free_slots/.capacity - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
       (if $min_disk>0 and $disk!=null then [0,20*(2*$min_disk-$disk)/$min_disk]|max else 0 end))' |
-    if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason]|@tsv'; fi
+    if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason,("heavy="+(.heavy.in_use|tostring)+"/"+(.heavy.slots|tostring)+" waiting="+(.heavy.waiting|tostring))]|@tsv'; fi
 }
 cmd_submit() {
   [ "$#" -ge 3 ] || fail 'usage: dv submit REPO ISSUE slug --brief FILE [--agent AGENT] [--mode MODE] [--base BASE]'
@@ -367,7 +367,8 @@ bid_schedule_one() {
       printf '%s\n' "$reply" | jq -e 'type=="object" and (.score|type=="number") and (.status=="submitted" or .status=="rejected")' >/dev/null 2>&1; then
       case "$host" in hx|hx-linux) rank=0 ;; amd|amd-linux) rank=1 ;; go2|go2-linux) rank=2 ;; lina-os) rank=3 ;; gos|gos-linux) rank=4 ;; *) rank=5 ;; esac
       printf '%s\n' "$reply" | jq -c --arg host "$host" --arg manager "$DV_MANAGER_HOST" --argjson rank "$rank" \
-        '.host=$host | .rank=$rank | .manager=(if $host==$manager or $host=="lina-os" then 1 else 0 end)' >> "$bids"
+        --arg last "${DV_MANAGER_LAST:-1}" \
+        '.host=$host | .rank=$rank | .manager=(if $last!="0" and ($host==$manager or $host=="lina-os") then 1 else 0 end)' >> "$bids"
     else jq -cn --arg host "$host" '{host:$host,status:"rejected",reason:"no valid bid response"}' >> "$bids"; fi
   done
   # Keep scores within each group, but never let gos outrank the manager.

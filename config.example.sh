@@ -15,7 +15,8 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds
 : "${DV_STALL_AFTER:=300}" # App Server / exec / idle / stalled / blocked queue cursor, positive seconds
 : "${DV_RECOVER_MAX:=3}" # App Server: maximum automatic recoveries per job
-: "${DV_CAPACITY_BACKOFF:=120}" # App Server: seconds before capacity/rate-limit recovery
+: "${DV_CAPACITY_BACKOFF:=120}" # first provider capacity wait; then 2.5x, 7.5x (repeated)
+: "${DV_CAPACITY_MAX_WAIT:=21600}" # provider capacity wait deadline in seconds (6 h)
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
 : "${DV_CLAUDE_BIN:=claude}"
@@ -64,6 +65,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_MANAGER_AGENT:=hermes}" # persistent per-repository Hermes session
 : "${DV_MANAGER_MAX_WAIT:=120}" # busy seconds before other issues use plain workers
 : "${DV_MAX_JOBS:=}" # host capacity; empty = max(1, floor(logical cores / 8))
+: "${DV_HEAVY_SLOTS:=}" # host-wide heavy commands; empty = max(1, floor(logical cores / 8))
 : "${DV_MIN_MEMORY_MB:=512}" # reject bids below this available memory
 : "${DV_MIN_DISK_GB:=15}" # work/cache free GiB; reject either below this, penalize below 2x
 : "${DV_CACHE_TRIM_DAYS:=2}" # trim Go build files not accessed for this many days
@@ -79,3 +81,4 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_QA:=0}" # 1: real-use QA after landed; .devflow on merged base may opt in/out
 : "${DV_QA_AGENT:=codex}" # codex exec or claude (fresh session)
 : "${DV_QA_AGENT_CMD:=}" # optional command receiving the QA prompt path
+: "${DV_MANAGER_LAST=1}" # 1: the manager host (lina-os) bids only after work hosts; 0: it competes on score like the others

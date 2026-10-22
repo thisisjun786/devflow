@@ -38,6 +38,47 @@ App Server task의 done은 산출물 검사 후 goal 완료 응답을 확인합�
 
 [config.example.sh](config.example.sh)에 모든 기본값이 있습니다. Codex 경로는 호스트에 따라 `~/node/bin/codex` 또는 `~/.opencodex/bin/codex`로 설정하세요. 기본 모델은 gpt-6-astra/xhigh이고, hooks와 crw 플러그인을 해당 실행에서만 끕니다. `DV_CODEX_DISABLE_HOOKS=0`, `DV_CODEX_DISABLE_CRW=0`으로 바꿀 수 있습니다. Claude는 opus/xhigh, Devin은 fusion-gpt-6-astra-xhigh-sidekick-swe-2-high입니다.
 
+## 무거운 명령의 호스트 슬롯
+
+전체 시험 모음, e2e/Playwright, `go test ./...`, race 시험, production build는
+`dv heavy -- <명령과 인자>`로 실행합니다. 집중된 단일 패키지 시험은 직접 실행해도 됩니다.
+
+```bash
+dv heavy -- go test ./...
+dv heavy -- npm run build
+dv heavy -- bash -c 'go test -race ./... && npm run test:e2e'
+```
+
+`DV_HEAVY_SLOTS`는 호스트 공용 동시 실행 수이며 기본값은 논리 CPU 수 / 8의 내림값,
+최소 1입니다. 호스트 설정 파일에 양의 정수로 지정하고 모든 작업이 같은 `DV_STATE`와
+슬롯 수를 사용하게 하세요. `DV_MAX_JOBS`와 독립적이며 작업 수 제한을 바꾸지 않습니다.
+설정 변경은 실행 중인 heavy 명령이 모두 끝난 뒤 적용하세요.
+
+잠금은 `$DV_STATE/.heavy/slot-N.lock`에 보존하며 `flock`으로 관리합니다. 실행 중에는
+잠금 파일을 삭제하지 마세요. worktree·sandbox별 임시 경로로 대체하지 않습니다.
+Codex workspace-write에서는 공용 `DV_STATE` 절대 경로가 쓰기 허용 루트에 포함되어야 합니다
+(기존 `sandbox_workspace_write.writable_roots` 또는 해당 버전의 permissions profile).
+허용되지 않은 경로는 오류로 알리며 별도 잠금 경로로 우회하지 않습니다.
+
+모든 슬롯이 사용 중이면 stderr에 `waiting for heavy slot N/M` 한 줄을 쓰고 빈 슬롯이
+생길 때까지 기다립니다. 대기 시간 제한은 없습니다. 명령의 인자, 입출력, 종료 코드를
+보존하며 종료·crash·kill 시 커널이 슬롯을 해제합니다. 명령의 자식이 잠금 FD를 상속해
+계속 실행 중이면 마지막 자식이 종료될 때까지 슬롯을 유지합니다. 중첩된 `dv heavy`는
+사용하지 말고 하나의 셸 명령으로 묶으세요.
+
+`nice -n 10`과, 설치되어 있으면 `ionice -c 2 -n 7 -t`를 적용합니다. Linux에서는
+util-linux의 flock/ionice를 사용하고, macOS에서는 `brew install flock`이 필요하며
+ionice가 없으면 nice만 적용합니다. `dv status`와 `dv bid`는 `heavy=사용/전체 waiting=대기`
+형태로 표시합니다. JSON은 기존 이슈 배열의 각 행(status)과 호스트 객체(bid)에
+`heavy: {slots, in_use, waiting}`를 추가합니다. 이슈가 없는 호스트의 JSON 집계는
+`dv bid --json`으로 조회하세요. 읽기 실패는 사용·대기 수를 null로 표시합니다.
+강제 종료된 대기자의 파일이 남아도 잠겨 있지 않으면 대기 수에 포함하지 않습니다.
+
+실제 Codex sandbox의 경로 허용과 두 workspace 간 직렬 실행은
+`bash tests/heavy-sandbox.sh /절대/경로/codex /workspace/밖/검증결과/디렉터리`로
+검증할 수 있습니다. 모델을 호출하지 않으며, 현재 `codex sandbox -- <명령>` CLI를
+사용합니다. 허용 전 쓰기 실패와 공용 루트 허용 후 성공을 모두 검사하고 증거를 남깁니다.
+
 ## 개발 호스트 도구 맞추기
 
 새 Linux 호스트에서는 다음 순서로 준비합니다. `sync`는 x86_64/aarch64 Linux를 지원하고, 셸 코드는 macOS 기본 bash 3.2에서도 읽을 수 있습니다.
@@ -219,11 +260,11 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 감시 호스트의 `$DV_HOME/kick.q`와 `events.log`는 JSON Lines입니다. 이벤트 ID(host/issue/kind/head)로 중복을 무시하며, 작업자 로그·프롬프트는 `workers/`에 남습니다. 3초 간격은 로컬 파일 읽기이며 원격 안전망은 `ssh HOST dv status --json`입니다(감시 호스트 자신은 ssh 없이). 점검 간격은 `DV_RECONCILE_INTERVAL`, `DV_STALL_AFTER`, 60초 중 최솟값입니다. 원격 개발 호스트는 감시 호스트의 dv-watch가 `DV_PULL_HOSTS`에 적힌 호스트마다 `dv-kick-pull <host>`를 띄워, 그 호스트의 `kick.q`를 ssh 한 줄기로 `tail -f` 해 받아 옵니다(끊기면 dv-watch가 다시 띄움, 별도 데몬 없음). 개발 호스트에서 감시 호스트로 가는 ssh 키가 필요 없고, 폴링 없이 쓰는 즉시 도착하며, 줄 위치와 파일 inode를 이 쪽 큐에 쓴 뒤에만 저장해, 전달 실패·재접속·큐 교체 때도 빠짐없이 이어 받습니다. 원격 쪽은 그 호스트의 devflow 설정(DV_HOME)을 읽습니다. 그 호스트의 `DV_KICK_HOST`는 자기 자신(로컬 큐)으로 둡니다. `$DV_HOME/stop`을 만들면 새 작업을 멈추고 실행 중인 작업자를 기다립니다. 재시작할 때 stop 파일을 지우세요. 비정상 종료의 잠금은 PID와 실제 프로세스를 확인한 뒤 사람이 지웁니다.
 
-`DV_STALL_AFTER`는 양의 정수 초이며 기본값은 App Server와 공유하는 300입니다. `DV_HOSTS`의 `running` 작업에서 `idle`, 현재 Codex 화면의 `Goal stalled`·`model is at capacity`, 또는 `unknown`이면서 에이전트 종료가 확인된 상태를 이 시간 이상 관측하면 `stalled` 이벤트를 보냅니다. 화면 기록이나 로그의 옛 문구는 사용하지 않으며, 현재의 명시적 정체 배너는 herdr의 `working`보다 우선합니다. 마지막 배너가 `Pursuing goal` 또는 `Working`이면 활동 중으로 보호합니다. 현재 화면에 여러 문구가 남아 있으면 마지막 goal 상태·capacity 문구를 사용합니다. `dv status --json`은 `goal_stalled`, `goal_active`, `agent_dead`, `agent_state_seq`, `agent_session`도 제공합니다. `agent_dead`는 단순한 감지 실패와 구별되는 종료 증거입니다. 첫 정체 관측부터 시간을 재므로 알림에는 점검 주기와 호스트 조회 시간이 추가될 수 있습니다. tmux에서는 명시적인 정체 화면이나 종료된 pane·세션으로 감지하고 `Pursuing goal`·`Working`으로 활동 재개를 확인합니다.
+`DV_STALL_AFTER`는 양의 정수 초이며 기본값은 App Server와 공유하는 300입니다. `DV_HOSTS`의 `running` 작업에서 `idle`, 현재 Codex 화면의 `Goal stalled`, 또는 `unknown`이면서 에이전트 종료가 확인된 상태를 이 시간 이상 관측하면 `stalled` 이벤트를 보냅니다. 화면 기록이나 로그의 옛 문구는 사용하지 않으며, 현재의 명시적 정체 배너는 herdr의 `working`보다 우선합니다. 마지막 배너가 `Pursuing goal` 또는 `Working`이면 활동 중으로 보호합니다. 현재 화면에 여러 문구가 남아 있으면 마지막 goal 상태·capacity 문구를 사용합니다. `dv status --json`은 `goal_stalled`, `goal_active`, `agent_dead`, `agent_state_seq`, `agent_session`도 제공합니다. `agent_dead`는 단순한 감지 실패와 구별되는 종료 증거입니다. 첫 정체 관측부터 시간을 재므로 알림에는 점검 주기와 호스트 조회 시간이 추가될 수 있습니다. tmux에서는 명시적인 정체 화면이나 종료된 pane·세션으로 감지하고 `Pursuing goal`·`Working`으로 활동 재개를 확인합니다.
 
 정체 구간과 고유 이벤트 ID는 watcher의 `$DV_HOME/stalls.json`에 보관합니다. 같은 구간은 watcher 재시작 후에도 한 번만 알리고, 활동이 확인되면 새 구간으로 계산합니다. 명시적인 정체 화면이 계속되는 동안은 재개 시도에 따른 herdr 상태 번호 변경만으로 구간을 초기화하지 않습니다. 종료 증거 없는 상태 불명·통신 실패에서는 타이머를 멈추고, 긴 점검 공백 뒤에는 다시 시간을 잽니다. `done`·`landed` 등 실행 중이 아닌 작업과 완료·정리 기록이 있는 작업은 제외합니다.
 
-기존 상태 점검에서 이슈 호스트의 잠금 아래 현재 token·상태·화면을 다시 확인하고 복구합니다. 살아 있는 Codex goal의 정체·capacity 화면에는 `/goal resume`을 즉시 한 번 보내고, 같은 구간이 계속되면 5분 이상 간격으로 총 3회까지 시도합니다. 시도 기록은 `$DV_STATE/ISSUE/stall-recovery.json`에 저장해 watcher 재시작과 전달 오류에도 제한을 유지하며, 마지막 시도 5분 뒤에도 정체가 남으면 `blocked`를 한 번 보냅니다. 종료된 에이전트는 기존 revive 경로로 같은 worktree·브랜치에서 한 번 재시작하며 미커밋 작업과 보고서를 보존합니다. 작업자는 `stalled` 이벤트에서 복구 기록과 현재 화면을 확인하며 위 자동 복구 대상에 별도 재시작이나 추가 재개를 하지 않습니다. 그 밖의 idle은 기존 정책대로 원인을 조사하고, 오래된 pane의 provider 환경 누락처럼 복구 가능하면 WIP 커밋으로 보존하고 정상 종료를 확인한 뒤 같은 worktree에서 한 번 재시작합니다. 원인 불명·권한 필요는 차단으로 보고하고 provider 토큰이나 신뢰 설정을 임의로 바꾸지 않습니다.
+기존 상태 점검에서 이슈 호스트의 잠금 아래 현재 token·상태·화면을 다시 확인하고 복구합니다. 살아 있는 Codex goal의 용량 오류가 아닌 정체 화면에는 `/goal resume`을 즉시 한 번 보내고, 같은 구간이 계속되면 5분 이상 간격으로 총 3회까지 시도합니다. 시도 기록은 `$DV_STATE/ISSUE/stall-recovery.json`에 저장해 watcher 재시작과 전달 오류에도 제한을 유지하며, 마지막 시도 5분 뒤에도 정체가 남으면 `blocked`를 한 번 보냅니다. 종료된 에이전트는 기존 revive 경로로 같은 worktree·브랜치에서 한 번 재시작하며 미커밋 작업과 보고서를 보존합니다. 작업자는 `stalled` 이벤트에서 복구 기록과 현재 화면을 확인하며 위 자동 복구 대상에 별도 재시작이나 추가 재개를 하지 않습니다. 그 밖의 idle은 기존 정책대로 원인을 조사하고, 오래된 pane의 provider 환경 누락처럼 복구 가능하면 WIP 커밋으로 보존하고 정상 종료를 확인한 뒤 같은 worktree에서 한 번 재시작합니다. 원인 불명·권한 필요는 차단으로 보고하고 provider 토큰이나 신뢰 설정을 임의로 바꾸지 않습니다.
 
 Codex goal은 tmux에서 TUI 입력 마커를 기다린 후 `/goal`을 붙여넣고 Enter를 보냅니다. herdr에서는 Codex 감지를 기다린 뒤 `agent prompt`로 제출하고, 준비되지 않았거나 차단됐으면 시작 제한 시간 안에서 재시도합니다. hook 또는 폴더 신뢰 창이 보이면 자동 승인이나 입력 없이 `codex hook trust required` 또는 `codex folder trust required` failed 이벤트를 보내고 주입을 중단합니다. 제출 성공 후에도 `DV_START_WAIT`초 안에 herdr의 `working` 또는 화면의 `Pursuing goal`을 확인합니다. 같은 `/goal`이 입력 칸에 남아 있으면 1초 뒤 Enter를 한 번만 더 보내고, 시작이 확인되지 않으면 `codex goal did not start` failed 이벤트를 보냅니다. 실패한 시작은 `dv status`에서 `start-failed`로 표시하며, 터미널은 사람이 확인할 수 있게 남깁니다. 신뢰 문제를 해결한 뒤 `dv send`로 다시 지시할 수 있습니다.
 
@@ -285,7 +326,7 @@ resume하며, 이전 전송 결과가 불명확한 메시지는 재전송하지 
 `dv status --json`의 `appserver`에 thread와 최신 turn의 요약, goal 응답을 담고 `agent_status`를
 `working`, `idle-with-goal-active`, `goal-complete`, `idle`, `failed`, `gone`, `unknown`으로
 표시합니다. 서버의 명시적인 thread-not-found만 gone이며 통신 장애는 unknown입니다.
-오류 turn, error item, capacity/rate-limit 오류는 failed입니다. 화면은 읽지 않습니다.
+일반 오류 turn과 error item은 failed이며 용량 오류는 아래 대기 정책을 따릅니다. 화면은 읽지 않습니다.
 작업 클라이언트가 종료됐어도 상태 조회는 새 연결의 thread/read로 확인하며 turn을 시작하지 않습니다.
 현재는 `thread/read(includeTurns=true)`를 사용하므로 긴 thread의 조회 비용이 증가합니다.
 `DV_APPSERVER_TIMEOUT`(10초)은 응답 제한, `DV_APPSERVER_POLL`(5초)은 상태 갱신 주기입니다.
@@ -304,13 +345,29 @@ push·PR·CI·리뷰 처리를 마치고 `dv done ISSUE`를 실행하라는 cont
 진행 없는 재정체, 예산 소진, 거부되거나 불명확한 복구는 blocked로 전달하며 자동 재전송하지
 않습니다. 기존 `appserver/recovery` 표시도 보존해 미확정 작업을 반복하지 않습니다.
 
-capacity·usage limit·rate limit·HTTP 429 오류는 즉시 failed를 알리지 않고
-`DV_CAPACITY_BACKOFF`(기본 120초) 뒤 다음 watcher 확인에서 한 번 continuation을 보냅니다.
-같은 복구 예산을 사용하며 대기 중에도 상태 조회와 질문 응답을 처리합니다. 일반 오류는
-기존처럼 failed를 알리고 복구합니다. `dv status`와 JSON의 `recoveries`,
-`last_recovery_reason`에 누적 횟수와 마지막 이유(`stalled`, `idle-without-done`, `capacity`,
-`failed`)를 표시합니다. JSON의 `appserver.capacity_retry_at`은 대기 중인 재시도 시각입니다.
-복구 예산과 이유는 `appserver/recoveries.json`에 저장합니다. 새 설정은 양의 정수입니다.
+공급자의 `usage limit`, `usageLimitExceeded`, `rate_limit_exceeded`, HTTP 429,
+`at capacity`, `overloaded` 오류는 공통 분류기로 판별해 **waiting-capacity**로 기다립니다.
+Codex exec·App Server·QA 및 Claude·Devin의 터미널 경로에 적용합니다.
+기본 대기는 2분 → 5분 → 15분 → 이후 매 15분이며,
+`DV_CAPACITY_BACKOFF`(양의 정수 초, 기본 120)의 1배·2.5배·7.5배로 계산합니다.
+`DV_CAPACITY_MAX_WAIT`는 첫 용량 오류부터의 최대 대기 시간(양의 정수 초, 기본 21600 = 6시간)입니다.
+`Try again at`의 날짜는 사용하지 않으며 마지막 간격은 남은 시간으로 제한합니다.
+상한에 도달하면 `provider usage limit for N h` 이유와 함께 blocked로 종료합니다.
+
+대기 중에도 작업 슬롯과 worktree를 유지하고, 시작할 때 `waiting-capacity` kick을 한 번만 보냅니다.
+`dv status`는 상태와 UTC `next_try`를, JSON은 Unix 초 `capacity_retry_at`을 표시합니다.
+App Server의 기존 `appserver.capacity_retry_at`도 유지합니다. 대기 정보는 기존 meta의
+`capacity`에 저장하므로 App Server 클라이언트 재연결에도 시간 상한을 보존합니다.
+용량이 돌아오면 같은 thread/session 또는 같은 worktree에서 “Continue the interrupted request”로
+이어갑니다. 살아 있는 Codex goal 터미널에는 `/goal resume`을 보냅니다. QA도 기존 checkout·산출물·
+finding 기록을 보존하며 Codex가 thread ID를 제공했다면 `exec resume`으로 이어갑니다.
+Claude QA는 세션을 저장하지 않는 기존 설정을 유지하고 같은 checkout과 원래 브리프로 이어갑니다.
+터미널은 현재 화면을 사용하고, 이후 `Pursuing goal`·`Working`·`Thinking` 배너가 나오면 옛 오류를 무시합니다.
+
+용량 대기는 exec의 단발 재시도, terminal revive, `DV_RECOVER_MAX`를 소모하지 않습니다.
+일반 오류는 기존 복구 정책을 유지합니다. `dv status`와 JSON의 `recoveries`,
+`last_recovery_reason`에는 일반 복구 누적 횟수와 이유(`stalled`, `idle-without-done`, `failed`)가 남습니다.
+기존 복구 기록은 `appserver/recoveries.json`에 보존하며 불명확한 전달 결과는 자동 재전송하지 않습니다.
 
 서버의 `requestUserInput`은 requestId와 질문 원문을 기존 question 이벤트로 전달합니다.
 단일 질문에는 평문으로 답할 수 있고, 여러 질문이나 요청에는 다음 형식을 사용합니다.

@@ -45,6 +45,13 @@ case "$scenario" in
     done ;;
   nonzero) exit 7 ;;
   retry) if [ "$n" = 1 ]; then exit 7; fi ;;
+  capacity-once)
+    if [ "$n" = 1 ]; then
+      printf 'partial work\n' > capacity-progress.txt
+      printf '{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again at Oct 27th, 2026 3:34 PM."}}\n'
+      exit 1
+    fi
+    grep -Fx 'partial work' capacity-progress.txt >/dev/null ;;
   capacity) printf '{"type":"error","message":"model at capacity"}\n'; sleep 30; exit 0 ;;
   rate) printf '{"type":"turn.failed","error":{"message":"rate limit exceeded"}}\n'; exit 0 ;;
   silence) sleep 30; exit 0 ;;

@@ -11,7 +11,7 @@ entry_commit=$(git -C "$(dirname "$DV_ENTRY")/.." rev-parse HEAD 2>/dev/null || 
 source "$(dirname "$DV_ENTRY")/../lib/common.sh"
 # Internal RPCs have their own deadlines. Defer network updates, including in
 # child CLI calls during an award, until an ordinary invocation or watcher pass.
-case "${1:-help}" in _*|bid) export DV_AUTO_UPDATE=0 ;; esac
+case "${1:-help}" in _*|bid|heavy) export DV_AUTO_UPDATE=0 ;; esac
 # shellcheck source=lib/bidding.sh
 source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/self-update.sh
@@ -37,13 +37,14 @@ source "$DV_ROOT/lib/task.sh"
 # shellcheck source=lib/qa.sh
 source "$DV_ROOT/lib/qa.sh"
 command=${1:-help}; [ "$#" -eq 0 ] || shift
+if [ "$command" = heavy ]; then cmd_heavy "$@"; exit; fi
 if [ "$command" = submit ] && [ "${1:-}" = --kind ]; then
   [ "$#" -ge 2 ] || fail 'missing --kind value'
   kind=$2; shift 2
   case "$kind" in task) task_submit "$@"; exit ;; code) ;; *) fail 'kind must be code or task' ;; esac
 fi
 case "$command" in
-  help|--help|-h) printf '%s\n' 'dv submit --kind task <workspace> <ISSUE> <slug> --brief FILE [--agent codex|claude]' 'dv land <task ISSUE> --checked HEAD (after checking out/ and report.md)' ;;
+  help|--help|-h) printf '%s\n' 'dv heavy -- command [args...]' 'dv submit --kind task <workspace> <ISSUE> <slug> --brief FILE [--agent codex|claude]' 'dv land <task ISSUE> --checked HEAD (after checking out/ and report.md)' ;;
   land|clean|pr|pr-wait|_pr-wait-start|review|polish)
     if task_issue "${1:-}"; then
       case "$command" in
