@@ -38,6 +38,47 @@ App Server task의 done은 산출물 검사 후 goal 완료 응답을 확인합�
 
 [config.example.sh](config.example.sh)에 모든 기본값이 있습니다. Codex 경로는 호스트에 따라 `~/node/bin/codex` 또는 `~/.opencodex/bin/codex`로 설정하세요. 기본 모델은 gpt-6-astra/xhigh이고, hooks와 crw 플러그인을 해당 실행에서만 끕니다. `DV_CODEX_DISABLE_HOOKS=0`, `DV_CODEX_DISABLE_CRW=0`으로 바꿀 수 있습니다. Claude는 opus/xhigh, Devin은 fusion-gpt-6-astra-xhigh-sidekick-swe-2-high입니다.
 
+## 무거운 명령의 호스트 슬롯
+
+전체 시험 모음, e2e/Playwright, `go test ./...`, race 시험, production build는
+`dv heavy -- <명령과 인자>`로 실행합니다. 집중된 단일 패키지 시험은 직접 실행해도 됩니다.
+
+```bash
+dv heavy -- go test ./...
+dv heavy -- npm run build
+dv heavy -- bash -c 'go test -race ./... && npm run test:e2e'
+```
+
+`DV_HEAVY_SLOTS`는 호스트 공용 동시 실행 수이며 기본값은 논리 CPU 수 / 8의 내림값,
+최소 1입니다. 호스트 설정 파일에 양의 정수로 지정하고 모든 작업이 같은 `DV_STATE`와
+슬롯 수를 사용하게 하세요. `DV_MAX_JOBS`와 독립적이며 작업 수 제한을 바꾸지 않습니다.
+설정 변경은 실행 중인 heavy 명령이 모두 끝난 뒤 적용하세요.
+
+잠금은 `$DV_STATE/.heavy/slot-N.lock`에 보존하며 `flock`으로 관리합니다. 실행 중에는
+잠금 파일을 삭제하지 마세요. worktree·sandbox별 임시 경로로 대체하지 않습니다.
+Codex workspace-write에서는 공용 `DV_STATE` 절대 경로가 쓰기 허용 루트에 포함되어야 합니다
+(기존 `sandbox_workspace_write.writable_roots` 또는 해당 버전의 permissions profile).
+허용되지 않은 경로는 오류로 알리며 별도 잠금 경로로 우회하지 않습니다.
+
+모든 슬롯이 사용 중이면 stderr에 `waiting for heavy slot N/M` 한 줄을 쓰고 빈 슬롯이
+생길 때까지 기다립니다. 대기 시간 제한은 없습니다. 명령의 인자, 입출력, 종료 코드를
+보존하며 종료·crash·kill 시 커널이 슬롯을 해제합니다. 명령의 자식이 잠금 FD를 상속해
+계속 실행 중이면 마지막 자식이 종료될 때까지 슬롯을 유지합니다. 중첩된 `dv heavy`는
+사용하지 말고 하나의 셸 명령으로 묶으세요.
+
+`nice -n 10`과, 설치되어 있으면 `ionice -c 2 -n 7 -t`를 적용합니다. Linux에서는
+util-linux의 flock/ionice를 사용하고, macOS에서는 `brew install flock`이 필요하며
+ionice가 없으면 nice만 적용합니다. `dv status`와 `dv bid`는 `heavy=사용/전체 waiting=대기`
+형태로 표시합니다. JSON은 기존 이슈 배열의 각 행(status)과 호스트 객체(bid)에
+`heavy: {slots, in_use, waiting}`를 추가합니다. 이슈가 없는 호스트의 JSON 집계는
+`dv bid --json`으로 조회하세요. 읽기 실패는 사용·대기 수를 null로 표시합니다.
+강제 종료된 대기자의 파일이 남아도 잠겨 있지 않으면 대기 수에 포함하지 않습니다.
+
+실제 Codex sandbox의 경로 허용과 두 workspace 간 직렬 실행은
+`bash tests/heavy-sandbox.sh /절대/경로/codex /workspace/밖/검증결과/디렉터리`로
+검증할 수 있습니다. 모델을 호출하지 않으며, 현재 `codex sandbox -- <명령>` CLI를
+사용합니다. 허용 전 쓰기 실패와 공용 루트 허용 후 성공을 모두 검사하고 증거를 남깁니다.
+
 ## 개발 호스트 도구 맞추기
 
 새 Linux 호스트에서는 다음 순서로 준비합니다. `sync`는 x86_64/aarch64 Linux를 지원하고, 셸 코드는 macOS 기본 bash 3.2에서도 읽을 수 있습니다.
