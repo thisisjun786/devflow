@@ -134,6 +134,31 @@ case_review_followup() {
   test "$(grep -c '^api --method POST repos/test/repo/issues ' "$GH_STUB_DIR/calls")" = 1
   dv 'done' P-1
 }
+case_review_followup_no_milestone() {
+  review_fixture
+  touch "$GH_STUB_DIR/no-milestone"
+  review_set 1 P2
+  dv pr-wait P-1 --foreground > "$CASE_DIR/result"
+  jq -e '.review.clean and .review_handled and (.blocked|not)' "$CASE_DIR/result"
+  jq -e '.milestone==null and (.body|contains("Depends on #1")) and (.body|contains("P2 lib/example.sh:12"))' "$GH_STUB_DIR/followup"
+  # A later review updates the same issue without assigning a milestone.
+  review_set 2 P3
+  dv pr-wait P-1 --foreground > "$CASE_DIR/result"
+  jq -e '.milestone==null and (.body|contains("P3 lib/example.sh:12")) and (.body|contains("P2 lib/example.sh:12")|not)' "$GH_STUB_DIR/followup"
+  test "$(grep -c '^api --method POST repos/test/repo/issues ' "$GH_STUB_DIR/calls")" = 1
+  test "$(grep -c '^api --method PATCH repos/test/repo/issues/20 ' "$GH_STUB_DIR/calls")" = 1
+  grep -F 'Review follow-up: #20' "$GH_STUB_DIR/live-body" "$DV_STATE/P-1/report.md"
+  dv 'done' P-1
+  # Land rechecks the follow-up using a disposable worktree and the gh stub.
+  git -C "$REPO" checkout -qb fixture-base
+  git -C "$REPO" worktree add -q "$DV_WORK/land" feature
+  jq --arg wt "$DV_WORK/land" '.worktree=$wt' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/P-1/meta"
+  dv land P-1
+  test -f "$GH_STUB_DIR/merged"
+  jq -e '.milestone==null' "$GH_STUB_DIR/followup"
+  jq -e '.state=="MERGED"' "$DV_STATE/P-1/land-result.json"
+}
 case_review_followup_source() {
   # A job moved to another host keeps its key with a suffix; the follow-up
   # still depends on the issue the PR closes.
