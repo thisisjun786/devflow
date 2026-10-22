@@ -23,6 +23,7 @@
     "lib/self-update.sh": ["update_*"],
     "lib/stack.sh": ["stack_*", "land_*", "pr_ready", "base_merge"],
     "lib/stall.sh": ["stall_*", "failed_stall_race", "clean_resume_*", "appserver_*", "task_exec_stall", "exec_silence", "metrics_stall_overlap", "watch_stuck*"],
-    "lib/task.sh": ["task_*", "symlink_task_land", "clean_resume_task*", "send_branch_*", "exec_land_*", "appserver_*", "revive_*"]
+    "lib/task.sh": ["task_*", "symlink_task_land", "clean_resume_task*", "send_branch_*", "exec_land_*", "appserver_*", "revive_*"],
+    "lib/tmp.sh": ["tmp_*", "appserver_*", "qa_*", "host_*"]
   }
 }
