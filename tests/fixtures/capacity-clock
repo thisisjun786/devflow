@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# BASH_ENV: advance only provider-wait time, never RPC/stall/liveness deadlines.
+# shellcheck disable=SC2317,SC2329
+date() {
+  case " ${FUNCNAME[*]} " in
+    *' capacity_poll '*|*' capacity_wait '*)
+      if [ "$*" = +%s ] && [ -f "$CASE_DIR/capacity-time" ]; then cat "$CASE_DIR/capacity-time"; return; fi ;;
+  esac
+  command date "$@"
+}
+# The production wait still polls its persisted deadline. Accelerating sleep
+# makes the fake clock controllable without waiting minutes in the fixture.
+# shellcheck disable=SC2317,SC2329
+sleep() {
+  case " ${FUNCNAME[*]} " in
+    *' capacity_wait '*) command sleep 0.05 ;;
+    *) command sleep "$@" ;;
+  esac
+}
