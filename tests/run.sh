@@ -19,7 +19,7 @@ setup() {
   export DV_AUTO_UPDATE=0
   # Unrelated tests must not depend on the runner's current CPU/memory pressure.
   # Capacity cases override these budgets and supply synthetic host samples.
-  export DV_MAX_JOBS=8 DV_TARGET_LOAD=1000000 DV_MIN_MEMORY_MB=0 DV_AUTOFILL_REPOS=''
+  export DV_MAX_JOBS=8 DV_TARGET_LOAD=1000000 DV_MIN_MEMORY_MB=0 DV_AUTOFILL_REPOS='' DV_HOST_CAPACITY_WINDOW=86400
   export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5 DV_APPSERVER_TIMEOUT=1
   unset DV_MODE
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF DV_CAPACITY_MAX_WAIT
@@ -31,6 +31,10 @@ setup() {
   export GH_STUB_DIR="$CASE_DIR/gh" PATH="$ROOT/tests/fixtures:$ROOT/bin:$PATH"
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
   mkdir -p "$GH_STUB_DIR" "$DV_STATE" "$DV_WORK" "$DV_HOME"
+  # Unrelated cases use a premeasured synthetic cap; learner cases replace it.
+  mkdir -p "$DV_STATE/.host-capacity"
+  jq -cn --arg host "$DV_HOST" --argjson cores "$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)" \
+    '{version:1,host:$host,cores:$cores,learned_cap:8,computed_at:0,sample_count:0,curve:[]}' > "$DV_STATE/.host-capacity/cap.json"
   printf '[]\n' > "$GH_STUB_DIR/reviews"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
@@ -1516,7 +1520,7 @@ case_bid_readonly() {
   dv bid --json --repo "$REPO" --agent codex | jq -e '.free_slots==1'
   DV_AGENT_CMD_codex='' DV_CODEX_BIN=false dv bid --json --repo "$REPO" --agent codex | jq -e '.status=="rejected" and (.agent_ready|not)'
   dv bid --json --repo "$CASE_DIR/missing" --agent codex | jq -e '.status=="rejected" and (.repo_cloned|not)'
-  DV_MAX_JOBS='' dv bid --json --repo "$REPO" --agent codex | jq -e '.capacity==([1,(.cores/8|floor)]|max)'
+  DV_MAX_JOBS='' dv bid --json --repo "$REPO" --agent codex | jq -e '.max_jobs==null and .capacity==.learned_cap'
 }
 case_submit_spread() {
   bidding_hosts
@@ -1532,8 +1536,9 @@ case_submit_spread() {
   wait_file "$DV_HOME/submissions/BID-4/bids.json"
   wait_task BID-4 submitted
   # Repeated local ticks never rebid an all-full queue.
-  sleep 0.5; cp "$CASE_DIR/ssh.calls" "$CASE_DIR/calls.before"
-  sleep 0.5; cmp "$CASE_DIR/calls.before" "$CASE_DIR/ssh.calls"
+  sleep 0.5; awk '/dv (bid|_award) /' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.before"
+  sleep 0.5; awk '/dv (bid|_award) /' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.after"
+  cmp "$CASE_DIR/calls.before" "$CASE_DIR/calls.after"
   host=$(jq -r .host "$DV_HOME/submissions/BID-1/task.json")
   DV_CONFIG="$CASE_DIR/hosts/$host/config" dv 'done' BID-1
   wait_task BID-1 completed; wait_task BID-4 working
@@ -1919,6 +1924,8 @@ source "$ROOT/tests/host.sh"
 source "$ROOT/tests/autofill.sh"
 # shellcheck source=tests/host-capacity.sh
 source "$ROOT/tests/host-capacity.sh"
+# shellcheck source=tests/learned-capacity.sh
+source "$ROOT/tests/learned-capacity.sh"
 # shellcheck source=tests/delivery.sh
 source "$ROOT/tests/delivery.sh"
 # shellcheck source=tests/pr-body.sh
@@ -1972,6 +1979,10 @@ source "$ROOT/tests/capacity.sh"
 main() {
 if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
 pass=0; skip=0; fail=0
+for name in learned_percentile learned_active_floor learned_window learned_readonly learned_idle learned_seeds learned_unknown_resources; do
+  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+done
 for name in capacity_load capacity_memory capacity_award capacity_start capacity_headroom capacity_task capacity_launch_reservation autofill_submit autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence autofill_cancel_event autofill_label_event qa_merge_commit_event; do
   if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi

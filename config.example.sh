@@ -67,8 +67,9 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_AUTOFILL_REPOS=}" # manager: space-separated owner/repo allowlist; empty disables
 # DV_AUTOFILL_BRIEF_owner_repo=/path/brief.md (lowercase; / . - become _).
 # Default template: enabled repo's .devflow/brief.md on its default branch.
-: "${DV_MAX_JOBS:=}" # host ceiling; empty = max(1, floor(logical cores / 8))
-: "${DV_TARGET_LOAD:=1.2}" # load5/cores budget; reserve one core per effective slot
+: "${DV_MAX_JOBS:=}" # optional upper bound on the measured host cap
+: "${DV_TARGET_LOAD:=1.2}" # p75 load5/cores threshold and live overload guard
+: "${DV_HOST_CAPACITY_WINDOW:=86400}" # recent sample window; recompute once per hour
 : "${DV_MIN_MEMORY_MB:=512}" # available memory reserved per effective slot; 0 disables
 : "${DV_MIN_DISK_GB:=15}" # work/cache free GiB; reject either below this, penalize below 2x
 : "${DV_CACHE_TRIM_DAYS:=2}" # trim Go build files not accessed for this many days

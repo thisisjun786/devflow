@@ -155,6 +155,8 @@ autofill_snapshot() {
   local work=$1
   jq -n --slurpfile ready "$work/ready.json" --slurpfile bids "$work/bids.json" --slurpfile errors "$work/errors.json" --argjson at "$(now)" '
     ($bids[0] | group_by(.host) | map({host:.[0].host,
+      learned_cap:(map(.learned_cap // .effective_slots // .capacity)|max),
+      capacity_model:(map(.capacity_model // null)|map(select(.!=null))|first // null),
       effective_slots:(map(.effective_slots // .capacity)|max),running:(map(.active)|max),
       free_slots:([.[]|select(.status=="submitted")|.free_slots]|max // 0),
       reasons:([.[]|select(.reason!="")|.reason]|unique)})) as $hosts |
@@ -290,8 +292,8 @@ autofill_summary() (
     mv "$work/next" "$work/summary.json"
   fi
   if [ "${1:-}" = --json ]; then cat "$work/summary.json"
-  else jq -r '"HOST\tEFFECTIVE SLOTS\tRUNNING\tFREE\tREASON",
-    (.hosts[]|[.host,.effective_slots,.running,.free_slots,(.reasons|join("; "))]|@tsv),
+  else jq -r '"HOST\tLEARNED CAP\tEFFECTIVE SLOTS\tRUNNING\tFREE\tREASON",
+    (.hosts[]|[.host,.learned_cap,.effective_slots,.running,.free_slots,(.reasons|join("; "))]|@tsv),
     "ready-but-not-started=\(.ready_not_started) free=\(.free_slots) reason=\(.reason)",
     (.ready[] | "\(.repo)#\(.number): \(.reason); last attempt: \(.last_attempt_reason // "none")"),
     (.errors[]|"\(.repo): \(.reason)")' "$work/summary.json"; fi

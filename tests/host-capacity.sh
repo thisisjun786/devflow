@@ -6,6 +6,7 @@ capacity_fixture() {
   export DV_AGENT_READY_codex=true DV_AGENT_CMD_codex='' DV_CODEX_MODE=exec
   printf '{"cores":8,"load5":16,"memory_available_mb":8192,"disk_available_gb":100}\n' > "$CASE_DIR/resources"
   bid_resources() { cat "$CASE_DIR/resources"; }
+  jq -cn --arg host "$DV_HOST" '{version:1,host:$host,cores:8,learned_cap:6,computed_at:0,sample_count:0,curve:[]}' > "$DV_STATE/.host-capacity/cap.json"
 }
 case_capacity_load() {
   capacity_fixture
@@ -44,11 +45,11 @@ case_capacity_headroom() {
   printf '{"status":"running"}\n' > "$DV_STATE/RUNNING-1/meta"
   printf '{"status":"running"}\n' > "$DV_STATE/RUNNING-2/meta"
   jq '.load5=4.1' "$CASE_DIR/resources" > "$CASE_DIR/next"; mv "$CASE_DIR/next" "$CASE_DIR/resources"
-  cmd_bid --json | jq -e '.active==2 and .effective_slots==5 and .free_slots==3'
+  cmd_bid --json | jq -e '.active==2 and .learned_cap==6 and .effective_slots==6 and .free_slots==4'
   jq '.load5=7' "$CASE_DIR/resources" > "$CASE_DIR/next"; mv "$CASE_DIR/next" "$CASE_DIR/resources"
-  cmd_bid --json | jq -e '.active==2 and .effective_slots==2 and .free_slots==0'
+  cmd_bid --json | jq -e '.active==2 and .effective_slots==6 and .free_slots==4'
   jq '.load5=16' "$CASE_DIR/resources" > "$CASE_DIR/next"; mv "$CASE_DIR/next" "$CASE_DIR/resources"
-  cmd_bid --json | jq -e '.active==2 and .effective_slots==0 and .free_slots==0'
+  cmd_bid --json | jq -e '.active==2 and .effective_slots==2 and .free_slots==0'
   test -f "$DV_STATE/RUNNING-1/meta"
   test -f "$DV_STATE/RUNNING-2/meta"
 }

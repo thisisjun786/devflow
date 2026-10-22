@@ -280,6 +280,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   reap
   qa_recover
   pulls
+  host_capacity_tick >> "$DV_HOME/autofill.log" 2>&1 || true
   if [ $(( $(now) - last_disk )) -ge "$disk_tick" ]; then
     disk_start
     last_disk=$(now)

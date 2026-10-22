@@ -189,7 +189,7 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 관리자 설정에 저장소를 한 번 등록하면 기존 `dv-watch`가 커밋된
 `done`/`landed`/`failed`/`canceled`, `bid-changed`, 이슈 열림·닫힘·label 변경 이벤트에서 빈 호스트 자리를
-채웁니다. idle tick에는 조회하지 않습니다. 시작 시와 기존
+채웁니다. idle tick에는 GitHub 준비 이슈를 조회하지 않습니다. 시작 시와 기존
 `DV_RECONCILE_INTERVAL`(기본 1800초) 안전 점검만 누락 이벤트를 보완하며,
 체크별 timer나 daemon을 추가하지 않습니다. 예:
 
@@ -242,18 +242,38 @@ devflow는 PR 생성, QA finding 등록, 입찰 snapshot 변경, 확인된 병�
 
 시온은 lina-os에서 `dv submit ~/code/my-app APP-42 fix-save --brief /path/brief.md`를 실행합니다. `DV_MANAGER_HOST` 기본값은 lina-os이며, 다른 호스트의 submit은 기존 SSH 연결로 관리자에게 브리프 내용을 전송합니다. 개발 호스트에 관리자 방향 SSH 키가 없어도 관리자에서 제출하면 됩니다. `DV_HOSTS`에는 배정 가능한 SSH 별칭을 적고, 모든 호스트에 같은 버전의 dv를 둡니다. 원격 저장소가 있는 로컬 경로는 origin URL로 전달합니다. 각 호스트는 `$DV_REPO_ROOT`(기본 `~/code`)의 같은 이름 clone을 확인하고, 없으면 낙찰 후 clone합니다. 이름이 같은 다른 origin은 덮어쓰지 않습니다. 원격 없는 경로는 해당 경로가 있는 호스트만 입찰합니다.
 
-`dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 호스트별 상한이고 기본값은 `max(1, floor(코어 수 / 8))`입니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`를 사용하며, 다른 CLI는 `DV_AGENT_READY_codex/claude/devin`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
+`dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 학습한 상한에 적용하는 선택적 upper bound이며 기본값은 비어 있습니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`를 사용하며, 다른 CLI는 `DV_AGENT_READY_codex/claude/devin`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
 
-`capacity`와 `effective_slots`는 매 측정 시 다음 최솟값으로 갱신합니다:
-`DV_MAX_JOBS`, `max(0, floor(cores × DV_TARGET_LOAD − load5))`,
-`floor(memory_available_mb / DV_MIN_MEMORY_MB)`.
-`DV_TARGET_LOAD` 기본값은 1.2, `DV_MIN_MEMORY_MB`는 슬롯당 512MiB이며 0이면
-메모리 제한을 끕니다. load5 반영 지연 중에도 동시 시작이 예산을 소진하지 않도록
-관측된 부하 외에 각 admission 슬롯에 1코어와 메모리를 보수적으로 예약합니다.
-`free_slots=max(0, effective_slots−active)`이며 기존 작업은 중단하지 않습니다.
-JSON의 `max_jobs`, `load_slots`, `memory_slots`, `capacity_reason`으로 제한 원인을
-확인할 수 있습니다. 실제 작업의 미래 CPU·메모리 사용량을 보장하는 격리 장치는
-아니며 관측된 자원을 이용한 시작 제한입니다. 과부하·메모리 부족 시 0슬롯도 유효합니다.
+자동 채우기를 활성화한 관리자는 기존 watcher tick마다 각 호스트의 active jobs,
+load5, available memory를 수집합니다. 호스트는 `$DV_STATE/.host-capacity/samples.jsonl`에
+샘플을 기록하고 한 시간마다 모델을 갱신합니다. 별도 timer나 daemon은 없습니다.
+최근 `DV_HOST_CAPACITY_WINDOW`초(기본 24시간, 최소 1시간)의 샘플을 작업 수별로
+묶고, 정렬한 load의 `ceil(0.75 × 샘플 수)`번째 값(p75)이
+`DV_TARGET_LOAD × cores` 이하인 가장 큰 작업 수를 `observed_cap`으로 선택합니다.
+`DV_TARGET_LOAD` 기본값은 1.2입니다. `learned_cap`은 이전 상한보다 시간당 최대
+2까지만 커지고, 현재 active 아래로 내려가지 않습니다. 줄어든 목표(`target_cap`)는
+별도로 보존해 기존 작업이 끝나는 동안 빈자리를 다시 채우지 않습니다. idle 샘플만 있으면 이전
+상한을 보존합니다. 샘플 기록은 매 tick, 비싼 집계·오래된 샘플 정리는 시간당 한 번입니다.
+
+첫 관측 시간에는 [측정된 knee](https://github.com/thisisjun786/devflow/issues/176#issuecomment-6339544059)를
+초기값으로 사용합니다: hx 24코어/14작업, amd·go2 16코어/12작업, gos 8코어/6작업.
+이름과 코어 수가 일치할 때만 적용하며, lina-os는 코어의 절반을 상한으로 남겨 둡니다.
+처음 보는 호스트는 1작업부터 관측하고 기존 실행 작업은 보존합니다. 새 샘플이
+쌓인 뒤에는 초기값 대신 p75 모델을 사용합니다. 관측한 적 없는 더 높은 작업 수를
+임의로 허용하지 않으므로, 측정 이력이 없는 구간의 상한을 스스로 추정하지 않습니다.
+
+`capacity`/`effective_slots`는 학습값, 선택적 `DV_MAX_JOBS`, 관리자 예약 상한,
+`floor(memory_available_mb / DV_MIN_MEMORY_MB)`를 함께 적용합니다. 메모리 기본값은
+슬롯당 512MiB이고 0이면 제한을 끕니다. 현재 load5/cores가 목표 이상이면 새 시작을
+막습니다. 어떤 경우에도 effective slots는 현재 active보다 작지 않으며
+`free_slots=max(0, effective_slots−active)`입니다. 자원 측정 실패는 시작을 거절합니다.
+실행 중인 작업은 종료하지 않으며 미래 CPU·메모리 사용량을 격리하는 장치는 아닙니다.
+
+`dv bid --json`과 `dv queue --summary --json`의 `learned_cap`, `capacity_model`
+(계산 시각·observed cap·p75 곡선·샘플 수), `max_jobs`, `memory_slots`,
+`capacity_reason`으로 근거를 확인합니다. 일반 bid 출력은 기존 다섯 열 뒤에
+learned/effective slots를 덧붙입니다. 모델이나 사용 가능한 슬롯이 바뀌면
+`bid-changed` 이벤트가 refill을 깨우며, 단순한 샘플 추가는 GitHub 재조회를 일으키지 않습니다.
 
 점수는 `100 × 빈 자리/max(1, 수용량) − 20 × load5/코어 + min(64, 남은 메모리/1024) + clone 보너스 20 − 디스크 감점`입니다. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 순으로 진행하며, 점수가 높아도 뒤 그룹이 앞 그룹을 추월하지 않습니다. 같은 그룹에서는 높은 점수가 먼저이고, 기본 관리자(lina-os)에서 동점 순서는 **hx-linux → amd-linux → go2-linux → lina-os → gos-linux**입니다(준 10-20 결정). 조회는 각 그룹 안에서 `DV_HOSTS`에 적힌 순서를 따릅니다. hx·amd·go2·gos 별칭에도 같은 우선순위를 적용합니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 쓰는 최후 후보입니다. 낙찰 호스트는 잠금 안에서 수용량과 디스크를 다시 확인하고 `dv start`를 실행합니다. 직접 `dv start`와 task 시작도 같은 admission 잠금 아래 현재 부하·메모리 슬롯을 재검사합니다.
 

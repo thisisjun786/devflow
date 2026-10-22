@@ -188,12 +188,17 @@ STUB
   test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 2
   dv queue --summary --json | jq -e '.ready_not_started==3 and .free_slots==0 and .running==2'
   for attempt in {1..200}; do
-    if [ "$(cat "$DV_HOME/cursor")" = "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" ]; then break; fi
+    if [ -f "$DV_HOME/autofill/hosts/worker-a.json" ] &&
+      jq -e '.free_slots==0' "$DV_HOME/autofill/hosts/worker-a.json" >/dev/null &&
+      [ "$(cat "$DV_HOME/cursor")" = "$(wc -l < "$DV_HOME/kick.q" | tr -d ' ')" ]; then break; fi
     sleep 0.1
   done
   count=$(wc -l < "$CASE_DIR/autofill/calls")
+  local samples
+  samples=$(wc -l < "$DV_STATE/.host-capacity/samples.jsonl")
   sleep 0.5
   test "$(wc -l < "$CASE_DIR/autofill/calls")" = "$count"
+  test "$(wc -l < "$DV_STATE/.host-capacity/samples.jsonl")" -gt "$samples"
   # No process restart or external fill script: an event frees and fills a slot.
   printf '1\n' > "$CASE_DIR/autofill/free"
   dv-kick 'done' "$(head -n 1 "$CASE_DIR/autofill/awards")" 'fake completion' worker-a fake-head

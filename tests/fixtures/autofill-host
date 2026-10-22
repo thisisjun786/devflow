@@ -16,6 +16,9 @@ while [ "$#" -gt 0 ]; do
 done
 host=$1; shift
 case "$*" in
+  'dv _host-capacity-sample '*)
+    free=$(cat "$CASE_DIR/autofill/free")
+    jq -cn --argjson free "$free" '{learned_cap:2,effective_slots:2,free_slots:$free,capacity_reason:""}' ;;
   'dv bid '*)
     free=$(cat "$CASE_DIR/autofill/free")
     jq -cn --arg host "$host" --argjson free "$free" \

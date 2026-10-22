@@ -76,6 +76,7 @@ case "$command" in
   _disk-maintain) cmd__disk_maintain "$@" ;;
   _disk-prune) cmd__disk_prune "$@" ;;
   _disk-collect) cmd__disk_collect "$@" ;;
+  _host-capacity-sample) cmd__host_capacity_sample "$@" ;;
   _agent) run_agent "$@" ;;
   _appserver-run) cmd__appserver_run "$@" ;;
   _appserver-watch) cmd__appserver_watch "$@" ;;

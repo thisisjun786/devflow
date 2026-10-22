@@ -117,7 +117,7 @@ case_pr_worker_revive() {
   test -f "$wt/ci-fix" && test -f "$wt/review-fix"
   grep -F 'pr-snapshot.json' "$DV_STATE/PW-1/worker-input"
   jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/PW-1/done.json"
-  jq -se 'all(.[]; .kind=="done") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
+  jq -se 'all(.[]; .kind=="done" or .kind=="pr-opened") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
 }
 case_pr_worker_no_rereview() {
   pr_fixture
@@ -177,7 +177,7 @@ case_pr_worker_native_exec() {
   exec_wait
   jq -e '.backend=="exec" and .exec_status=="done" and .status=="ready"' "$DV_STATE/EX-1/meta"
   jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/EX-1/done.json"
-  jq -se 'map(.kind)==["done"]' "$DV_STATE/EX-1/events.log"
+  jq -se 'map(.kind)==["pr-opened","done"]' "$DV_STATE/EX-1/events.log"
   test "$(cat "$DV_STATE/EX-1/stub-count")" = 2
   test ! -d "$DV_STATE/EX-1/revive"
 }

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Contract-net requests live on the manager; bids never write state or clone.
 # shellcheck disable=SC2016
+# shellcheck source=lib/host-capacity.sh
+source "$(dirname "${BASH_SOURCE[0]}")/host-capacity.sh"
 bid_stop_tree() {
   local pid=$1 child
   # Freeze each parent before enumerating children so it cannot fork another
@@ -49,7 +51,7 @@ bid_resources() {
   fi
   cache=$(disk_cache_path) || cache=''
   [ -z "$cache" ] || cache_free=$(disk_available_gb "$cache" || echo null)
-  jq -cn --argjson cores "$cores" --argjson load "${load:-0}" --argjson memory "${memory:-0}" \
+  jq -cn --argjson cores "$cores" --argjson load "${load:-null}" --argjson memory "${memory:-null}" \
     --argjson disk "$(disk_available_gb || echo null)" --arg cache "$cache" --argjson cache_free "$cache_free" \
     '{cores:$cores,load5:$load,memory_available_mb:$memory,disk_available_gb:$disk,
       go_cache_path:(if $cache=="" then null else $cache end),cache_disk_available_gb:$cache_free}'
@@ -106,6 +108,7 @@ bid_agent() {
 }
 bid_settings() {
   disk_settings
+  host_capacity_settings
   [[ "$DV_BID_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_BID_TIMEOUT must be a positive integer'
   [[ "$DV_AWARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_AWARD_TIMEOUT must be a positive integer'
   [[ "$DV_MIN_MEMORY_MB" =~ ^[0-9]+$ ]] || fail 'DV_MIN_MEMORY_MB must be a nonnegative integer'
@@ -115,24 +118,30 @@ bid_settings() {
   fi
 }
 bid_capacity() {
-  local resources=$1 active=$2 ceiling=$DV_MAX_JOBS
+  local resources=$1 active=$2 ceiling=null model reserve=null
   bid_settings
-  [ -n "$ceiling" ] || ceiling=$(jq '[1,(.cores/8|floor)]|max' <<< "$resources")
-  [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
-  # Reserve against measured headroom, including admitted slots whose load or
-  # memory usage may not have appeared in the host sample yet. Never kill jobs
-  # when a later sample lowers capacity below the existing active count.
+  if [ -n "$DV_MAX_JOBS" ]; then
+    [[ "$DV_MAX_JOBS" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
+    ceiling=$DV_MAX_JOBS
+  fi
+  jq -e '(.cores|type=="number" and .>0) and (.load5|type=="number" and .>=0) and
+    (.memory_available_mb|type=="number" and .>=0)' <<< "$resources" >/dev/null || fail 'host resources unavailable'
+  model=$(host_capacity_current "$resources" "$active") || return 1
+  if [ "$DV_HOST" = lina-os ]; then reserve=$(jq '[1,(.cores/2|floor)]|max' <<< "$resources"); fi
   jq --argjson ceiling "$ceiling" --argjson active "$active" --argjson target "$DV_TARGET_LOAD" \
-    --argjson memory "$DV_MIN_MEMORY_MB" '
-    . + {max_jobs:$ceiling,active:$active,target_load:$target,
-      load_slots:([0,(.cores*$target-.load5|floor)]|max),
-      memory_slots:(if $memory==0 then $ceiling else (.memory_available_mb/$memory|floor) end)} |
-    .effective_slots=([.max_jobs,.load_slots,.memory_slots]|min) |
+    --argjson memory "$DV_MIN_MEMORY_MB" --argjson model "$model" --argjson reserve "$reserve" '
+    . + {max_jobs:$ceiling,active:$active,target_load:$target,manager_limit:$reserve,
+      learned_cap:([$active,($model.target_cap // $model.learned_cap)]|max),capacity_model:$model,
+      memory_slots:(if $memory==0 then ($model.target_cap // $model.learned_cap) else (.memory_available_mb/$memory|floor) end)} |
+    .effective_slots=([$active,([.learned_cap,.max_jobs,.manager_limit,.memory_slots,
+      (if .load5>=.cores*$target then $active else null end)]|map(select(.!=null))|min)]|max) |
     .capacity=.effective_slots | .free_slots=([0,(.capacity-.active)]|max) |
     .capacity_reason=(if .memory_available_mb<$memory then "low memory"
-      elif .active>=.max_jobs then "full"
-      elif .load_slots<=.active then "high load"
-      elif .memory_slots<=.active then "low memory" else "" end)' <<< "$resources"
+      elif .load5>=.cores*$target then "high load"
+      elif .max_jobs!=null and .active>=.max_jobs then "full"
+      elif $memory>0 and .memory_slots<=.active then "low memory"
+      elif .manager_limit!=null and .active>=.manager_limit then "manager reserve"
+      elif .free_slots==0 then "learned capacity" else "" end)' <<< "$resources"
 }
 cmd_bid() {
   bid_settings
@@ -168,7 +177,7 @@ cmd_bid() {
     .status=(if .reason=="" then "submitted" else "rejected" end) |
     .score=(100*.free_slots/([1,.capacity]|max) - 20*.load5/.cores + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
       (if $min_disk>0 and $disk!=null then [0,20*(2*$min_disk-$disk)/$min_disk]|max else 0 end))' |
-    if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason]|@tsv'; fi
+    if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason,.learned_cap,.effective_slots]|@tsv'; fi
 }
 cmd_submit() {
   [ "$#" -ge 3 ] || fail 'usage: dv submit REPO ISSUE slug --brief FILE [--agent AGENT] [--mode MODE] [--base BASE]'
