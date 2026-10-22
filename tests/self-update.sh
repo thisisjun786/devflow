@@ -129,6 +129,9 @@ date() {
 sleep() {
   if [ "${0##*/}" = dv-watch ] && [ "$*" = 0.1 ]; then
     local tick
+    # Reconciliation now runs beside the queue. Only advance this test's
+    # synthetic clock after the scheduled scan has actually finished.
+    [ -z "${reconcile_pid:-}" ] || wait "$reconcile_pid"
     tick=$(date +%s)
     touch "$CASE_DIR/tick-$tick"
     while [ "$(date +%s)" = "$tick" ] && [ ! -e "$DV_HOME/stop" ]; do command sleep 0.02; done
