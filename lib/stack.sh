@@ -237,6 +237,25 @@ stack_queue_host() {
 }
 stack_landed_event() {
   case "$(printf '%s\n' "$1" | jq -r .kind)" in landed|done) ;; *) return 0 ;; esac
+  # Remote status takes seconds to minutes per host. The scan only enqueues
+  # durable stack slots (deduplicated by id), so run it beside the queue
+  # instead of holding the cursor; status reconciliation remains the backstop.
+  # One scan at a time; an event during a scan asks for one more pass.
+  touch "$DV_HOME/stack-scan.again"
+  # A lock left by a killed watcher has no live owner; take it over.
+  if [ -d "$DV_HOME/stack-scan.lock" ] && ! kill -0 "$(cat "$DV_HOME/stack-scan.lock/pid" 2>/dev/null || echo 0)" 2>/dev/null; then
+    rm -rf "$DV_HOME/stack-scan.lock"
+  fi
+  if mkdir "$DV_HOME/stack-scan.lock" 2>/dev/null; then
+    (
+      printf '%s\n' "$BASHPID" > "$DV_HOME/stack-scan.lock/pid"
+      trap 'rm -rf "$DV_HOME/stack-scan.lock"' EXIT
+      while rm "$DV_HOME/stack-scan.again" 2>/dev/null; do stack_landed_scan || true; done
+    ) >> "$DV_HOME/stack.log" 2>&1 &
+  fi
+  return 0
+}
+stack_landed_scan() {
   local host rows result=0
   # Scan each configured host; dependency PRs are always resolved in the
   # candidate's own repository. Unrelated landed events cannot bypass a base.
