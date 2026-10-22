@@ -2105,6 +2105,8 @@ case "$3" in
 esac
 STUB
   chmod +x "$CASE_DIR/runner-bin/bash"
+  # Each case has its own process; changes in other cases cannot leak here.
+  # shellcheck disable=SC2031
   export PATH="$CASE_DIR/runner-bin:$PATH"
 }
 case_runner_contract() {
@@ -2114,7 +2116,7 @@ case_runner_contract() {
   # Listing must not execute even one case or emit a test summary.
   test ! -e "$CASE_DIR/executed"
   test -s "$CASE_DIR/all"
-  ! grep -vE '^[a-z][a-z0-9_]*$' "$CASE_DIR/all"
+  if grep -vE '^[a-z][a-z0-9_]*$' "$CASE_DIR/all"; then return 1; fi
   test "$(sort "$CASE_DIR/all" | uniq -d | wc -l | tr -d ' ')" = 0
   : > "$CASE_DIR/union"
   for shard in 1 2 3 4 5 6; do
@@ -2152,7 +2154,7 @@ case_runner_selection() {
   "$shell" "$ROOT/tests/run.sh" --list --changed-files "$CASE_DIR/changes" > "$CASE_DIR/selected"
   grep -Fx metrics_cli "$CASE_DIR/selected"
   grep -Fx capacity_classifier "$CASE_DIR/selected"
-  ! grep -Fx qa_landed "$CASE_DIR/selected"
+  if grep -Fx qa_landed "$CASE_DIR/selected"; then return 1; fi
   : > "$CASE_DIR/union"
   for shard in 1 2 3 4 5 6; do
     "$shell" "$ROOT/tests/run.sh" --list --shard "$shard/6" --changed-files "$CASE_DIR/changes" >> "$CASE_DIR/union"
@@ -2279,7 +2281,9 @@ main() {
   local list=false changes='' shard=1 total=1 value names name index=0 result
   local pass=0 skip=0 fail=0
   if [ "${1:-}" = --case ]; then
-    [ "$#" = 2 ] && declare -F "case_$2" >/dev/null || { runner_error 'expected --case NAME with a known case'; return 2; }
+    if [ "$#" != 2 ] || ! declare -F "case_$2" >/dev/null; then
+      runner_error 'expected --case NAME with a known case'; return 2
+    fi
     setup; "case_$2"; return
   fi
   while [ "$#" -gt 0 ]; do
