@@ -89,7 +89,7 @@ task_submit() {
   printf '%s task %s\n' "$ISSUE" "$WT"
 }
 task_manifest() (
-  local out=$1 report=$2 path digest tmp
+  local out=$1 report=$2 path digest tmp has_content=0
   if [ ! -d "$out" ] || [ -L "$out" ]; then fail 'task out/ is missing or is a symlink'; fi
   if [ ! -s "$report" ] || [ ! -f "$report" ] || [ -L "$report" ]; then
     fail 'task report.md is missing, empty or is a symlink'
@@ -102,9 +102,11 @@ task_manifest() (
   find "$out" -type f -print0 > "$tmp.paths" || exit 1
   [ -s "$tmp.paths" ] || fail 'task out/ has no deliverables'
   while IFS= read -r -d '' path; do
+    if [ -s "$path" ]; then has_content=1; fi
     digest=$(task_hash < "$path") || exit 1
     jq -cn --arg path "${path#"$out/"}" --arg digest "$digest" '{path:$path,sha256:$digest}' >> "$tmp" || exit 1
   done < "$tmp.paths"
+  [ "$has_content" = 1 ] || fail 'task out/ has only empty files'
   digest=$(task_hash < "$report") || exit 1
   jq -cs --arg report "$digest" '{files:sort_by(.path),report_sha256:$report}' "$tmp"
 )
