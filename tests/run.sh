@@ -1658,9 +1658,13 @@ case_submit_spread() {
   jq -s -e '[.[].host]|unique|length==3' "$DV_HOME"/submissions/BID-{1,2,3}/task.json
   wait_file "$DV_HOME/submissions/BID-4/bids.json"
   wait_task BID-4 submitted
-  # Repeated local ticks never rebid an all-full queue.
-  sleep 0.5; cp "$CASE_DIR/ssh.calls" "$CASE_DIR/calls.before"
-  sleep 0.5; cmp "$CASE_DIR/calls.before" "$CASE_DIR/ssh.calls"
+  # Repeated local ticks never rebid an all-full queue. Status and other
+  # background observations are independent of scheduling.
+  sleep 0.5; sed -n '/ dv bid /p' "$CASE_DIR/ssh.calls" > "$CASE_DIR/bids.before"
+  # The background safety net may still observe hosts while bidding is idle.
+  ssh -n hx-linux 'dv status --json' > "$CASE_DIR/status-observation"
+  sleep 0.5; sed -n '/ dv bid /p' "$CASE_DIR/ssh.calls" > "$CASE_DIR/bids.after"
+  cmp "$CASE_DIR/bids.before" "$CASE_DIR/bids.after"
   host=$(jq -r .host "$DV_HOME/submissions/BID-1/task.json")
   DV_CONFIG="$CASE_DIR/hosts/$host/config" dv 'done' BID-1
   wait_task BID-1 completed; wait_task BID-4 working

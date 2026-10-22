@@ -9,7 +9,9 @@ watcher_teardown() {
   done
   if [ -f "$DV_STATE/P-1/pr-wait.pid" ]; then
     pid=$(cat "$DV_STATE/P-1/pr-wait.pid")
-    [ "$pid" = "$$" ] || kill "$pid" 2>/dev/null || true
+    # Detached waiters can still publish metadata while handling TERM.
+    # Keep their state directory until that process has actually stopped.
+    [ "$pid" = "$$" ] || teardown_stop_pidfile "$DV_STATE/P-1/pr-wait.pid" || return 1
   fi
   teardown
 }
