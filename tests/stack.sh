@@ -214,6 +214,28 @@ case_stack_reconcile() {
   stack_watch; stack_await 2 '.stack_resume.status=="sent"'
   stack_green 2; stack_await 2 '.status=="landed"'; stack_stop
 }
+case_stack_queue_concurrent() {
+  # Reconciliation and a landed scan may publish the same stack slot at once:
+  # exactly one slot, no shared temp file, and no recreation once seen.
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  stack_waiting 2
+  local rows; rows=$(dv status --json)
+  touch "$DV_HOME/seen"
+  ROWS=$rows DV_ENTRY="$ROOT/bin/dv" bash -s <<'CONCURRENT'
+set -euo pipefail
+source "$ROOT/lib/common.sh"
+source "$ROOT/lib/stack.sh"
+mkdir -p "$DV_HOME/pending"
+pids=""; for _ in 1 2 3 4 5 6 7 8; do stack_queue_host test-host "$ROWS" & pids="$pids $!"; done
+for p in $pids; do wait "$p"; done # every producer must succeed
+test "$(find "$DV_HOME/pending" -name 'stack-*.json' | wc -l | tr -d ' ')" = 1
+test "$(find "$DV_HOME/pending" -name 'stack-*.json.*' | wc -l | tr -d ' ')" = 0
+slot=$(find "$DV_HOME/pending" -name 'stack-*.json'); id=$(jq -r .id "$slot")
+rm "$slot"; printf '%s\n' "$id" >> "$DV_HOME/seen"
+stack_queue_host test-host "$ROWS"
+test "$(find "$DV_HOME/pending" -name 'stack-*.json' | wc -l | tr -d ' ')" = 0
+CONCURRENT
+}
 case_stack_checks() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   stack_waiting 2; dv land S-1
