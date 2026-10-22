@@ -179,6 +179,7 @@ case_revive_goal_no_done() {
   export DV_DEVIN_BIN="$ROOT/tests/fixtures/revived-agent" DV_REVIVE_TEST_NO_DONE=1
   dv send RV-1 'finish the current request'
   revive_wait
+  test -f "$RV_STATE/trust-enter"
   for _ in {1..100}; do
     if jq -se 'any(.[]; .kind=="blocked")' "$RV_STATE/events.log" >/dev/null; then break; fi
     sleep 0.05

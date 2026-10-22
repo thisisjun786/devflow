@@ -910,11 +910,26 @@ case_question_cli_off() { case_question_cli off; }
 question_setup() {
   repo questions; herdr_setup
   export DV_BLOCKED_GRACE=1
+  if [ "${1:-codex}" = codex ]; then
+    # Use the ordinary award startup receipt. A held provider alone does not
+    # prove the goal observer has finished before the test changes its screen.
+    export DV_AWARD_TOKEN="question-$$"
+  fi
   mkdir -p "$CASE_DIR/herdr"
   touch "$CASE_DIR/herdr/question-mode"
   if [ "${QUESTION_LATE_DETECTION:-0}" = 1 ]; then touch "$CASE_DIR/herdr/late-detection"; fi
   dv start "$REPO" Q-1 questions --agent "${1:-codex}"
-  wait_file "$DV_STATE/Q-1/held.pid"
+  local marker deadline=$((SECONDS + DV_START_WAIT * 2)) markers=("$DV_STATE/Q-1/held.pid")
+  if [ "${1:-codex}" = codex ]; then markers+=("$DV_STATE/Q-1/agent.started"); fi
+  for marker in "${markers[@]}"; do
+    while [ ! -f "$marker" ]; do
+      [ "$SECONDS" -lt "$deadline" ] || { printf 'Startup did not finish: %s\n' "$marker" >&2; return 1; }
+      sleep 0.05
+    done
+  done
+  if [ -s "$DV_STATE/Q-1/events.log" ]; then
+    jq -se 'all(.[]; .kind!="failed")' "$DV_STATE/Q-1/events.log"
+  fi
   qdir="$CASE_DIR/herdr/w-Q-1"
 }
 question_state() {
@@ -2292,6 +2307,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+  question_goal_start_ack \
   exec_send_slow_completion \
   appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
   review_source_moved review_source_named review_source_numeric review_source_meta review_source_invalid_meta review_source_unknown review_source_start teardown_wait_host_agent \

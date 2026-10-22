@@ -161,6 +161,29 @@ case_question_during_grace() {
   test "$(question_count)" = 1
   question_finish
 }
+case_question_goal_start_ack() {
+  # Hold the startup observer while the fake agent reaches its held state.
+  # Question mutations must wait until that observer accepts goal startup.
+  cat > "$CASE_DIR/slow-herdr" <<'HERDR'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = 'pane read' ]; then sleep 2; fi
+exec "$ROOT/tests/fixtures/herdr" "$@"
+HERDR
+  chmod +x "$CASE_DIR/slow-herdr"
+  cat > "$DV_CONFIG" <<'CONFIG'
+command() {
+  local frame
+  if [ "${1:-} ${2:-}" = '-v herdr' ]; then
+    for frame in "${FUNCNAME[@]}"; do
+      if [ "$frame" = wait_codex_goal ]; then printf '%s\n' "$CASE_DIR/slow-herdr"; return 0; fi
+    done
+  fi
+  builtin command "$@"
+}
+CONFIG
+  case_question_during_grace
+  jq -se 'all(.[]; .kind!="failed")' "$DV_STATE/Q-1/events.log"
+}
 case_question_claude_answered() {
   question_record_setup claude
   jq -cn --arg id "$question_session" '{sessionId:$id,type:"assistant",message:{content:[{type:"tool_use",id:"q1",name:"AskUserQuestion",input:{questions:[{question:"stale"}]}}]}}' > "$claude_record"

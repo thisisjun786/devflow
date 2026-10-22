@@ -40,6 +40,7 @@ elif [ "$agent" = codex ] && [[ " $* " != *' exec '* ]]; then
     printf 'dv-ready>\n'
     wait_path "$state/goal-input"
   fi
+  printf 'Pursuing goal\n'
 fi
 if [ -f "$CASE_DIR/herdr/question-mode" ]; then
   printf '%s\n' "$PPID" > "$state/wrapper.pid"
