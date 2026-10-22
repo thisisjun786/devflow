@@ -317,7 +317,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
     elif ! grep -Fxq -- "$id" "$DV_HOME/seen" && ! pending_event "$id"; then
       case "$(jq -r .kind <<< "$line")" in
         qa-repository|merged|landed|done|failed|submitted|bid-changed|issue-opened|issue-closed)
-          qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1 ;;
+          if ! qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1; then stall_reason='qa_enqueue failed'; break; fi ;;
       esac
       # Deterministic scheduling is driven by this existing queue, never a bid poll.
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then stall_reason='bid_event failed'; break; fi
