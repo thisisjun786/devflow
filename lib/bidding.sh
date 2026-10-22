@@ -112,23 +112,25 @@ bid_settings() {
 }
 cmd_bid() {
   bid_settings
-  local repo='' agent=$DV_AGENT json=0 resources capacity active ready=false backend=false trust=true root
+  local repo='' agent=$DV_AGENT kind=code json=0 resources capacity active ready=false backend=false trust=true root
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
-      --repo|--agent) [ "$#" -ge 2 ] || fail 'missing bid value'
-        case "$1" in --repo) repo=$2 ;; --agent) agent=$2 ;; esac; shift 2 ;;
+      --repo|--agent|--kind) [ "$#" -ge 2 ] || fail 'missing bid value'
+        case "$1" in --repo) repo=$2 ;; --agent) agent=$2 ;; --kind) kind=$2 ;; esac; shift 2 ;;
       *) fail 'usage: dv bid --json [--repo REPO] [--agent codex|claude|devin]' ;;
     esac
   done
   case "$agent" in codex|claude|devin) ;; *) fail 'unknown agent' ;; esac
   resources=$(bid_resources); capacity=$DV_MAX_JOBS
+  case "$kind" in code|qa) ;; *) fail 'unknown bid kind' ;; esac
   [ -n "$capacity" ] || capacity=$(printf '%s' "$resources" | jq '[1,(.cores/8|floor)]|max')
   [[ "$capacity" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
   active=$(bid_active)
   bid_repo "$repo"
   [ -n "$repo" ] || BID_REPO_OK=true
-  if bid_agent "$agent"; then ready=true; fi
+  if [ "$kind" = qa ] && [ -n "$DV_QA_AGENT_CMD" ]; then ready=true
+  elif bid_agent "$agent"; then ready=true; fi
   if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ -n "$repo" ]; then
     root=$BID_REPO
     if [ "$BID_CLONED" = true ]; then root=$(codex_repo_root "$BID_REPO") || root=''; fi
@@ -138,6 +140,7 @@ cmd_bid() {
   if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then
     case "$(codex_default_mode "$agent")" in auto|exec) backend=true ;; esac
   fi
+  [ "$kind" != qa ] || backend=true
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
     --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" --argjson min_disk "$DV_MIN_DISK_GB" \
@@ -176,7 +179,12 @@ bid_request_valid() {
   jq -e 'type=="object" and (.issue|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9_-]*$")) and
     (.slug|type=="string" and test("^[a-zA-Z0-9][a-zA-Z0-9-]*$")) and (.repo|type=="string" and length>0 and (startswith("-")|not)) and
     (.brief|type=="string") and (.base|type=="string") and
-    ((.agent=="codex" and (.mode=="auto" or .mode=="goal" or .mode=="exec")) or ((.agent=="claude" or .agent=="devin") and .mode=="goal"))' >/dev/null
+    ((.agent=="codex" and (.mode=="auto" or .mode=="goal" or .mode=="exec")) or ((.agent=="claude" or .agent=="devin") and .mode=="goal")) and
+    (if .kind=="qa" then (.agent=="codex" or .agent=="claude") and .qa.remote==.repo and .qa.base==.base and
+      (.qa.repository|type=="string" and test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")) and
+      (.qa.head|type=="string" and test("^[0-9a-f]{40}$")) and
+      (.qa.prs|type=="array" and length>0)
+     else (.kind==null or .kind=="code") end)' >/dev/null
 }
 cmd__submit() {
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || fail 'submit must be received by the manager'
@@ -242,7 +250,7 @@ cmd__receipt() {
 }
 cmd__award() (
   bid_settings
-  local request issue dir token deadline repo agent mode slug base bid rc=0 status head history='' retry=false
+  local request issue dir token deadline repo agent mode slug base bid rc=0 status head history='' retry=false kind
   request=$(cat); printf '%s\n' "$request" | bid_request_valid || fail 'invalid award'
   issue=$(printf '%s\n' "$request" | jq -r .issue)
   token=$(printf '%s\n' "$request" | jq -er '.token|select(type=="string")')
@@ -267,7 +275,8 @@ cmd__award() (
   [ "$(now)" -lt "$deadline" ] || fail 'award expired before admission'
   [ "$retry" = true ] || [ ! -e "$DV_STATE/$issue" ] || fail 'issue already exists on this host'
   repo=$(printf '%s\n' "$request" | jq -r .repo); agent=$(printf '%s\n' "$request" | jq -r .agent)
-  bid=$(cmd_bid --json --repo "$repo" --agent "$agent")
+  kind=$(jq -r '.kind // "code"' <<< "$request")
+  bid=$(cmd_bid --json --repo "$repo" --agent "$agent" --kind "$kind")
   printf '%s\n' "$bid" | jq -e '.status=="submitted"' >/dev/null || { printf '%s\n' "$bid"; exit; }
   [ "$(now)" -lt "$deadline" ] || fail 'award expired before admission'
   # Rejected/expired retries leave the last receipt and state in place.
@@ -280,6 +289,10 @@ cmd__award() (
   printf '%s\n' "$request" > "$dir/request.json"
   printf '%s\n' "$request" | jq -r .brief > "$dir/brief.md"
   printf '%s\n' "$request" | jq '{token,status:"starting"}' > "$dir/receipt.json"
+  if [ "$kind" = qa ]; then
+    qa_award "$request" "$dir"
+    exit
+  fi
   if ! printf '%s\n' "$bid" | jq -e .repo_cloned >/dev/null; then
     mkdir -p "$DV_REPO_ROOT"
     bid_limit "$DV_AWARD_TIMEOUT" git clone -- "$repo" "$(printf '%s\n' "$bid" | jq -r .repo)" >&2 || rc=$?
@@ -338,6 +351,7 @@ bid_hosts() {
 }
 bid_schedule_one() {
   local dir=$1 host repo agent bids rows row token deadline reply rc status rank hosts
+  local kind_args=()
   bid_settings
   jq -e '.status=="submitted"' "$dir/task.json" >/dev/null || return 0
   if jq -e '.host!=null' "$dir/task.json" >/dev/null; then
@@ -358,12 +372,13 @@ bid_schedule_one() {
   # clearing them so an uncertain start cannot be dispatched a second time.
   bid_task_set "$dir" '.attempts=[]' || return
   repo=$(jq -r .repo "$dir/task.json"); agent=$(jq -r .agent "$dir/task.json")
+  if jq -e '.kind=="qa"' "$dir/task.json" >/dev/null; then kind_args=(--kind qa); fi
   bids=$(mktemp "$dir/.bids.XXXXXX")
   hosts=$(bid_hosts | awk '!seen[$0]++')
   for host in $hosts; do
     [[ "$host" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || continue
     if jq -e --arg host "$host" '.attempts|index($host)!=null' "$dir/task.json" >/dev/null; then continue; fi
-    if reply=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" bid --json --repo "$repo" --agent "$agent" < /dev/null 2>> "$dir/dispatch.log") &&
+    if reply=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" bid --json --repo "$repo" --agent "$agent" ${kind_args[@]+"${kind_args[@]}"} < /dev/null 2>> "$dir/dispatch.log") &&
       printf '%s\n' "$reply" | jq -e 'type=="object" and (.score|type=="number") and (.status=="submitted" or .status=="rejected")' >/dev/null 2>&1; then
       case "$host" in hx|hx-linux) rank=0 ;; amd|amd-linux) rank=1 ;; go2|go2-linux) rank=2 ;; lina-os) rank=3 ;; gos|gos-linux) rank=4 ;; *) rank=5 ;; esac
       printf '%s\n' "$reply" | jq -c --arg host "$host" --arg manager "$DV_MANAGER_HOST" --argjson rank "$rank" \
@@ -404,7 +419,7 @@ bid_schedule_one() {
 bid_event() (
   local line=$1 kind issue host dir path head receipt token status event_token
   kind=$(printf '%s\n' "$line" | jq -r .kind)
-  case "$kind" in submitted|done|failed|landed|question) ;; *) exit 0 ;; esac
+  case "$kind" in submitted|done|failed|landed|question|blocked) ;; *) exit 0 ;; esac
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || exit 0
   mkdir -p "$DV_HOME/submissions"
   bid_lock "$DV_HOME/.schedule-lock" || return 1
@@ -416,10 +431,14 @@ bid_event() (
   # Legacy failures have no attempt identity, so only scoped failures can mutate it.
   if [ -f "$dir/task.json" ] && jq -e --arg host "$host" --arg token "$event_token" --arg kind "$kind" \
     '(.status=="working" or .status=="input-required" or (.status=="submitted" and .host!=null)) and
-    ($kind!="failed" or $token!="") and
+    (($kind!="failed" and $kind!="blocked") or $token!="") and
     (if $token!="" then .token==$token else .host==$host end)' "$dir/task.json" >/dev/null; then
     case "$kind" in
       done|landed) bid_task_set "$dir" --arg head "$head" '.status="completed"|.head=$head|del(.reason)' ;;
+      blocked)
+        if jq -e '.kind=="qa"' "$dir/task.json" >/dev/null; then
+          bid_task_set "$dir" '.status="failed"|.reason="QA blocked; inspect its report and log"'
+        fi ;;
       failed)
         token=$(jq -r .token "$dir/task.json")
         host=$(jq -r .host "$dir/task.json")

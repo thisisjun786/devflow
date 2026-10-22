@@ -77,6 +77,8 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_AGENT_READY_devin:=}"
 # DV_CONFIG: config file override (default ~/.config/devflow/config.sh).
 # DV_TEST_TMP: test temporary root (default TMPDIR or /tmp); no live agents/network.
-: "${DV_QA:=0}" # 1: real-use QA after landed; .devflow on merged base may opt in/out
+: "${DV_QA:=0}" # 1: poll enabled manager repositories for base merges; literal .devflow overrides
 : "${DV_QA_AGENT:=codex}" # codex exec or claude (fresh session)
 : "${DV_QA_AGENT_CMD:=}" # optional command receiving the QA prompt path
+: "${DV_QA_COALESCE:=600}" # quiet seconds before bidding one QA for accumulated merges
+: "${DV_QA_BASE:=}" # QA base; empty uses the registered repository's remote default

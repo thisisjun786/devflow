@@ -363,26 +363,41 @@ App Server 시험은 임시 Unix 소켓과 Bash JSON-RPC 스텁을 사용합니�
 
 ## 병합 후 실사용 QA
 
-`DV_QA=1`을 호스트 설정 또는 저장소의 `.devflow`에 두면 `landed` 뒤에
-새 QA 작업이 실행됩니다. 기본값은 `0`입니다. QA는 최신 merged base를 별도
-임시 clone으로 가져와 그 revision의 `.devflow`를 읽습니다. 소유자의 checkout과
-설정은 바꾸지 않습니다. QA 설정은 `DV_QA=1`, `DV_QA_AGENT=claude` 같은
-literal 대입만 읽으며 `.devflow`의 shell 코드를 실행하지 않습니다.
-`DV_QA_AGENT=codex`는 새 Codex exec 세션,
-`claude`는 새 Claude Code 세션입니다. `DV_QA_AGENT_CMD`는 prompt 파일을
-받는 명령으로 시험 또는 별도 실행기에 쓸 수 있습니다.
+`dv manager start <repo>`로 활성화한 GitHub 저장소 중 호스트 설정 또는 그
+checkout의 `.devflow`에 `DV_QA=1`인 저장소를 감시합니다(기본값 `0`).
+`DV_QA_BASE`로 대상 base를 지정하며, 비어 있으면 원격 기본 브랜치를 씁니다.
+설정은 `DV_QA=1`, `DV_QA_AGENT=claude`, `DV_QA_BASE=main` 같은 literal
+대입만 읽고 `.devflow`의 shell 코드는 실행하지 않습니다.
 
-QA 저장소의 승인 기준은 watcher가 보관한 작업 기록입니다. 로컬 landed meta
-또는 원래 제출의 repo·host·head·발급 token과 맞는 이벤트만 받으며, 원격 호스트의
-status/origin 응답으로 저장소를 선택하지 않습니다. 기록 없는 원격 수동 작업은
-QA를 시작하지 않으므로 해당 watcher를 통해 `dv submit`으로 배정하세요.
+watcher는 기존 큐의 `merged`·`landed`·`done`·`failed`·`submitted`·`bid-changed`·
+`issue-opened`·`issue-closed` 이벤트가 처리될 때 GitHub의 병합
+PR을 조회하고, 각 병합 커밋이 설정한 base에 포함됐는지 확인합니다. `gh pr merge`나
+공용 `DV_RECONCILE_INTERVAL`(기본 30분) 점검과 시작 시 복구만 안전망으로 씁니다.
+별도 점검 타이머는 없습니다. 외부 GitHub 알림을 전달하는 기존 연결에서는
+`dv kick merged <ISSUE>`로 병합 확인을 깨울 수 있습니다. 알림이 없는 외부 병합은
+다음 관련 이벤트 또는 느린 안전 점검에서 발견합니다.
+GitHub에서 직접 병합해도 QA를 등록합니다. 승인 기준은 활성 저장소와 base이며,
+개발 작업의 완료 상태나 award token은 필요하지 않습니다. 이벤트나 원격 status가
+새 저장소를 승인할 수 없습니다. API 조회가 실패하면 관측 지점을 보존하고 재시도합니다.
 
-watcher가 저장소마다 한 작업만 실행하고, 실행 중 들어온 병합은 다음 최신
-head 작업 하나로 합칩니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이고
-repo identifier에는 owner, 안전한 repo 이름과 구분용 checksum이 들어갑니다.
-같은 head는 다시 실행하지 않습니다. 개발 task backend와 독립적인 로컬 작업이며
-watcher의 worker 슬롯을 씁니다. `dv qa status --json`은 저장소별 pending/running을,
-`dv status`는 시작한 QA 작업과 결과를 보여 줍니다.
+`DV_QA_COALESCE`(기본 600초) 동안 새 병합이 없으면 모인 PR 전부를 나열한
+QA 하나를 최신 관측 base head에 제출합니다. 실행 중 추가 병합은 다음 요청으로
+보존합니다. 재시작할 때 저장된 관측 지점 이후의 병합을 따라잡으며, 기존 방식으로
+완료한 QA 기록도 초기 관측 지점으로 사용합니다. 첫 QA 기록이 없으면 현재 base의
+병합 이력을 함께 검사합니다. 비활성화한 저장소의 대기 요청은 실행하지 않고 보존합니다.
+
+QA도 일반 작업과 같은 호스트 입찰·admission·`DV_MAX_JOBS` 슬롯을 사용하므로
+서로 다른 저장소는 여러 호스트에서 병렬 실행됩니다. 준비 중인 clone과
+`waiting-capacity`도 자리를 유지합니다. 저장소별 실행 요청은 고정하고, 같은 head의
+작업을 중복 제출하지 않습니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이며
+repo identifier에는 owner, 안전한 repo 이름과 checksum이 들어갑니다.
+`dv qa status --json`은 scheduler의 저장소별 pending/running을,
+각 실행 호스트의 `dv status`는 QA 작업과 결과를 보여 줍니다.
+
+QA는 관측한 head를 별도 임시 clone에 checkout합니다. `DV_QA_AGENT=codex`는
+새 Codex exec 세션, `claude`는 새 Claude Code 세션입니다. `DV_QA_AGENT_CMD`는
+prompt 파일을 받는 시험용 또는 별도 실행기입니다. 소유자의 checkout과 설정은
+바꾸지 않습니다.
 
 QA는 `docs/qa.md`, 없으면 AGENTS.md의 QA 절, README·milestone·설계 문서에서
 여정을 읽습니다. 제품 실행은 임시 HOME·상태 디렉터리와 합성 자료·provider stub만
@@ -409,9 +424,14 @@ finding JSON에는 `title`, `kind` (`bug`/`feature`), `steps`, `expected`, `actu
 manager는 현재 milestone의 열린 `qa` 이슈를 먼저 제출하고, 이들이 닫히고
 pending/running QA가 끝나기 전까지 milestone 완료와 다음 milestone 시작을 보류합니다.
 
-예약·로그는 `$DV_HOME/qa/`, 작업 meta·발견 영수증·보고서는 `$DV_STATE/QA-*/`에
-남습니다. watcher 재시작은 살아 있는 QA를 중복 실행하지 않습니다. 실패한 QA는
-자동 재실행하지 않으며 로그와 임시 clone을 보존합니다. 관리자는 blocked 원인을
-확인해야 합니다. 다음 병합은 새 head를 대상으로 실행할 수 있습니다. QA prompt는
-데이터 격리를 지시하지만 OS sandbox는 아닙니다. 실제 agent/provider QA 품질은
-stub 시험이 보증하지 않습니다.
+관측 지점·대기 요청은 scheduler의 `$DV_HOME/qa/`, 입찰 기록은
+`$DV_HOME/submissions/`, 실행 예약·로그는 실행 호스트의 `$DV_STATE/.qa/`,
+작업 meta·발견 영수증·보고서는 `$DV_STATE/QA-*/`에 남습니다. watcher 재시작은
+살아 있는 QA를 중복 실행하지 않습니다. provider usage limit/capacity 오류는
+#170의 공통 대기 경로로 같은 clone/session에서 재시도하며 정상 복구 횟수를
+소비하지 않습니다. 기본 2분·5분·15분 이후 15분 간격이며,
+`DV_CAPACITY_MAX_WAIT`(기본 6시간)를 넘으면 이유와 함께 blocked로 남습니다.
+다른 실패는 로그와 clone을 보존하여 확인할 수 있고 다음 병합은 새 head를 실행합니다.
+QA prompt는 데이터 격리를 지시하지만 OS sandbox는 아닙니다. 실제 agent/provider
+QA 품질은 stub 시험이 보증하지 않습니다. 독립 QA clone의 `dv clean` 지원은 별도
+후속 과제이며, dirty clone을 자동 삭제하지 않습니다.

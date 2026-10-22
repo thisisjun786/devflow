@@ -3,6 +3,20 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 if [ -f "$GH_STUB_DIR/qa-pr" ]; then
   case "$*" in
+    'api repos/test/repo/commits/'*' --jq .sha')
+      git --git-dir="$CASE_DIR/remote.git" rev-parse "refs/heads/${2##*/}"; exit ;;
+    'api repos/test/repo/pulls?'*)
+      [ ! -f "$GH_STUB_DIR/qa-api-fail" ] || exit 1
+      if [ -f "$GH_STUB_DIR/qa-merges" ]; then jq -s 'sort_by(.merged_at)|reverse' "$GH_STUB_DIR/qa-merges"
+      else
+        head=$(git --git-dir="$CASE_DIR/remote.git" rev-parse "refs/heads/$(jq -r .base.ref "$GH_STUB_DIR/qa-pr")")
+        jq --arg head "$head" '[.+{merge_commit_sha:$head}]' "$GH_STUB_DIR/qa-pr"
+      fi
+      exit ;;
+    'api repos/test/repo/compare/'*)
+      if [ -f "$GH_STUB_DIR/qa-diverged" ]; then printf '{"status":"diverged"}\n'
+      else printf '{"status":"ahead"}\n'; fi
+      exit ;;
     'api repos/test/repo/commits/'*'/pulls')
       count=0
       [ ! -f "$GH_STUB_DIR/qa-pull-count" ] || count=$(cat "$GH_STUB_DIR/qa-pull-count")
@@ -16,7 +30,7 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
         printf 'Unknown JSON field: "closingIssuesReferences"\n' >&2; exit 1
       fi
       jq '{closingIssuesReferences:.data.repository.pullRequest.closingIssuesReferences.nodes}' "$GH_STUB_DIR/qa-graphql"; exit ;;
-    'api repos/test/repo/issues/'*'--jq .milestone // empty')
+    'api repos/test/'*'/issues/'*'--jq .milestone // empty')
       jq -c '.data.repository.pullRequest.closingIssuesReferences.nodes[].milestone // empty' "$GH_STUB_DIR/qa-graphql"; exit ;;
     'api graphql '*)
       [ ! -f "$GH_STUB_DIR/qa-graphql-fail" ] || { printf 'GraphQL unavailable\n' >&2; exit 1; }
@@ -24,7 +38,7 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
       [[ "$*" = *'--paginate'* ]] && [[ "$*" = *'pageInfo'* ]]
       cat "$GH_STUB_DIR/qa-graphql"; exit ;;
     'api --paginate repos/test/repo/issues?state=open&per_page=100') cat "$GH_STUB_DIR/qa-issues"; exit ;;
-    'api --paginate repos/test/repo/issues/'*'/comments?per_page=100') cat "$GH_STUB_DIR/qa-comments"; exit ;;
+    'api --paginate repos/test/'*'/issues/'*'/comments?per_page=100') cat "$GH_STUB_DIR/qa-comments"; exit ;;
     'label create '*) exit ;;
     'issue edit '*) printf 'issue-edit %s\n' "$2" >> "$GH_STUB_DIR/qa-actions"; exit ;;
     'issue comment '*|'pr comment '*)

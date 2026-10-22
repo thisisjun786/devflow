@@ -8,6 +8,17 @@ qa_fixture() {
   watch_fixture
   trap qa_teardown EXIT
   export DV_QA_AGENT_CMD="$ROOT/tests/fixtures/qa-agent" DV_QA=0
+  export DV_QA_COALESCE=0 DV_QA_BASE=main DV_MANAGER_HOST="$DV_HOST" DV_HOSTS="$DV_HOST"
+  export DV_MIN_DISK_GB=0 DV_MIN_MEMORY_MB=0 DV_MAX_JOBS=2
+  export DV_AGENT_READY_codex=true DV_AGENT_READY_claude=true
+  export DV_HERMES_BIN="$ROOT/tests/fixtures/manager-hermes"
+  mkdir -p "$CASE_DIR/hermes"
+  local registered
+  registered="$DV_HOME/managers/$(printf '%s' github.com/test/repo | cksum | awk '{print $1 "-" $2}')"
+  mkdir -p "$registered/pending"
+  jq -n --arg repo "$REPO" '{repo:$repo,identity:"github.com/test/repo",enabled:true,session_id:"qa-manager",agent:"hermes"}' > "$registered/meta.json"
+  export GIT_CONFIG_GLOBAL="$CASE_DIR/qa.gitconfig"
+  git config --file "$GIT_CONFIG_GLOBAL" url."$CASE_DIR/remote.git".insteadOf https://github.com/test/repo.git
   export TMPDIR="$CASE_DIR/tmp"
   mkdir "$TMPDIR"
   printf 'DV_QA=1\n' > "$REPO/.devflow"
@@ -15,8 +26,8 @@ qa_fixture() {
   git -C "$REPO" commit -qm 'enable QA'
   git -C "$REPO" push -q origin main
   mkdir "$DV_STATE/Q-1"
-  jq -n --arg repo "$REPO" '{issue:"Q-1",repo:$repo,worktree:$repo,branch:"feature",base:"main",host:"test-host",status:"landed"}' > "$DV_STATE/Q-1/meta"
-  printf '{"number":7,"base":{"ref":"main"},"merged_at":"today","milestone":{"number":1,"title":"M1"}}\n' > "$GH_STUB_DIR/qa-pr"
+  jq -n --arg repo "$REPO" '{issue:"Q-1",repo:$repo,worktree:$repo,branch:"feature",base:"main",host:"test-host",status:"landed",started:1,agent:"codex"}' > "$DV_STATE/Q-1/meta"
+  printf '{"number":7,"base":{"ref":"main"},"merged_at":"2026-10-22T00:00:00Z","milestone":{"number":1,"title":"M1"}}\n' > "$GH_STUB_DIR/qa-pr"
   printf '[]\n' > "$GH_STUB_DIR/qa-issues"
   printf '[]\n' > "$GH_STUB_DIR/qa-comments"
 }
@@ -25,6 +36,10 @@ qa_event() {
   head=$(git -C "$REPO" rev-parse HEAD)
   jq --arg head "$head" '.head=$head' "$DV_STATE/Q-1/meta" > "$CASE_DIR/meta.tmp"
   mv "$CASE_DIR/meta.tmp" "$DV_STATE/Q-1/meta"
+  jq --arg head "$head" 'if .merge_commit_sha!=null and .merge_commit_sha!=$head then
+    .number+=1 | .merged_at=("2026-10-22T00:00:0"+((.number-7)|tostring)+"Z") else . end | .merge_commit_sha=$head' \
+    "$GH_STUB_DIR/qa-pr" > "$CASE_DIR/qa-pr.tmp"
+  mv "$CASE_DIR/qa-pr.tmp" "$GH_STUB_DIR/qa-pr"
   dv-kick landed Q-1 landed test-host "$head" "$1"
 }
 qa_wait_runs() {
@@ -32,6 +47,10 @@ qa_wait_runs() {
   for _ in {1..200}; do
     if [ -f "$CASE_DIR/qa-runs" ] && [ "$(wc -l < "$CASE_DIR/qa-runs" | tr -d ' ')" = "$count" ]; then return; fi
     sleep 0.1
+  done
+  local diagnostic
+  for diagnostic in "$DV_HOME"/submissions/*/bids.json "$DV_HOME"/submissions/*/dispatch.log "$DV_STATE"/.qa/*/log; do
+    [ ! -f "$diagnostic" ] || cat "$diagnostic" >&2
   done
   cat "$CASE_DIR/watch.log" >&2
   printf 'Expected %s QA agent run(s); no matching run count observed\n' "$count" >&2
@@ -45,7 +64,16 @@ qa_finish() {
     [ -z "$record" ] || break
     sleep 0.1
   done
-  test -n "$record"
+  if [ -z "$record" ]; then cat "$DV_STATE"/QA-*/log >&2; return 1; fi
+  local qa_record qa_finished
+  for _ in {1..200}; do
+    qa_finished=true
+    for qa_record in "$DV_STATE"/QA-*/meta; do
+      [ ! -f "$qa_record" ] || [ -f "${qa_record%/meta}/agent.exit" ] || qa_finished=false
+    done
+    if [ "$qa_finished" = true ] && dv queue --json | jq -e 'all(.[]; .status=="completed" or .status=="failed")' >/dev/null; then break; fi
+    sleep 0.1
+  done
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
 }
 case_qa_landed() {
@@ -66,7 +94,7 @@ case_qa_coalesce() {
   qa_event second
   printf 'third\n' >> "$REPO/base"; git -C "$REPO" commit -qam third; git -C "$REPO" push -q origin main
   qa_event third
-  wait_seen 3
+  qa_wait_events 3
   touch "$CASE_DIR/qa-release"
   qa_wait_runs 2
   qa_finish
@@ -80,7 +108,7 @@ case_qa_optout() {
   git -C "$REPO" commit -qam disable; git -C "$REPO" push -q origin main
   qa_event disabled
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
-  wait_seen 1
+  qa_wait_events 1
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
   test ! -e "$CASE_DIR/qa-runs"
 }
@@ -122,7 +150,7 @@ case_qa_restart() {
   printf 'latest\n' >> "$REPO/base"; git -C "$REPO" commit -qam latest; git -C "$REPO" push -q origin main
   qa_event latest
   dv-watch >> "$CASE_DIR/watch.log" 2>&1 & watcher=$!
-  wait_seen 2
+  qa_wait_events 2
   dv qa status --json | jq -e 'length==1 and .[0].pending and .[0].running'
   test "$(wc -l < "$CASE_DIR/qa-runs" | tr -d ' ')" = 1
   touch "$CASE_DIR/qa-release"
@@ -146,7 +174,7 @@ case_qa_fresh_claude() {
   jq -e '(.args|index("--no-session-persistence")) and ((.args|index("--resume"))==null)' "$CASE_DIR/qa-command"
 }
 case_qa_merged_base() {
-  qa_fixture
+  qa_fixture; export DV_QA_BASE=dev
   # A remote submission need not know the base; the origin default can be a
   # release branch while the merged PR targets the development branch.
   jq '.base=""' "$DV_STATE/Q-1/meta" > "$CASE_DIR/meta.tmp"; mv "$CASE_DIR/meta.tmp" "$DV_STATE/Q-1/meta"
@@ -178,10 +206,9 @@ case_qa_transport_retry() {
   source "$ROOT/lib/manager.sh"
   # shellcheck source=lib/qa.sh
   source "$ROOT/lib/qa.sh"
-  manager_event_repo() { return 1; }
   export DV_HOSTS=remote-host
   mkdir -p "$DV_HOME/submissions/REMOTE-1"
-  jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"completed",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
+  jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"working",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
   jq -e '.repository=="test/repo"' "$DV_HOME"/qa/*/pending.json
 }
@@ -195,11 +222,9 @@ case_qa_recovered_capacity() {
   source "$ROOT/lib/qa.sh"
   local active=0 pids=''
   qa_recover
-  test "$active" = 1
-  # The same runner already tracked as a current child must not count twice.
-  pids=$(cat "$DV_HOME"/qa/*/pid); active=1
-  qa_recover
-  test "$active" = 1
+  test "$active" = 0
+  test "$(bid_active)" = 1
+  DV_MAX_JOBS=1 dv bid --kind qa --json --repo "$REPO" | jq -e '.active==1 and .free_slots==0 and .reason=="full"'
   qa_finish
 }
 case_qa_explicit_match() {
@@ -218,7 +243,7 @@ case_qa_config_data() {
   git -C "$REPO" commit -qam config; git -C "$REPO" push -q origin main
   qa_event config
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
-  wait_seen 1
+  qa_wait_events 1
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
   test ! -e "$CASE_DIR/config-executed"
   test ! -e "$CASE_DIR/qa-runs"
@@ -227,7 +252,6 @@ case_qa_unbound_event() {
   bidding_functions
   # shellcheck source=lib/qa.sh
   source "$ROOT/lib/qa.sh"
-  manager_event_repo() { printf 'https://github.com/attacker/evil.git\n'; }
   export DV_HOSTS=remote-host
   qa_enqueue '{"host":"remote-host","issue":"RCE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"forged"}'
   test ! -d "$DV_HOME/qa"
@@ -239,7 +263,6 @@ case_qa_bound_event() {
   source "$ROOT/lib/manager.sh"
   # shellcheck source=lib/qa.sh
   source "$ROOT/lib/qa.sh"
-  manager_event_repo() { printf 'https://github.com/attacker/evil.git\n'; }
   mkdir -p "$DV_HOME/submissions/REMOTE-1"
   jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"completed",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
