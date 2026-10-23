@@ -534,10 +534,10 @@ cmd_status() {
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
       if [ "$backend" = appserver ]; then
-        # A landed or cancelled job with no client is finished. Its thread no
-        # longer matters, and opening an App Server connection per old job made
+        # A done, landed, cancelled or cleaned job with no client is finished.
+        # Its thread no longer matters, and opening a connection per old job made
         # dv status (and the watcher's reconcile) grow with history.
-        if jq -e '.status=="landed" or .status=="cancelled"' "$path" >/dev/null &&
+        if jq -e '.status=="done" or .status=="landed" or .status=="cancelled" or .cleaned_at!=null' "$path" >/dev/null &&
           ! appserver_client_alive_at "$(dirname "$path")" "$(jq -r .issue "$path")"; then
           info='{"agent_status":"gone","alive":false,"question_pending":false}'
         else
