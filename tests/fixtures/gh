@@ -75,7 +75,17 @@ case "$*" in
     else printf '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[]}}}}}\n'; fi ;;
   'api --paginate repos/'*/issues/*/comments)
     [ ! -f "$GH_STUB_DIR/issue-comments-fail" ] || exit 1
-    if [ -f "$GH_STUB_DIR/issue-comments" ]; then cat "$GH_STUB_DIR/issue-comments"; else printf '[]\n'; fi ;;
+    number=${3%/comments}; number=${number##*/}
+    if [ -f "$GH_STUB_DIR/issue-$number-comments" ]; then cat "$GH_STUB_DIR/issue-$number-comments"
+    elif [ -f "$GH_STUB_DIR/issue-comments" ]; then cat "$GH_STUB_DIR/issue-comments"; else printf '[]\n'; fi ;;
+  'api --method POST repos/'*'/issues/'*'/comments -F body=@'*)
+    [ "$#" = 6 ] || { echo "Unexpected gh call: $*" >&2; exit 1; }
+    number=${4%/comments}; number=${number##*/}
+    file="$GH_STUB_DIR/issue-$number-comments"
+    [ -f "$file" ] || printf '[]\n' > "$file"
+    jq --rawfile body "${6#body=@}" '.+[{id:(length+1),body:$body}]' "$file" > "$file.tmp"
+    mv "$file.tmp" "$file"
+    jq -n --arg number "$number" '{html_url:("https://github.com/test/repo/issues/"+$number+"#issuecomment-1")}' ;;
   'api --paginate repos/'*/reviews)
     [ ! -f "$GH_STUB_DIR/reviews-fail" ] || exit 1
     head=$(git rev-parse HEAD)
@@ -139,6 +149,11 @@ case "$*" in
       esac
       shift 2
     done ;;
+  'api repos/'*'/issues/'[1-9]*)
+    # Prerequisite lookups read one issue fixture each.
+    number=${2##*/}
+    [ "$#" = 2 ] && [ -f "$GH_STUB_DIR/issue-$number.json" ] || { echo "Unexpected gh call: $*" >&2; exit 1; }
+    cat "$GH_STUB_DIR/issue-$number.json" ;;
   'api repos/'*)
     if [ "$#" = 2 ] && [ "$2" = "repos/${GH_STUB_LAND_REPO:-test/repo}" ]; then
       [ ! -f "$GH_STUB_DIR/repo-fail" ] || exit 1
@@ -161,8 +176,19 @@ case "$*" in
     [ ! -f "$GH_STUB_DIR/head-mismatch" ] || head=wrong-head
     body=''; [ ! -f "$GH_STUB_DIR/live-body" ] || body=$(cat "$GH_STUB_DIR/live-body")
     merged_at=''; [ ! -f "$GH_STUB_DIR/merged-at" ] || merged_at=$(cat "$GH_STUB_DIR/merged-at")
-    jq -n --arg body "$body" --arg head "$head" --arg state "$state" --arg merged_at "$merged_at" --slurpfile checks "$GH_STUB_DIR/checks" --slurpfile reviews "$GH_STUB_DIR/reviews" \
-      '{body:$body,number:1,url:"https://github.com/test/repo/pull/1",state:$state,headRefOid:$head,mergedAt:(if $merged_at=="" then null else $merged_at end),baseRefName:"main",statusCheckRollup:$checks[0],reviews:$reviews[0]}' ;;
+    # Optional per-PR maps keyed by number: pr-states, pr-bases, merge-commits.
+    number=${3##*/}; base=main; merge_commit=''
+    if [ -f "$GH_STUB_DIR/pr-states" ]; then
+      value=$(jq -r --arg n "$number" '.[$n] // empty' "$GH_STUB_DIR/pr-states"); [ -z "$value" ] || state=$value
+    fi
+    if [ -f "$GH_STUB_DIR/pr-bases" ]; then
+      value=$(jq -r --arg n "$number" '.[$n] // empty' "$GH_STUB_DIR/pr-bases"); [ -z "$value" ] || base=$value
+    fi
+    [ ! -f "$GH_STUB_DIR/merge-commits" ] || merge_commit=$(jq -r --arg n "$number" '.[$n] // empty' "$GH_STUB_DIR/merge-commits")
+    jq -n --arg body "$body" --arg head "$head" --arg state "$state" --arg merged_at "$merged_at" --arg base "$base" --arg merge_commit "$merge_commit" \
+      --slurpfile checks "$GH_STUB_DIR/checks" --slurpfile reviews "$GH_STUB_DIR/reviews" \
+      '{body:$body,number:1,url:"https://github.com/test/repo/pull/1",state:$state,headRefOid:$head,mergedAt:(if $merged_at=="" then null else $merged_at end),baseRefName:$base,
+        mergeCommit:(if $merge_commit=="" then null else {oid:$merge_commit} end),statusCheckRollup:$checks[0],reviews:$reviews[0]}' ;;
   'pr merge '*) touch "$GH_STUB_DIR/merged" ;;
   *) echo "Unexpected gh call: $*" >&2; exit 1 ;;
 esac

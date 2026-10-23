@@ -228,6 +228,17 @@ reconcile() {
       if ! printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null 2>&1; then continue; fi
       stall_reconcile "$host" "$rows" "$stall_scan_interval" >> "$DV_HOME/reconcile.log" 2>&1 || true
       stack_queue_host "$host" "$rows"
+      # A PR merged or closed outside dv land must not leave its job open.
+      # Runs first so a reconciled job needs no waiter below.
+      while IFS= read -r issue; do
+        [[ "$issue" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || continue
+        if [ "$host" = "$DV_HOST" ]; then
+          dv _pr-reconcile "$issue" >> "$DV_HOME/reconcile.log" 2>&1 || true
+        else
+          remote=$(shell_join dv _pr-reconcile "$issue")
+          ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$remote" >> "$DV_HOME/reconcile.log" 2>&1 || true
+        fi
+      done < <(printf '%s\n' "$rows" | jq -r '.[] | select((.status=="pr" or .status=="ready" or .status=="waiting-base") and .pr!=null) | .issue')
       # Liveness is checked on the issue's host; a PID from another host is
       # meaningless locally. The helper preserves a healthy waiter's lock/log.
       while IFS= read -r issue; do
