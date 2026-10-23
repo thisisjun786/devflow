@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Also register when a case supplies its own BASH_ENV (no-setsid coverage).
+# shellcheck source=tests/process-group.sh
+source "$ROOT/tests/process-group.sh"
 if [ "${1:-}" = --peer ]; then
   # shellcheck source=lib/appserver-transport.sh
   source "$ROOT/lib/appserver-transport.sh"

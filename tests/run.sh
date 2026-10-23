@@ -6,6 +6,9 @@ export ROOT
 setup() {
   CASE_DIR=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-test.XXXXXX")
   export CASE_DIR
+  if [ -n "${DV_TEST_PROCESS_DIR:-}" ]; then
+    printf '%s\n' "$CASE_DIR" > "$DV_TEST_PROCESS_DIR/case-dir"
+  fi
   export DV_TEST_TMP=${DV_TEST_TMP:-${TMPDIR:-/tmp}}
   export TMPDIR="$CASE_DIR/temporary-root"
   mkdir -p "$TMPDIR"
@@ -18,6 +21,9 @@ setup() {
   export DV_CONFIG="$CASE_DIR/config.sh" DV_STATE="$CASE_DIR/state" DV_WORK="$CASE_DIR/work" DV_HOME="$CASE_DIR/home"
   export DV_KICK="$ROOT/bin/dv-kick" DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
+  if [ -n "${DV_TEST_PROCESS_DIR:-}" ]; then
+    printf '%s\n' "$DV_TMUX_SOCKET" > "$DV_TEST_PROCESS_DIR/tmux-socket"
+  fi
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
   export DV_AUTO_UPDATE=0
@@ -36,6 +42,9 @@ setup() {
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
   trap teardown EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  trap 'exit 129' HUP
 }
 teardown_stop_pidfile() {
   local pidfile=$1 pid attempt state
@@ -72,6 +81,10 @@ teardown() {
   # Shutdown handlers can still publish receipts/exited markers after TERM.
   # Preserve their directory if termination cannot be confirmed.
   if [ "$rc" != 0 ]; then printf 'Retained live fixture: %s\n' "$CASE_DIR" >&2; return 1; fi
+  # The supervisor first stops all registered groups, including orphans whose
+  # client.pid has disappeared. Only then may it remove this case's files.
+  if [ -n "${DV_TEST_PROCESS_DIR:-}" ] &&
+    [ "$(cat "$DV_TEST_PROCESS_DIR/case-dir" 2>/dev/null)" = "$CASE_DIR" ]; then return 0; fi
   if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$CASE_DIR"; else rm -rf "$CASE_DIR"; fi
 }
 repo() {
@@ -2105,6 +2118,10 @@ case_task_mixed_files() {
 source "$ROOT/tests/capacity.sh"
 # shellcheck source=tests/heavy.sh
 source "$ROOT/tests/heavy.sh"
+# shellcheck source=tests/process-cleanup.sh
+source "$ROOT/tests/process-cleanup.sh"
+# shellcheck source=tests/process-supervisor.sh
+source "$ROOT/tests/process-supervisor.sh"
 runner_stub() {
   mkdir -p "$CASE_DIR/runner-bin"
   cat > "$CASE_DIR/runner-bin/bash" <<'STUB'
@@ -2202,6 +2219,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+  process_cleanup_pass process_cleanup_fail process_cleanup_timeout process_cleanup_term heavy_descendant_slot \
   tmp_reap tmp_guards tmp_agent tmp_appserver tmp_default tmp_quota tmp_reap_bash32 tmp_appserver_killed tmp_usage tmp_cache pr_body_delayed_wait \
   review_source_moved review_source_named review_source_numeric review_source_meta review_source_invalid_meta review_source_unknown review_source_start teardown_wait_host_agent \
   appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \
@@ -2294,12 +2312,16 @@ runner_select() {
 }
 main() {
   local list=false changes='' shard=1 total=1 value names name index=0 result
-  local pass=0 skip=0 fail=0
+  local pass=0 skip=0 fail=0 runner_case=''
   if [ "${1:-}" = --case ]; then
     if [ "$#" != 2 ] || ! declare -F "case_$2" >/dev/null; then
       runner_error 'expected --case NAME with a known case'; return 2
     fi
-    setup; "case_$2"; return
+    if [ "${DV_TEST_EXECUTE_CASE:-0}" = 1 ]; then
+      unset DV_TEST_EXECUTE_CASE
+      setup; "case_$2"; return
+    fi
+    runner_supervise_case "$2"
   fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -2321,19 +2343,26 @@ main() {
     esac
   done
   names=$(runner_select "$changes") || return
+  trap 'runner_suite_stop 143' TERM
+  trap 'runner_suite_stop 130' INT
+  trap 'runner_suite_stop 129' HUP
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     index=$((index + 1))
     [ "$(((index - 1) % total + 1))" = "$shard" ] || continue
     declare -F "case_$name" >/dev/null || { runner_error "unregistered case function: $name"; return 2; }
     if [ "$list" = true ]; then printf '%s\n' "$name"; continue; fi
-    if bash "$0" --case "$name"; then
+    bash "$0" --case "$name" 9>&- <&0 &
+    # shellcheck disable=SC2031
+    runner_case=$!
+    if wait "$runner_case"; then
       pass=$((pass + 1)); printf 'PASS %s\n' "$name"
     else
       result=$?
       if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
       else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
     fi
+    runner_case=''
   done <<< "$names"
   [ "$list" = false ] || return 0
   printf 'pass=%s skip=%s fail=%s\n' "$pass" "$skip" "$fail"
