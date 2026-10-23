@@ -151,7 +151,7 @@ case_pr_worker_exit_race() {
 mkdir() {
   if [ "${DV_PR_STALE_SEND:-0}" = 1 ] && [ "${command:-}" = send ] &&
     [ "$#" = 1 ] && [ "$1" = "$DV_STATE/PW-1/.operation" ] &&
-    command mkdir "$DV_STATE/PW-1/stale-send-once" 2>/dev/null; then
+    env mkdir "$DV_STATE/PW-1/stale-send-once" 2>/dev/null; then
     printf '%s\n' "$$" > "$DV_STATE/PW-1/stale-send.pid"
     # The other waiter finishes recovery while this send is descheduled before
     # acquiring the issue lock. Resume only after the new wrapper has exited.
@@ -160,7 +160,7 @@ mkdir() {
       sleep 0.05
     done
   fi
-  command mkdir "$@"
+  env mkdir "$@"
 }
 kill() {
   builtin kill "$@" || return $?
@@ -204,7 +204,7 @@ case_pr_worker_exec_missing_pr() {
 }
 case_pr_worker_native_exec() {
   exec_setup pr-loop remote
-  export DV_PR_EARLY_EXIT=1 DV_STALL_AFTER=30
+  export DV_PR_EARLY_EXIT=1
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]\n' > "$GH_STUB_DIR/checks"
   printf '[{"body":"P1: fix the write","path":"file.sh","line":3}]\n' > "$GH_STUB_DIR/comments"
   dv start "$REPO" EX-1 worker

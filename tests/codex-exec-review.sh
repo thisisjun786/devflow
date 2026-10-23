@@ -89,7 +89,6 @@ case_exec_exhausted_rebids() {
 }
 exec_land_setup() {
   exec_setup "${1:-done-hold}" "${2:-}"
-  export DV_STALL_AFTER=30
   dv start "$REPO" EX-1 land
   wait_file "$DV_STATE/EX-1/after-done"
 }

@@ -94,10 +94,17 @@ case_heavy_command() {
   dv heavy -- true
 }
 case_heavy_priority() {
+  local baseline expected actual
+  baseline=$(bash -c 'ps -o nice= -p $$' | tr -d ' ')
+  expected=$((baseline + 10)); [ "$expected" -le 19 ] || expected=19
   dv heavy -- bash -c 'ps -o nice= -p $$' > "$CASE_DIR/nice"
-  test "$(tr -d ' ' < "$CASE_DIR/nice")" -ge 10
+  actual=$(tr -d ' ' < "$CASE_DIR/nice")
+  printf 'nice baseline=%s heavy=%s minimum=%s\n' "$baseline" "$actual" "$expected"
+  test "$actual" -ge "$expected"
   if command -v ionice >/dev/null; then
-    dv heavy -- bash -c 'ionice -p $$' | grep 'best-effort: prio 7'
+    dv heavy -- bash -c 'ionice -p $$' > "$CASE_DIR/ionice"
+    cat "$CASE_DIR/ionice"
+    grep 'best-effort: prio 7' "$CASE_DIR/ionice"
   fi
 }
 case_heavy_config() {

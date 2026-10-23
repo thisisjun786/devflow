@@ -374,7 +374,7 @@ ENV
 task_appserver_setup() {
   task_setup
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
-  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=2 DV_APPSERVER_POLL=1
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_POLL=1
   export DV_TRUSTED_REPOS="$CASE_DIR/Desk project"
   mkdir -p "$CASE_DIR/server" "$HOME/.codex"
   printf 'idle\n' > "$CASE_DIR/server/status"
@@ -386,7 +386,7 @@ case_task_appserver() {
   export DV_CODEX_MODE=auto DV_TASK_APP_TEST_WORK=1
   task_start
   jq -e '.kind=="task" and .backend=="appserver" and .mode=="goal" and .thread_id=="thread-1"' "$DV_STATE/TK-1/meta"
-  wait_file "$CASE_DIR/server/work.done"
+  appserver_wait_work
   local wt head
   wt=$(jq -r .worktree "$DV_STATE/TK-1/meta")
   head=$(jq -r .head "$DV_STATE/TK-1/done.json")

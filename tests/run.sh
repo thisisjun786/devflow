@@ -6,6 +6,13 @@ export ROOT
 setup() {
   CASE_DIR=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-test.XXXXXX")
   export CASE_DIR
+  if [ -n "${DV_TEST_PROCESS_DIR:-}" ]; then
+    printf '%s\n' "$CASE_DIR" > "$DV_TEST_PROCESS_DIR/case-dir"
+  fi
+  export DV_TEST_TMP=${DV_TEST_TMP:-${TMPDIR:-/tmp}}
+  export TMPDIR="$CASE_DIR/temporary-root"
+  mkdir -p "$TMPDIR"
+  unset DV_TMP
   export HOME="$CASE_DIR/agent home"
   export GOCACHE="$HOME/.cache/go-build"
   mkdir -p "$HOME/.claude"
@@ -13,11 +20,25 @@ setup() {
   printf '{"skipDangerousModePermissionPrompt":true}\n' > "$HOME/.claude/settings.json"
   export DV_CONFIG="$CASE_DIR/config.sh" DV_STATE="$CASE_DIR/state" DV_WORK="$CASE_DIR/work" DV_HOME="$CASE_DIR/home"
   export DV_KICK="$ROOT/bin/dv-kick" DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"
-  export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
+  export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_CHECKS_INTERVAL=1
+  if [ -n "${DV_TEST_PROCESS_DIR:-}" ]; then
+    printf '%s\n' "$DV_TMUX_SOCKET" > "$DV_TEST_PROCESS_DIR/tmux-socket"
+  fi
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
   export DV_AUTO_UPDATE=0
-  export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5 DV_APPSERVER_TIMEOUT=1
+  export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5
+  # Ordinary lifecycle tests use the product's deadlines, even on a busy host.
+  # Isolate the defaults so sourcing config cannot change other fixture values.
+  # Cases that exercise timeout behavior select their short deadline explicitly.
+  read -r DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT < <(
+    unset DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT
+    # Checked separately; avoid expanding every setting into test dataflow.
+    # shellcheck source=/dev/null
+    source "$ROOT/config.example.sh"
+    printf '%s %s %s %s %s\n' "$DV_START_WAIT" "$DV_APPSERVER_TIMEOUT" "$DV_STALL_AFTER" "$DV_BID_TIMEOUT" "$DV_AWARD_TIMEOUT"
+  )
+  export DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT
   unset DV_MODE
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF DV_CAPACITY_MAX_WAIT
   unset CODEX_HOME
@@ -31,7 +52,10 @@ setup() {
   printf '"auto"\n' > "$GH_STUB_DIR/reviews"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
-  trap teardown EXIT
+  trap 'teardown "$?"' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  trap 'exit 129' HUP
 }
 teardown_stop_pidfile() {
   local pidfile=$1 pid attempt state
@@ -53,17 +77,58 @@ teardown_stop_pidfile() {
   printf 'Fixture process %s did not stop: %s\n' "$pid" "$pidfile" >&2
   return 1
 }
+# ShellCheck 0.9 does not see the exit status passed by the EXIT trap.
+# Direct fixture teardown calls intentionally default to a successful case.
+# shellcheck disable=SC2120
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
-  local pidfile rc=0
-  for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
+  local pidfile pane_pid rc=0 scan_rc=0 case_result=${1:-0} diagnostic
+  for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$CASE_DIR"/server/work-*.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
     teardown_stop_pidfile "$pidfile" || rc=1
   done
-  if command -v tmux >/dev/null; then tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true; fi
+  if command -v tmux >/dev/null; then
+    # kill-server returns before pane shutdown handlers finish. Observe live
+    # panes on this case's private socket, stop and join them before deleting
+    # any fixture state (including the simulated remote-host state trees).
+    for pane_pid in $(tmux -L "$DV_TMUX_SOCKET" list-panes -a -F '#{pane_pid} #{pane_dead}' 2>/dev/null | awk '$2==0 {print $1}' || true); do
+      pidfile="$CASE_DIR/tmux-pane-$pane_pid.pid"
+      printf '%s\n' "$pane_pid" > "$pidfile"
+      teardown_stop_pidfile "$pidfile" || rc=1
+    done
+    tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true
+  fi
+  # Fake SSH hosts keep native wrappers outside DV_STATE. tmux can return
+  # before those wrappers finish writing their final receipts and logs.
+  for pidfile in "$CASE_DIR"/hosts/*/state/*/agent.pid; do
+    teardown_stop_pidfile "$pidfile" || rc=1
+  done
   # Shutdown handlers can still publish receipts/exited markers after TERM.
   # Preserve their directory if termination cannot be confirmed.
   if [ "$rc" != 0 ]; then printf 'Retained live fixture: %s\n' "$CASE_DIR" >&2; return 1; fi
+  if [ "$case_result" != 0 ] && [ "$case_result" != 77 ]; then
+    # Preserve evidence for rare startup failures instead of losing it at EXIT.
+    for diagnostic in "$DV_STATE"/*/log "$DV_STATE"/*/appserver/outbox/*.receipt "$CASE_DIR/server/requests"; do
+      [ -f "$diagnostic" ] || continue
+      printf 'Failure diagnostic: %s\n' "$diagnostic" >&2
+      tail -c 8192 "$diagnostic" >&2
+      printf '\n' >&2
+    done
+    printf 'Retained failed fixture: %s\n' "$CASE_DIR" >&2
+    touch "$CASE_DIR/.test-failed"
+  fi
+  # Probe errors can be swallowed by host reporting; a rejected scan still fails.
+  if [ -s "$CASE_DIR/host-tmp-scans" ]; then
+    printf 'Forbidden live tmp scan:\n' >&2
+    cat "$CASE_DIR/host-tmp-scans" >&2
+    scan_rc=1
+  fi
+  # The supervisor first stops all registered groups, including orphans whose
+  # client.pid has disappeared. Only then may it remove this case's files.
+  if [ -n "${DV_TEST_PROCESS_DIR:-}" ] &&
+    [ "$(cat "$DV_TEST_PROCESS_DIR/case-dir" 2>/dev/null)" = "$CASE_DIR" ]; then return "$scan_rc"; fi
+  if [ -f "$CASE_DIR/.test-failed" ]; then return "$scan_rc"; fi
   if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$CASE_DIR"; else rm -rf "$CASE_DIR"; fi
+  return "$scan_rc"
 }
 repo() {
   REPO="$CASE_DIR/repo $1"
@@ -121,7 +186,7 @@ tmux() {
     printf 'new-session\n' >> "$CASE_DIR/tmux-start-calls"
     return "$DV_TEST_TMUX_RC"
   fi
-  command tmux "$@"
+  env tmux "$@"
 }
 ENV
   fi
@@ -174,12 +239,12 @@ tmux_fast_completion() {
   fi
   cat > "$CASE_DIR/fast-tmux-env" <<'ENV'
 tmux() {
-  command tmux "$@" || return
+  env tmux "$@" || return
   if [ "${1:-}" = -L ] && [ "${3:-}" = new-session ]; then
     local attempt
     # Delay only the launch reply until the synthetic wrapper has exited.
     for attempt in {1..100}; do
-      if ! command tmux -L "$DV_TMUX_SOCKET" has-session -t =dv-TF-1 2>/dev/null; then return 0; fi
+      if ! env tmux -L "$DV_TMUX_SOCKET" has-session -t =dv-TF-1 2>/dev/null; then return 0; fi
       sleep 0.1
     done
     return 1
@@ -274,6 +339,7 @@ case_pr_public_body() {
   needs_tmux; repo remote remote; start T-41; wait_done T-41
   printf 'Adds the thing.\n\nCloses #41\n' > "$DV_STATE/T-41/pr.md"
   DV_POLISH=0 dv pr T-41
+  wait_pr_ready T-41
   cmp "$DV_STATE/T-41/pr.md" "$GH_STUB_DIR/live-body"
   if grep -q -- "$DV_STATE" "$GH_STUB_DIR/live-body"; then return 1; fi
 }
@@ -578,7 +644,18 @@ case_kick_pull() {
   remote_q="$CASE_DIR/rq/kick.q"
   event() { jq -cn --arg i "$1" --arg m "$2" '{id:("box:"+$i+":done:h"),kind:"done",issue:$i,message:$m,host:"box",head:"h",time:1}'; }
   lines() { if [ -f "$DV_HOME/kick.q" ]; then wc -l < "$DV_HOME/kick.q" | tr -d ' '; else echo 0; fi; }
-  until_lines() { for _ in {1..100}; do [ "$(lines)" = "$1" ] && return 0; sleep 0.1; done; return 1; }
+  until_lines() {
+    local checkpoint
+    for _ in {1..100}; do
+      checkpoint=''
+      if [ -f "$DV_HOME/pull-box.offset" ]; then read -r checkpoint _ < "$DV_HOME/pull-box.offset"; fi
+      # The queue append precedes the reconnect checkpoint. Killing the pull
+      # between them deliberately leaves an uncheckpointed event to replay.
+      if [ "$(lines)" = "$1" ] && [ "$checkpoint" = "${2:-$1}" ]; then return 0; fi
+      sleep 0.1
+    done
+    return 1
+  }
   # Stop only this case's pull (its EXIT trap ends ssh/tail); never pkill by pattern.
   stop_pull() { kill "$!" 2>/dev/null || true; wait "$!" 2>/dev/null || true; }
   { event P-1 ''; event P-2 'two words'; } > "$remote_q"
@@ -598,8 +675,18 @@ case_kick_pull() {
   dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 5; stop_pull
   # A replaced queue (new inode) restarts from its first line.
   event P-6 '' > "$remote_q.new"; mv "$remote_q.new" "$remote_q"
-  dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 6; stop_pull
+  dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 6 1; stop_pull
   jq -se '[.[].issue]==["P-1","P-2","P-3","P-4","P-5","P-6"]' "$DV_HOME/kick.q"
+}
+case_kick_pull_checkpoint() {
+  cat > "$CASE_DIR/delayed-checkpoint-env" <<'ENV'
+mv() {
+  if [ "${2:-}" = "$DV_HOME/pull-box.offset" ]; then env sleep 0.3; fi
+  env mv "$@"
+}
+ENV
+  export BASH_ENV="$CASE_DIR/delayed-checkpoint-env"
+  case_kick_pull
 }
 case_watch_pull() {
   export SSH_FIXTURE_EXEC=1 DV_PULL_HOSTS=box DV_PULL_RETRY=1 DV_WATCH_INTERVAL=0.1
@@ -849,11 +936,26 @@ case_question_cli_off() { case_question_cli off; }
 question_setup() {
   repo questions; herdr_setup
   export DV_BLOCKED_GRACE=1
+  if [ "${1:-codex}" = codex ]; then
+    # Use the ordinary award startup receipt. A held provider alone does not
+    # prove the goal observer has finished before the test changes its screen.
+    export DV_AWARD_TOKEN="question-$$"
+  fi
   mkdir -p "$CASE_DIR/herdr"
   touch "$CASE_DIR/herdr/question-mode"
   if [ "${QUESTION_LATE_DETECTION:-0}" = 1 ]; then touch "$CASE_DIR/herdr/late-detection"; fi
   dv start "$REPO" Q-1 questions --agent "${1:-codex}"
-  wait_file "$DV_STATE/Q-1/held.pid"
+  local marker deadline=$((SECONDS + DV_START_WAIT * 2)) markers=("$DV_STATE/Q-1/held.pid")
+  if [ "${1:-codex}" = codex ]; then markers+=("$DV_STATE/Q-1/agent.started"); fi
+  for marker in "${markers[@]}"; do
+    while [ ! -f "$marker" ]; do
+      [ "$SECONDS" -lt "$deadline" ] || { printf 'Startup did not finish: %s\n' "$marker" >&2; return 1; }
+      sleep 0.05
+    done
+  done
+  if [ -s "$DV_STATE/Q-1/events.log" ]; then
+    jq -se 'all(.[]; .kind!="failed")' "$DV_STATE/Q-1/events.log"
+  fi
   qdir="$CASE_DIR/herdr/w-Q-1"
 }
 question_state() {
@@ -1178,7 +1280,7 @@ case_herdr_cleanup_owner() (
   test ! -d "$question_tmp"; test ! -f "$S/question.pending"
 )
 case_herdr_goal_retry() {
-  repo goal-retry; herdr_setup; export DV_START_WAIT=4
+  repo goal-retry; herdr_setup
   mkdir -p "$CASE_DIR/herdr"
   printf 'retry\n' > "$CASE_DIR/herdr/goal-mode"
   dv start "$REPO" HG-1 native
@@ -1196,7 +1298,26 @@ case_herdr_goal_retry() {
 case_herdr_goal_timeout() {
   repo goal-timeout; herdr_setup; export DV_START_WAIT=2
   mkdir -p "$CASE_DIR/herdr"
+  # Complete each rejected poll before advancing the deadline. A two-second
+  # wall clock can otherwise expire before even the first prompt attempt.
+  cat > "$DV_CONFIG" <<'CONFIG'
+date() {
+  if [ "$*" = +%s ]; then cat "$CASE_DIR/goal-clock"; else command date "$@"; fi
+}
+sleep() {
+  if [ "${FUNCNAME[1]:-}" = inject_goal ] && [ "$*" = 0.2 ]; then
+    local polls
+    polls=$(cat "$CASE_DIR/goal-polls")
+    polls=$((polls + 1))
+    printf '%s\n' "$polls" > "$CASE_DIR/goal-polls"
+    # Include the first not-ready observation and multiple rejected prompts.
+    printf '%s\n' "$((1000 + polls / 2))" > "$CASE_DIR/goal-clock"
+  else command sleep "$@"; fi
+}
+CONFIG
   for mode in never-ready never-accepted; do
+    printf '1000\n' > "$CASE_DIR/goal-clock"
+    printf '0\n' > "$CASE_DIR/goal-polls"
     printf '%s\n' "$mode" > "$CASE_DIR/herdr/goal-mode"
     issue="HG-$mode"
     dv start "$REPO" "$issue" native
@@ -1208,6 +1329,7 @@ case_herdr_goal_timeout() {
     test ! -f "$DV_STATE/$issue/goal-input"
     grep -Fx 'Codex prompt not detected; use dv send to submit /goal.' "$DV_STATE/$issue/log"
     jq -se '[.[]|select(.kind=="failed" and .message=="Codex prompt not detected")]|length==1' "$DV_STATE/$issue/events.log"
+    test "$(cat "$CASE_DIR/goal-clock")" -ge 1002
     if [ "$mode" = never-ready ]; then test ! -f "$CASE_DIR/herdr/w-$issue/goal-attempts"
     else test "$(cat "$CASE_DIR/herdr/w-$issue/goal-attempts")" -gt 1; fi
     dv clean "$issue"
@@ -1239,7 +1361,7 @@ case_herdr_disabled_legacy() {
 herdr_isolated_path() {
   # Exclude user PATH and ~/.local/bin so native tests cannot reach real herdr.
   mkdir -p "$CASE_DIR/path" "$CASE_DIR/empty-home"
-  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed tail wc grep rm touch awk ln; do
+  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed sort tail wc grep rm touch awk ln; do
     ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"
   done
   if [ "${1:-}" = tmux ]; then ln -s "$(command -v tmux)" "$CASE_DIR/path/tmux"; fi
@@ -1489,11 +1611,19 @@ source "$ROOT/tests/codex-startup.sh"
 # shellcheck source=tests/codex-trust.sh
 source "$ROOT/tests/codex-trust.sh"
 
+failed_start_fixture() {
+  # Failed receipt tests must observe wrapper exit before start acknowledges.
+  # Preserve any outer scheduling fault injection used by a regression run.
+  {
+    if [ -n "${BASH_ENV:-}" ]; then printf 'source %q\n' "$BASH_ENV"; fi
+    printf 'source %q\n' "$ROOT/tests/fixtures/failed-start-env"
+  } > "$CASE_DIR/failed-start-env"
+  export BASH_ENV="$CASE_DIR/failed-start-env"
+}
 bidding_hosts() {
   needs_tmux; repo bidding
   export SSH_BIDDING=1 DV_MANAGER_HOST=test-host DV_HOSTS='lina-os go2-linux hx-linux'
   export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1 DV_RECONCILE_INTERVAL=99999
-  export DV_BID_TIMEOUT=2 DV_AWARD_TIMEOUT=3
   local host
   for host in hx-linux go2-linux lina-os; do
     mkdir -p "$CASE_DIR/hosts/$host"
@@ -1533,25 +1663,37 @@ case_bid_readonly() {
 }
 case_submit_spread() {
   bidding_hosts
+  local ticks expected attempt
   # Scores on these real local fake hosts differ slightly; manager is always last.
   dv submit "$REPO" BID-1 one --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-2 two --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-3 three --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-4 four --brief "$CASE_DIR/brief"
-  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  : > "$CASE_DIR/watch-ticks"
+  BASH_ENV="$ROOT/tests/fixtures/watch-tick-env" dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_task BID-1 working; wait_task BID-2 working; wait_task BID-3 working
   test "$(jq -r .host "$DV_HOME/submissions/BID-3/task.json")" = lina-os
   jq -s -e '[.[].host]|unique|length==3' "$DV_HOME"/submissions/BID-{1,2,3}/task.json
   wait_file "$DV_HOME/submissions/BID-4/bids.json"
   wait_task BID-4 submitted
-  # Repeated local ticks never rebid an all-full queue.
-  sleep 0.5; cp "$CASE_DIR/ssh.calls" "$CASE_DIR/calls.before"
-  sleep 0.5
-  # Status and App Server scans may finish asynchronously during these ticks.
-  # Only another bid would violate the all-full queue contract.
-  grep ' dv bid ' "$CASE_DIR/calls.before" > "$CASE_DIR/bids.before"
-  grep ' dv bid ' "$CASE_DIR/ssh.calls" > "$CASE_DIR/bids.after"
-  cmp "$CASE_DIR/bids.before" "$CASE_DIR/bids.after"
+  # bids.json can appear before scheduling commits its cursor. Wait until
+  # all four submissions are handled, then observe two complete idle ticks.
+  for attempt in {1..200}; do
+    [ "$(cat "$DV_HOME/cursor" 2>/dev/null)" = 4 ] && break
+    sleep 0.1
+  done
+  test "$(cat "$DV_HOME/cursor")" = 4
+  grep -E ' dv (bid|_award) ' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.before"
+  ticks=$(wc -l < "$CASE_DIR/watch-ticks"); expected=$((ticks + 2))
+  for attempt in {1..200}; do
+    ticks=$(wc -l < "$CASE_DIR/watch-ticks")
+    [ "$ticks" -ge "$expected" ] && break
+    sleep 0.1
+  done
+  test "$ticks" -ge "$expected"
+  # Status/maintenance RPCs do not constitute a new bid or award.
+  grep -E ' dv (bid|_award) ' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.after"
+  cmp "$CASE_DIR/calls.before" "$CASE_DIR/calls.after"
   host=$(jq -r .host "$DV_HOME/submissions/BID-1/task.json")
   DV_CONFIG="$CASE_DIR/hosts/$host/config" dv 'done' BID-1
   wait_task BID-1 completed; wait_task BID-4 working
@@ -1561,7 +1703,7 @@ case_submit_spread() {
   if dv submit "$REPO" BID-1 one --brief "$CASE_DIR/brief"; then return 1; fi
 }
 case_submit_failover() {
-  bidding_hosts
+  bidding_hosts; failed_start_fixture
   touch "$CASE_DIR/hosts/hx-linux/offline"
   # A launch error (missing base) must not prevent trying another bidder.
   cat >> "$CASE_DIR/hosts/go2-linux/config" <<EOF
@@ -1628,6 +1770,7 @@ case_submit_order_amd_go2() {
 }
 case_submit_timeout() {
   bidding_hosts
+  export DV_BID_TIMEOUT=2
   touch "$CASE_DIR/hosts/hx-linux/hang-bid" "$CASE_DIR/hosts/go2-linux/drop-award"
   dv submit "$REPO" TIME-1 change --brief "$CASE_DIR/brief"
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
@@ -1648,7 +1791,7 @@ case_submit_forward() {
 case_award_capacity() {
   bidding_hosts
   request() {
-    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + 10 ))" \
+    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + DV_AWARD_TIMEOUT ))" \
       '{issue:$issue,repo:$repo,slug:"capacity",agent:"codex",mode:"goal",base:"",brief:"held fake agent",token:$issue,deadline:$deadline}'
   }
   request CAPA-1 | DV_CONFIG="$CASE_DIR/hosts/hx-linux/config" dv _award > "$CASE_DIR/a1" & a1=$!
@@ -1720,7 +1863,7 @@ case_bid_clone() {
   export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$CASE_DIR/remote.git.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/test/repo.git
   dv bid --json --repo https://github.com/test/repo.git --agent codex | jq -e '.status=="submitted" and (.repo_cloned|not)'
   test ! -e "$DV_REPO_ROOT"
-  jq -cn --argjson deadline "$(( $(date +%s) + 10 ))" \
+  jq -cn --argjson deadline "$(( $(date +%s) + DV_AWARD_TIMEOUT ))" \
     '{issue:"CLONE-1",repo:"https://github.com/test/repo.git",slug:"clone",agent:"codex",mode:"goal",base:"",brief:"held fake agent",token:"clone",deadline:$deadline}' |
     DV_AGENT_CMD_codex='exec sleep 30' dv _award | jq -e '.status=="working"'
   test -d "$DV_REPO_ROOT/repo/.git"
@@ -1781,6 +1924,7 @@ case_award_new_round() {
   # failed fake agents race cleanup while writing an unused watcher queue.
   export DV_KICK=true
   local host kind issue saved
+  failed_start_fixture
   export DV_HOSTS='hx-linux go2-linux'
   for kind in 'done' failed landed submitted; do
     issue="ROUND-$kind"
@@ -1884,12 +2028,13 @@ if [ "${1:-}" = start ] && [ -f "$CASE_DIR/delay-start" ]; then
   touch "$CASE_DIR/start-entered"
   exec sleep 30
 fi
+if [ "${1:-}" = start ] && [ "${DV_TEST_AWARD_DELAY:-0}" != 0 ]; then sleep "$DV_TEST_AWARD_DELAY"; fi
 exec "$(dirname "$0")/dv-real" "$@"
 STUB
   chmod +x "$CASE_DIR/tool/bin/dv"
   export DV_ROOT="$CASE_DIR/tool"
   award_request() {
-    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + 10 ))" \
+    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + DV_AWARD_TIMEOUT ))" \
       '{issue:$issue,repo:$repo,slug:"timeout",agent:"codex",mode:"goal",base:"",brief:"fake",token:$issue,deadline:$deadline}'
   }
   touch "$CASE_DIR/delay-start"
@@ -1898,7 +2043,7 @@ STUB
   test -d "$DV_STATE/.admission-lock"
   cp "$DV_STATE/.awards/LOCK-1/receipt.json" "$CASE_DIR/uncertain-receipt"
   rm "$CASE_DIR/delay-start"
-  award_request LOCK-2 | bid_limit 3 bid_rpc "$DV_HOST" _award > "$CASE_DIR/next.json"
+  award_request LOCK-2 | bid_limit "$DV_AWARD_TIMEOUT" bid_rpc "$DV_HOST" _award > "$CASE_DIR/next.json"
   jq -e '.status=="working"' "$CASE_DIR/next.json"
   cmp "$CASE_DIR/uncertain-receipt" "$DV_STATE/.awards/LOCK-1/receipt.json"
   test ! -d "$DV_STATE/.admission-lock"
@@ -1918,6 +2063,10 @@ STUB
   owned_unlock "$DV_STATE/.admission-lock" "$$"
   test ! -e "$DV_STATE/.admission-lock/owner"
   test ! -e "$DV_STATE/.admission-lock/pid-$$"
+}
+case_award_timeout_slow_success() {
+  export DV_TEST_AWARD_DELAY=4
+  case_award_timeout_lock
 }
 bid_without_tmux() {
   cat > "$CASE_DIR/no-tmux-env" <<'NO_TMUX'
@@ -1980,6 +2129,8 @@ source "$ROOT/tests/pr-worker.sh"
 source "$ROOT/tests/self-update.sh"
 # shellcheck source=tests/disk.sh
 source "$ROOT/tests/disk.sh"
+# shellcheck source=tests/tmp.sh
+source "$ROOT/tests/tmp.sh"
 # shellcheck source=tests/stack.sh
 source "$ROOT/tests/stack.sh"
 # shellcheck source=tests/watcher-stuck.sh
@@ -1989,6 +2140,8 @@ source "$ROOT/tests/task.sh"
 task_content_setup() {
   task_setup
   export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state" XDG_CACHE_HOME="$HOME/.cache"
+  # Each case has its own process; another case's subshell cannot affect this setup.
+  # shellcheck disable=SC2031
   export TMPDIR="$CASE_DIR/tmp"
   mkdir -p "$TMPDIR"
   export DV_CODEX_MODE=exec DV_AGENT_CMD_codex=''
@@ -2081,7 +2234,7 @@ case_task_mixed_files() {
   printf 'keep\n' > "$CASE_DIR/destination/TK-1/existing.txt"
   dv land TK-1 --checked "$head"
   landed=$(jq -r .landed_path "$s/meta")
-  test "$landed" = "$CASE_DIR/destination/TK-1-v2"
+  test "$landed" = "$(cd "$CASE_DIR/destination/TK-1-v2" && pwd -P)"
   test "$(cat "$CASE_DIR/destination/TK-1/existing.txt")" = keep
   test -f "$landed/empty.txt" && test ! -s "$landed/empty.txt"
   test -f "$landed/nested/empty.txt" && test ! -s "$landed/nested/empty.txt"
@@ -2094,156 +2247,265 @@ source "$ROOT/tests/capacity.sh"
 source "$ROOT/tests/status-nonblocking.sh"
 # shellcheck source=tests/heavy.sh
 source "$ROOT/tests/heavy.sh"
+# shellcheck source=tests/process-cleanup.sh
+source "$ROOT/tests/process-cleanup.sh"
+# shellcheck source=tests/process-supervisor.sh
+source "$ROOT/tests/process-supervisor.sh"
+runner_stub() {
+  mkdir -p "$CASE_DIR/runner-bin"
+  cat > "$CASE_DIR/runner-bin/bash" <<'STUB'
+#!/bin/bash
+set -eu
+[ "$2" = --case ]
+printf '%s\n' "$3" >> "$CASE_DIR/executed"
+case "$3" in
+  capacity_classifier) exit 77 ;;
+  screen_locale_c) exit "${RUNNER_STUB_FAILURE:-0}" ;;
+esac
+STUB
+  chmod +x "$CASE_DIR/runner-bin/bash"
+  # Each case has its own process; changes in other cases cannot leak here.
+  # shellcheck disable=SC2031
+  export PATH="$CASE_DIR/runner-bin:$PATH"
+}
+case_runner_contract() {
+  local shell=$BASH shard bad count
+  runner_stub
+  "$shell" "$ROOT/tests/run.sh" --list > "$CASE_DIR/all"
+  # Listing must not execute even one case or emit a test summary.
+  test ! -e "$CASE_DIR/executed"
+  test -s "$CASE_DIR/all"
+  if grep -vE '^[a-z][a-z0-9_]*$' "$CASE_DIR/all"; then return 1; fi
+  test "$(sort "$CASE_DIR/all" | uniq -d | wc -l | tr -d ' ')" = 0
+  : > "$CASE_DIR/union"
+  for shard in 1 2 3 4 5 6; do
+    "$shell" "$ROOT/tests/run.sh" --list --shard "$shard/6" > "$CASE_DIR/shard"
+    cat "$CASE_DIR/shard" >> "$CASE_DIR/union"
+    : > "$CASE_DIR/executed"
+    "$shell" "$ROOT/tests/run.sh" --shard "$shard/6" > "$CASE_DIR/result"
+    cmp "$CASE_DIR/shard" "$CASE_DIR/executed"
+    grep -E '^pass=[0-9]+ skip=[01] fail=0$' "$CASE_DIR/result"
+  done
+  sort "$CASE_DIR/all" > "$CASE_DIR/expected"
+  sort "$CASE_DIR/union" > "$CASE_DIR/actual"
+  cmp "$CASE_DIR/expected" "$CASE_DIR/actual"
+  "$shell" "$ROOT/tests/run.sh" --shard 1/1 --list > "$CASE_DIR/single"
+  cmp "$CASE_DIR/all" "$CASE_DIR/single"
+  for bad in 0/6 7/6 1/0 01/6 1/06 1/2/3 x/6 99999999999999999999/6; do
+    if "$shell" "$ROOT/tests/run.sh" --list --shard "$bad"; then return 1; fi
+  done
+  if "$shell" "$ROOT/tests/run.sh" --shard; then return 1; fi
+  if "$shell" "$ROOT/tests/run.sh" --unknown; then return 1; fi
+  if "$shell" "$ROOT/tests/run.sh" --case no_such_case; then return 1; fi
+  : > "$CASE_DIR/executed"
+  if RUNNER_STUB_FAILURE=1 "$shell" "$ROOT/tests/run.sh" --shard 1/1 > "$CASE_DIR/result"; then return 1; fi
+  count=$(wc -l < "$CASE_DIR/all" | tr -d ' ')
+  grep -Fx "pass=$((count - 2)) skip=1 fail=1" "$CASE_DIR/result"
+}
+case_runner_selection() {
+  local shell=$BASH file shard
+  runner_stub
+  "$shell" "$ROOT/tests/run.sh" --list > "$CASE_DIR/all"
+  printf '%s\0' README.md docs/guide.txt skills/example/tool.sh 'docs/a b.md' > "$CASE_DIR/changes"
+  "$shell" "$ROOT/tests/run.sh" --list --changed-files "$CASE_DIR/changes" > "$CASE_DIR/selected"
+  test ! -s "$CASE_DIR/selected"
+  printf '%s\0' lib/metrics.sh > "$CASE_DIR/changes"
+  "$shell" "$ROOT/tests/run.sh" --list --changed-files "$CASE_DIR/changes" > "$CASE_DIR/selected"
+  grep -Fx metrics_cli "$CASE_DIR/selected"
+  grep -Fx capacity_classifier "$CASE_DIR/selected"
+  if grep -Fx qa_landed "$CASE_DIR/selected"; then return 1; fi
+  : > "$CASE_DIR/union"
+  for shard in 1 2 3 4 5 6; do
+    "$shell" "$ROOT/tests/run.sh" --list --shard "$shard/6" --changed-files "$CASE_DIR/changes" >> "$CASE_DIR/union"
+  done
+  sort "$CASE_DIR/selected" > "$CASE_DIR/expected"
+  sort "$CASE_DIR/union" > "$CASE_DIR/actual"
+  cmp "$CASE_DIR/expected" "$CASE_DIR/actual"
+  printf '%s\0' lib/metrics.sh lib/qa.sh lib/metrics.sh > "$CASE_DIR/changes"
+  "$shell" "$ROOT/tests/run.sh" --list --changed-files "$CASE_DIR/changes" > "$CASE_DIR/selected"
+  grep -Fx qa_landed "$CASE_DIR/selected"
+  test "$(sort "$CASE_DIR/selected" | uniq -d | wc -l | tr -d ' ')" = 0
+  for file in bin/dv lib/common.sh lib/not-mapped.sh tests/run.sh tests/fixtures/gh .github/workflows/ci.yml tests/ci-map.json 'unknown path'; do
+    printf '%s\0' "$file" > "$CASE_DIR/changes"
+    "$shell" "$ROOT/tests/run.sh" --list --changed-files "$CASE_DIR/changes" > "$CASE_DIR/selected"
+    cmp "$CASE_DIR/all" "$CASE_DIR/selected"
+  done
+  # An unavailable/empty diff cannot establish a docs-only change.
+  : > "$CASE_DIR/changes"
+  "$shell" "$ROOT/tests/run.sh" --list --changed-files "$CASE_DIR/changes" > "$CASE_DIR/selected"
+  cmp "$CASE_DIR/all" "$CASE_DIR/selected"
+  if "$shell" "$ROOT/tests/run.sh" --list --changed-files "$CASE_DIR/missing"; then return 1; fi
+  printf '%s\n' lib/metrics.sh > "$CASE_DIR/changes"
+  if "$shell" "$ROOT/tests/run.sh" --list --changed-files "$CASE_DIR/changes"; then return 1; fi
+  test ! -e "$CASE_DIR/executed"
+}
+case_runner_mapping() {
+  runner_check_mapping "$ROOT/tests/ci-map.json"
+  jq 'del(.libraries["lib/metrics.sh"])' "$ROOT/tests/ci-map.json" > "$CASE_DIR/map.json"
+  if runner_check_mapping "$CASE_DIR/map.json"; then return 1; fi
+  jq '.libraries["lib/metrics.sh"]=["no_such_case_*"]' "$ROOT/tests/ci-map.json" > "$CASE_DIR/map.json"
+  if runner_check_mapping "$CASE_DIR/map.json"; then return 1; fi
+}
+registered_cases() {
+  printf '%s\n' \
+   status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
+  config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
+  appserver_sender_close \
+  metrics_restart_slow_start \
+  award_timeout_slow_success \
+  capacity_appserver_slow_work \
+  question_goal_start_ack \
+  exec_send_slow_completion \
+  appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
+  process_cleanup_pass process_cleanup_fail process_cleanup_timeout process_cleanup_term process_cleanup_nested heavy_descendant_slot \
+  host_tmp_guard \
+  tmp_reap tmp_guards tmp_agent tmp_appserver tmp_default tmp_quota tmp_reap_bash32 tmp_appserver_killed tmp_usage tmp_cache pr_body_delayed_wait \
+  review_source_moved review_source_named review_source_numeric review_source_meta review_source_invalid_meta review_source_unknown review_source_start teardown_wait_host_agent \
+  appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \
+  send_branch_appserver send_branch_appserver_reconnect send_branch_exec send_branch_tmux send_branch_herdr send_branch_revive send_branch_guards send_branch_missing send_branch_replaced_repo send_branch_replaced_path \
+  heavy_serial heavy_kill heavy_slots heavy_status heavy_command heavy_priority heavy_config heavy_waiter_probe \
+  capacity_classifier capacity_backoff capacity_exec_once capacity_exec_timeout capacity_appserver_once capacity_appserver_timeout capacity_appserver_rpc capacity_appserver_unknown capacity_qa_once capacity_qa_native capacity_qa_timeout capacity_claude capacity_devin capacity_terminal_exit capacity_terminal_timeout capacity_legacy_terminal \
+  land_merged land_merged_recorded_pr land_merged_recorded_done land_merged_mismatch land_merged_base_mismatch land_merged_cleanup_retry land_merged_dirty land_merged_checks land_worker_rule appserver_land_merged_active appserver_land_merged_timeout appserver_land_merged_failed appserver_land_merged_system_error \
+  screen_locale_c screen_locale_utf8 \
+  appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race \
+  task_empty_files_done task_empty_files_land task_mixed_files task_tmux_fast_completion code_tmux_fast_completion code_tmux_fast_revival task_tmux_stale_completion code_tmux_stale_completion task_tmux_socket_failed code_tmux_socket_failed task_tmux_session_missing code_tmux_session_missing task_tmux_new_session_failed code_tmux_new_session_failed task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_launch_race task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace \
+  update_stall_cadence update_cli update_dirty update_landed update_safety update_guard update_offline update_watch_dirty update_host update_managed update_parallel update_timeout update_unrelated update_receipt \
+  disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cache_guard disk_cache_alias_guard disk_cache_canonical disk_cache_newline disk_env_cache_newline disk_home_newline disk_custom_cache disk_go_env_cache disk_separate_filesystems disk_unknown disk_award disk_bsd_stat disk_worktrees disk_host disk_watch disk_start_interval disk_watch_due teardown_wait_client teardown_preserve_live_client \
+  stack_unfinished_auto_land stack_auto_done_guard stack_auto_done_merge stack_resume_done_episode stack_waiting_without_head stack_waiting_clock stack_safety_local stack_resume_headless stack_stalled stack_resume_guards stack_resume_failed stack_resume_interrupted stack_land_requeue stack_land_retry stack_remote_safety stack_wait stack_chain stack_diamond stack_parallel stack_local_body stack_closed_base stack_api_failure stack_dirty stack_remote stack_reconcile stack_queue_concurrent stack_checks stack_push_retry stack_defer stack_dependencies_present stack_dependencies_present_conflict stack_missing_base stack_squash_base stack_rebase_base \
+  appserver_reexec_accepted appserver_reexec_refused appserver_reexec_unknown appserver_legacy_capacity appserver_legacy_budget appserver_legacy_episode appserver_legacy_idle appserver_legacy_done appserver_legacy_inactive appserver_legacy_question appserver_scratch_root appserver_scratch_tmpdir appserver_scratch_long appserver_stale_done_recover appserver_pr_idle_recover appserver_recovery_uncertain appserver_recovery_events appserver_recovery_early_progress appserver_capacity_notification appserver_idle_done appserver_goal_done appserver_idle_blocked appserver_episode appserver_budget appserver_budget_restart appserver_capacity appserver_rate_limit appserver_recovery_guards appserver_start appserver_accepted appserver_refused appserver_unknown appserver_idle_send appserver_states appserver_large_reply appserver_read_partial appserver_status_landed_cheap appserver_failed appserver_retried_error appserver_stall appserver_question appserver_auto appserver_no_goal appserver_clean_guard appserver_reconnect appserver_active_stall appserver_unknown_restart appserver_question_multiple appserver_question_retry appserver_malformed appserver_watch appserver_fallback appserver_exec_override appserver_goal_override appserver_submit_auto appserver_exec appserver_pipeline appserver_pr_pending appserver_preserve_config appserver_detached appserver_detached_fallback appserver_websocket appserver_active_error_send appserver_interrupt_pending appserver_interrupt_timeout appserver_done_refused appserver_done_unknown appserver_land_active \
+  qa_match_unlisted qa_match_closed qa_match_pr qa_match_error qa_match_http_failure qa_title_error_object qa_title_second_page qa_title_page_failure qa_title_page_error qa_title_empty_response qa_title_full_last_page \
+  qa_request_retry qa_empty_reply_retry qa_invalid_reply_retry qa_second_lookup_retry qa_request_blocked qa_empty_reply_blocked qa_base_request_blocked qa_pr_lookup_retry qa_base_lookup_retry qa_pr_lookup_blocked qa_base_lookup_blocked qa_milestone_graphql qa_no_milestone qa_no_milestone_match qa_milestone_blocked qa_milestone_ambiguous qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids qa_transport_retry qa_recovered_capacity qa_explicit_match qa_config_data qa_unbound_event qa_bound_event \
+  metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart metrics_exec metrics_exec_events metrics_manager_batch metrics_manager_fallback metrics_timeout_snapshot metrics_stall_overlap \
+  review_receipt_ambiguous review_receipt_metadata review_receipt_incomplete review_receipt review_receipt_guards review_receipt_findings review_receipt_wait review_receipt_arrives review_summary_new_findings review_summary_latest_low review_summary_complete_low review_legacy_bot stack_review_update stack_review_recover review_clean_summary review_summary_guards review_summary_api_failure review_other_bot review_ci_first review_badges review_current review_summary review_land_missing review_land_latest review_timeout review_rounds review_e2e review_followup review_followup_no_milestone review_followup_source review_retry_arrives review_done_live review_api_failure review_latest_inline pr_worker_stale_recovery pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_revive_policy pr_worker_requires_review pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec \
+  exec_cleanup_success exec_cleanup_failure exec_cleanup_signal exec_exhausted_rebids exec_land_running exec_land_github_running exec_land_failed \
+  exec_success exec_config_flags exec_launch_race exec_nonzero exec_capacity exec_rate exec_silence exec_unfinished exec_retry exec_send exec_working exec_fresh exec_partial exec_followup_unfinished exec_no_terminal \
+  symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_done_capacity revive_orphan_owner revive_orphan_close_failure revive_stale_marker revive_goal_owned_done revive_report_event revive_orphan_workspace revive_manual_done revive_capacity revive_release_event revive_legacy_idle revive_legacy_unknown revive_capacity_status revive_legacy_busy revive_legacy_uncertain revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_worktree_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal \
+  manager_reexec manager_real_conflict manager_real_pending_conflict manager_conflict_restart manager_reserved_collision manager_note_busy watch_stuck_route watch_stuck_bid watch_stack_background_failure watch_stuck_empty watch_stuck_worker manager_collision manager_fallback_collision manager_hash_collision manager_legacy_replay manager_note manager_pool_independent watch_capacity_eight watch_stuck \
+  manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership \
+  pr_wait_caller_killed pr_wait_caller_fallback pr_wait_caller_delayed pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote \
+  codex_allowlist codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid \
+  question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin \
+  claude_stale_server claude_stale_server_empty claude_profile_onboarding claude_profile_trust claude_profile_create claude_profile_invalid claude_trust_mode claude_trust_acl claude_trust_copy_failure claude_profile_start claude_profile_host bid_order_ties bid_order_fallback bid_order_probes bid_order_reject_input bid_order_early_reject bid_order_early_errors claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity admission_owner submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux \
+  stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status \
+  land_squash_only land_merge_only land_rebase_only land_prefer_squash land_prefer_merge land_override_env land_override_repo land_config_stdout land_policy_gh_repo land_policy_pr_url land_override_precedence land_no_methods land_invalid_method land_disallowed_method land_repo_failure land_config_failure land_head_mismatch land_unconfirmed \
+  pr_fallback_body pr_fallback_summary pr_fallback_private_paths pr_fallback_private_hosts pr_fallback_public_tokens pr_fallback_missing pr_fallback_bounded pr_fallback_private_only pr_head_title pr_prepared_body pr_legacy_body pr_patch_title pr_patch_body polish_unreachable polish_unreachable_timeout \
+  runner_contract runner_selection runner_mapping
+}
+
+runner_error() { printf 'tests/run.sh: %s\n' "$*" >&2; return 2; }
+runner_check_mapping() {
+  local mapping=$1 libraries patterns pattern name matched
+  libraries=$(printf '%s\n' "$ROOT"/lib/*.sh | sed "s|^$ROOT/||" | jq -Rsc 'split("\n")[:-1] | sort')
+  jq -e --argjson libraries "$libraries" '
+    type == "object" and
+    (.libraries | type == "object" and (keys == $libraries)) and
+    (.smoke | type == "array" and length > 0) and
+    ([.smoke, .libraries[]] | all(.[];
+      type == "array" and length > 0 and all(.[]; type == "string" and test("^[a-z0-9_*]+$"))))
+  ' "$mapping" >/dev/null || { runner_error 'mapping must cover every lib file with nonempty case patterns'; return 2; }
+  patterns=$(jq -r '[.smoke[], .libraries[][]] | unique[]' "$mapping") || return
+  while IFS= read -r pattern; do
+    matched=false
+    while IFS= read -r name; do
+      # The mapping deliberately contains shell globs, never shell code.
+      # shellcheck disable=SC2053
+      if [[ "$name" = $pattern ]]; then matched=true; break; fi
+    done < <(registered_cases)
+    [ "$matched" = true ] || { runner_error "unmatched case pattern: $pattern"; return 2; }
+  done <<< "$patterns"
+}
+runner_select() {
+  local changes=$1 mapping="$ROOT/tests/ci-map.json" path patterns='' mapped name pattern
+  local full=false seen=false selected=false
+  if [ -z "$changes" ]; then registered_cases; return; fi
+  [ -r "$changes" ] || { runner_error "cannot read changed files: $changes"; return 2; }
+  runner_check_mapping "$mapping" || return
+  # git diff --name-only -z --no-renames preserves spaces/newlines and both
+  # sides of a rename. A malformed/unavailable diff must never skip coverage.
+  while :; do
+    path=''
+    if ! IFS= read -r -d '' path; then
+      [ -z "$path" ] || { runner_error 'changed files must be NUL-delimited'; return 2; }
+      break
+    fi
+    seen=true
+    case "$path" in
+      README|README.*|docs/*|skills/*|*.md) continue ;;
+    esac
+    selected=true
+    if mapped=$(jq -er --arg path "$path" '.libraries[$path] | select(. != null) | .[]' "$mapping"); then
+      patterns="${patterns}${mapped}"$'\n'
+    else
+      full=true
+    fi
+  done < "$changes"
+  if [ "$full" = true ] || [ "$seen" = false ]; then registered_cases; return; fi
+  [ "$selected" = true ] || return 0
+  patterns="${patterns}$(jq -r '.smoke[]' "$mapping")"
+  while IFS= read -r name; do
+    while IFS= read -r pattern; do
+      # shellcheck disable=SC2053
+      if [[ "$name" = $pattern ]]; then printf '%s\n' "$name"; break; fi
+    done <<< "$patterns"
+  done < <(registered_cases)
+}
 main() {
-if [ "${1:-}" = --case ]; then setup; "case_$2"; exit; fi
-pass=0; skip=0; fail=0
-for name in appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in send_branch_appserver send_branch_appserver_reconnect send_branch_exec send_branch_tmux send_branch_herdr send_branch_revive send_branch_guards send_branch_missing send_branch_replaced_repo send_branch_replaced_path; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else
-    result=$?
-    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
-    else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
+  local list=false changes='' shard=1 total=1 value names name index=0 result
+  local pass=0 skip=0 fail=0 runner_case=''
+  if [ "${1:-}" = --case ]; then
+    if [ "$#" != 2 ] || ! declare -F "case_$2" >/dev/null; then
+      runner_error 'expected --case NAME with a known case'; return 2
+    fi
+    if [ "${DV_TEST_EXECUTE_CASE:-0}" = 1 ]; then
+      unset DV_TEST_EXECUTE_CASE
+      setup; "case_$2"; return
+    fi
+    runner_supervise_case "$2"
   fi
-done
-for name in heavy_serial heavy_kill heavy_slots heavy_status heavy_command heavy_priority heavy_config heavy_waiter_probe status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in capacity_classifier capacity_backoff capacity_exec_once capacity_exec_timeout capacity_appserver_once capacity_appserver_timeout capacity_appserver_rpc capacity_appserver_unknown capacity_qa_once capacity_qa_native capacity_qa_timeout capacity_claude capacity_devin capacity_terminal_exit capacity_terminal_timeout capacity_legacy_terminal; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else
-    result=$?
-    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
-    else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-  fi
-done
-for name in land_merged land_merged_recorded_pr land_merged_recorded_done land_merged_mismatch land_merged_base_mismatch land_merged_cleanup_retry land_merged_dirty land_merged_checks land_worker_rule appserver_land_merged_active appserver_land_merged_timeout appserver_land_merged_failed appserver_land_merged_system_error; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in screen_locale_c screen_locale_utf8; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else
-    result=$?
-    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
-    else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-  fi
-done
-for name in task_empty_files_done task_empty_files_land task_mixed_files task_tmux_fast_completion code_tmux_fast_completion code_tmux_fast_revival task_tmux_stale_completion code_tmux_stale_completion task_tmux_socket_failed code_tmux_socket_failed task_tmux_session_missing code_tmux_session_missing task_tmux_new_session_failed code_tmux_new_session_failed task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_launch_race task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else
-    result=$?
-    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
-    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
-  fi
-done
-for name in update_stall_cadence update_cli update_dirty update_landed update_safety update_guard update_offline update_watch_dirty update_host update_managed update_parallel update_timeout update_unrelated update_receipt; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cache_guard disk_cache_alias_guard disk_cache_canonical disk_cache_newline disk_env_cache_newline disk_home_newline disk_custom_cache disk_go_env_cache disk_separate_filesystems disk_unknown disk_award disk_bsd_stat disk_worktrees disk_host disk_watch disk_start_interval disk_watch_due teardown_wait_client teardown_preserve_live_client; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in stack_unfinished_auto_land stack_auto_done_guard stack_auto_done_merge stack_resume_done_episode stack_waiting_without_head stack_waiting_clock stack_safety_local stack_resume_headless stack_stalled stack_resume_guards stack_resume_failed stack_resume_interrupted stack_land_requeue stack_land_retry stack_remote_safety stack_wait stack_chain stack_diamond stack_parallel stack_local_body stack_closed_base stack_api_failure stack_dirty stack_remote stack_reconcile stack_queue_concurrent stack_checks stack_push_retry stack_defer stack_dependencies_present stack_dependencies_present_conflict stack_missing_base stack_squash_base stack_rebase_base; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in appserver_reexec_accepted appserver_reexec_refused appserver_reexec_unknown appserver_legacy_capacity appserver_legacy_budget appserver_legacy_episode appserver_legacy_idle appserver_legacy_done appserver_legacy_inactive appserver_legacy_question appserver_scratch_root appserver_scratch_tmpdir appserver_scratch_long appserver_stale_done_recover appserver_pr_idle_recover appserver_recovery_uncertain appserver_recovery_events appserver_recovery_early_progress appserver_capacity_notification appserver_idle_done appserver_goal_done appserver_idle_blocked appserver_episode appserver_budget appserver_budget_restart appserver_capacity appserver_rate_limit appserver_recovery_guards appserver_start appserver_accepted appserver_refused appserver_unknown appserver_idle_send appserver_states appserver_large_reply appserver_read_partial appserver_status_landed_cheap appserver_failed appserver_retried_error appserver_stall appserver_question appserver_auto appserver_no_goal appserver_clean_guard appserver_reconnect appserver_active_stall appserver_unknown_restart appserver_question_multiple appserver_question_retry appserver_malformed appserver_watch appserver_fallback appserver_exec_override appserver_goal_override appserver_submit_auto appserver_exec appserver_pipeline appserver_pr_pending appserver_preserve_config appserver_detached appserver_detached_fallback appserver_websocket appserver_active_error_send appserver_interrupt_pending appserver_interrupt_timeout appserver_done_refused appserver_done_unknown appserver_land_active; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else
-    result=$?
-    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
-    else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-  fi
-done
-for name in qa_request_retry qa_empty_reply_retry qa_invalid_reply_retry qa_second_lookup_retry qa_request_blocked qa_empty_reply_blocked qa_base_request_blocked qa_pr_lookup_retry qa_base_lookup_retry qa_pr_lookup_blocked qa_base_lookup_blocked qa_milestone_graphql qa_no_milestone qa_no_milestone_match qa_milestone_blocked qa_milestone_ambiguous qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids qa_transport_retry qa_recovered_capacity qa_explicit_match qa_config_data qa_unbound_event qa_bound_event; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
-  else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
-done
-for name in metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart metrics_exec metrics_exec_events metrics_manager_batch metrics_manager_fallback metrics_timeout_snapshot metrics_stall_overlap; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in review_summary_new_findings review_summary_latest_low review_summary_complete_low review_legacy_bot stack_review_update stack_review_recover review_clean_summary review_summary_guards review_summary_api_failure review_other_bot review_ci_first review_badges review_current review_summary review_land_missing review_land_latest review_timeout review_rounds review_e2e review_followup review_retry_arrives review_done_live review_api_failure review_latest_inline pr_worker_stale_recovery pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_revive_policy pr_worker_requires_review pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in exec_cleanup_success exec_cleanup_failure exec_cleanup_signal exec_exhausted_rebids exec_land_running exec_land_github_running exec_land_failed; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in exec_success exec_config_flags exec_launch_race exec_nonzero exec_capacity exec_rate exec_silence exec_unfinished exec_retry exec_send exec_working exec_fresh exec_partial exec_followup_unfinished exec_no_terminal; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
-  else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
-done
-for name in symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_done_capacity revive_orphan_owner revive_orphan_close_failure revive_stale_marker revive_goal_owned_done revive_report_event revive_orphan_workspace revive_manual_done revive_capacity revive_release_event revive_legacy_idle revive_legacy_unknown revive_capacity_status revive_legacy_busy revive_legacy_uncertain revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_worktree_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else
-    result=$?
-    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
-    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
-  fi
-done
-for name in manager_reexec manager_real_conflict manager_real_pending_conflict manager_conflict_restart manager_reserved_collision manager_note_busy watch_stuck_route watch_stuck_bid watch_stack_background_failure watch_stuck_empty watch_stuck_worker manager_collision manager_fallback_collision manager_hash_collision manager_legacy_replay manager_note manager_pool_independent watch_capacity_eight watch_stuck; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf "PASS %s\n" "$name"
-  else fail=$((fail + 1)); printf "FAIL %s\n" "$name"; fi
-done
-for name in manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in pr_wait_caller_killed pr_wait_caller_fallback pr_wait_caller_delayed pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in codex_allowlist codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else
-    result=$?
-    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
-    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
-  fi
-done
-for name in claude_stale_server claude_stale_server_empty claude_profile_onboarding claude_profile_trust claude_profile_create claude_profile_invalid claude_trust_mode claude_trust_acl claude_trust_copy_failure claude_profile_start claude_profile_host bid_order_ties bid_order_fallback bid_order_probes bid_order_reject_input bid_order_early_reject bid_order_early_errors claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity admission_owner submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else
-    result=$?
-    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
-    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
-  fi
-done
-for name in stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status; do
-  if bash "$0" --case "$name"; then
-    pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else
-    result=$?
-    if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
-    else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
-  fi
-done
-for name in land_squash_only land_merge_only land_rebase_only land_prefer_squash land_prefer_merge land_override_env land_override_repo land_config_stdout land_policy_gh_repo land_policy_pr_url land_override_precedence land_no_methods land_invalid_method land_disallowed_method land_repo_failure land_config_failure land_head_mismatch land_unconfirmed; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-for name in pr_fallback_body pr_fallback_summary pr_fallback_private_paths pr_fallback_private_hosts pr_fallback_public_tokens pr_fallback_missing pr_fallback_bounded pr_fallback_private_only pr_head_title pr_prepared_body pr_legacy_body pr_patch_title pr_patch_body polish_unreachable polish_unreachable_timeout; do
-  if bash "$0" --case "$name"; then pass=$((pass + 1)); printf 'PASS %s\n' "$name"
-  else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
-done
-printf 'pass=%s skip=%s fail=%s\n' "$pass" "$skip" "$fail"
-[ "$fail" -eq 0 ]
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --list) list=true; shift ;;
+      --shard)
+        [ "$#" -ge 2 ] || { runner_error 'expected --shard i/n'; return 2; }
+        value=$2
+        # Bound digits before arithmetic, including on 32-bit Bash 3.2.
+        [[ "$value" =~ ^([1-9][0-9]{0,5})/([1-9][0-9]{0,5})$ ]] || { runner_error 'expected --shard i/n (1 <= i <= n <= 999999)'; return 2; }
+        shard=${BASH_REMATCH[1]}; total=${BASH_REMATCH[2]}
+        [ "$shard" -le "$total" ] || { runner_error 'shard index exceeds shard count'; return 2; }
+        shift 2 ;;
+      --changed-files)
+        if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+          runner_error 'expected --changed-files NUL_DELIMITED_FILE'; return 2
+        fi
+        changes=$2; shift 2 ;;
+      *) runner_error "unknown option: $1"; return 2 ;;
+    esac
+  done
+  names=$(runner_select "$changes") || return
+  trap 'runner_suite_stop 143' TERM
+  trap 'runner_suite_stop 130' INT
+  trap 'runner_suite_stop 129' HUP
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    index=$((index + 1))
+    [ "$(((index - 1) % total + 1))" = "$shard" ] || continue
+    declare -F "case_$name" >/dev/null || { runner_error "unregistered case function: $name"; return 2; }
+    if [ "$list" = true ]; then printf '%s\n' "$name"; continue; fi
+    bash "$0" --case "$name" 9>&- <&0 &
+    # shellcheck disable=SC2031
+    runner_case=$!
+    if wait "$runner_case"; then
+      pass=$((pass + 1)); printf 'PASS %s\n' "$name"
+    else
+      result=$?
+      if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
+      else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
+    fi
+    runner_case=''
+  done <<< "$names"
+  [ "$list" = false ] || return 0
+  printf 'pass=%s skip=%s fail=%s\n' "$pass" "$skip" "$fail"
+  [ "$fail" -eq 0 ]
 }
 # shellcheck source=tests/review-loop.sh
 source "$ROOT/tests/review-loop.sh"
