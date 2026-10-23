@@ -2,6 +2,8 @@
 
 시온이 이슈를 잡고, 코딩 에이전트 하나가 worktree 하나에서 개발하는 작은 bash 도구입니다. GitHub는 개발·시험 → CI 초록 → 현재 head의 Codex 리뷰 → P0·P1 수정·push·새 리뷰를 반복합니다. 최신 리뷰에 P0·P1이 없으면 병합하고 P2·P3은 후속 이슈로 남깁니다. 완료는 SSH 이벤트로 알립니다.
 
+dv가 올리는 이슈(리뷰 후속, QA 발견)와 사람·시온이 올리는 이슈는 모두 [이슈 형식](docs/issue-format.md)을 따릅니다.
+
 ## 개발 외 task 작업
 
 Git이 없는 조사·문서·분석 폴더도 백그라운드 작업으로 제출할 수 있습니다.
@@ -262,7 +264,7 @@ revive는 자동 재시작/exec 재시도 횟수, resume은 살아 있는 에이
 
 Codex의 지적 없는 리뷰가 REST review 대신 summary 댓글로 전달되면 현재 head의 code_review 상태가 completed이고 두 findings 플래그가 false인 경우에만 인정합니다. 진행 중·이전 head·보안 리뷰만 있는 요약은 통과하지 않습니다. 기존 DV_REVIEW_BOTS=devin,codex 설정을 보존해도 다른 봇이 Codex 리뷰를 대체하지 못합니다. 자동 stack 병합으로 head가 바뀌면 기존 작업자 재개 경로에서 새 CI·Codex 리뷰·필요한 수정과 done을 완료해야 합니다.
 
-최종 리뷰의 P2·P3은 PR당 후속 이슈 하나로 같은 저장소·원 이슈와 같은 milestone에 기록합니다. 파일:줄·한 줄 지적과 `Depends on #<원 이슈>`를 본문에 적고 report.md와 PR 본문에 후속 번호를 남깁니다. 재실행 시 공개 마커로 기존 이슈를 찾아 중복 생성을 피합니다. P2·P3은 병합을 차단하지 않습니다.
+최종 리뷰의 P2·P3은 PR당 후속 이슈 하나로 같은 저장소·원 이슈와 같은 milestone에 기록합니다. 제목은 첫 지적으로 만든 `fix(<scope>): <지적 제목>`이며 지적이 여럿이면 ` (+N more)`를 붙입니다. 본문은 `## Summary`(지적마다 `- P2 path:line — 제목. 첫 문장.`), `## Done when`, `## Context`(`Depends on #<원 이슈>`, 원 PR 링크, 공개 마커)로 쓰고 badge 이미지와 HTML을 뺍니다. report.md와 PR 본문에 후속 번호를 남깁니다. 재실행 시 공개 마커로 기존 이슈를 찾아 중복 생성을 피합니다. P2·P3은 병합을 차단하지 않습니다.
 
 PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 다시 확인합니다. 실행 중인 체크는 `DV_CHECKS_INTERVAL`(기본 60초) 간격으로 지켜봅니다. GitHub GraphQL 한도는 계정의 모든 작업자가 나눠 쓰므로 짧게 잡지 않습니다. 체크가 초록이 된 뒤 `DV_REVIEW_WAIT`의 Codex 리뷰 제한 시간이 시작됩니다. 리뷰가 없으면 한 번 더 `@codex review`를 요청하고 같은 시간만큼 기다린 뒤 `review-timeout`으로 차단합니다. 시간 초과는 성공이 아닙니다. CI가 아예 없는 PR은 체크 등록을 계속 기다립니다. `dv pr`의 대기자는 Linux에서 `setsid`로 분리하며, `setsid`가 없는 환경에서는 Bash job control로 별도 프로세스 그룹을 만듭니다. `.pr-wait`의 PID 소유자가 죽었으면 다음 대기자가 잠금을 회수합니다. 30분 상태 안전망도 `pr` 상태의 호스트에서 대기자 생존을 확인하고 필요하면 다시 시작합니다.
 
@@ -635,7 +637,9 @@ dv done QA-owner-repo-sha
 ```
 
 finding JSON에는 `title`, `kind` (`bug`/`feature`), `steps`, `expected`, `actual`,
-`evidence` 문자열을 넣습니다. 검색한 기존 이슈가 같은 문제면 숫자 `match`를
+`evidence` 문자열을 넣고, 선택으로 1–3문장 `summary`를 넣습니다. 형식에 맞지 않는
+제목은 GitHub에 쓰기 전에 거절합니다. 새 이슈 본문은 Summary·Steps·Expected·Actual·
+Done when·Context 순서입니다. 검색한 기존 이슈가 같은 문제면 숫자 `match`를
 추가합니다. 등록 명령은 열린 이슈를 다시 확인하고, 같은 제목 또는 지정한 match에는
 댓글을 달며 새 이슈를 중복 생성하지 않습니다. `report.md`를 쓴 뒤 `dv done`을
 실행하면 merged PR에 여정·발견 링크·시험 head를 요약한 댓글 하나를 남깁니다.

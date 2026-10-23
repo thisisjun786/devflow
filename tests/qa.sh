@@ -114,7 +114,7 @@ case_qa_optout() {
 }
 case_qa_duplicate() {
   qa_fixture
-  printf '[{"number":19,"title":"Cannot start a conversation","state":"open","labels":[],"milestone":{"number":1,"title":"M1"}}]\n' > "$GH_STUB_DIR/qa-issues"
+  printf '[{"number":19,"title":"fix(tui): answer the first message","state":"open","labels":[],"milestone":{"number":1,"title":"M1"}}]\n' > "$GH_STUB_DIR/qa-issues"
   export DV_QA_FINDING=1
   qa_event duplicate
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
@@ -130,6 +130,9 @@ case_qa_new_finding() {
   qa_wait_runs 1; qa_finish
   grep 'issue-create' "$GH_STUB_DIR/qa-actions"
   jq -e '.milestone==1 and (.labels|index("qa")) and (.labels|index("bug")) and (.body|contains("Expected"))' "$GH_STUB_DIR/qa-created"
+  # Without a summary field the issue still opens with a Summary section.
+  jq -e '.title=="fix(tui): answer the first message" and
+    (.body|startswith("## Summary\nReal-use QA found that the steps below do not give the expected result.\n\n## Steps\n"))' "$GH_STUB_DIR/qa-created"
 }
 case_qa_batch() {
   qa_fixture
@@ -229,7 +232,7 @@ case_qa_recovered_capacity() {
 }
 case_qa_explicit_match() {
   qa_fixture
-  printf '[{"number":19,"title":"Cannot start a conversation"},{"number":21,"title":"Conversation input stalls"}]\n' > "$GH_STUB_DIR/qa-issues"
+  printf '[{"number":19,"title":"fix(tui): answer the first message"},{"number":21,"title":"Conversation input stalls"}]\n' > "$GH_STUB_DIR/qa-issues"
   export DV_QA_FINDING=1 DV_QA_MATCH=21
   qa_event explicit
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
@@ -416,7 +419,7 @@ case_qa_no_milestone() {
 }
 case_qa_no_milestone_match() {
   qa_no_milestone_fixture
-  printf '[{"number":19,"title":"Cannot start a conversation","milestone":{"number":2,"title":"Existing"}}]\n' > "$GH_STUB_DIR/qa-issues"
+  printf '[{"number":19,"title":"fix(tui): answer the first message","milestone":{"number":2,"title":"Existing"}}]\n' > "$GH_STUB_DIR/qa-issues"
   qa_direct_run
   test "$qa_rc" = 0
   grep 'issue edit 19.*--add-label qa,bug' "$GH_STUB_DIR/calls"
@@ -456,7 +459,7 @@ qa_finding_fixture() {
   printf '[]\n' > "$GH_STUB_DIR/qa-issues"
   printf '[]\n' > "$GH_STUB_DIR/qa-comments"
   printf '{"number":158,"title":"Conversation input stalls","state":"open"}\n' > "$GH_STUB_DIR/qa-issue-158"
-  jq -n '{kind:"bug",title:"Cannot start a conversation",steps:"Type hello",expected:"Response",
+  jq -n '{kind:"bug",title:"fix(tui): answer the first message",steps:"Type hello",expected:"Response",
     actual:"No response",evidence:"Synthetic transcript",match:158}' > "$CASE_DIR/finding.json"
 }
 qa_finding_run() {
@@ -479,7 +482,7 @@ qa_title_fixture() {
 }
 qa_full_page() {
   # PRs count toward the page size, even though they cannot match a finding.
-  jq -n '[range(1;101) | {number:.,title:"Cannot start a conversation",state:"open",pull_request:{url:"synthetic"}}]' > "$GH_STUB_DIR/qa-issues"
+  jq -n '[range(1;101) | {number:.,title:"fix(tui): answer the first message",state:"open",pull_request:{url:"synthetic"}}]' > "$GH_STUB_DIR/qa-issues"
 }
 case_qa_match_unlisted() {
   qa_finding_fixture
@@ -518,7 +521,7 @@ case_qa_title_error_object() {
 case_qa_title_second_page() {
   qa_title_fixture
   qa_full_page
-  jq '[. + {title:"CANNOT START A CONVERSATION"}]' "$GH_STUB_DIR/qa-issue-158" > "$GH_STUB_DIR/qa-page-2"
+  jq '[. + {title:"FIX(TUI): ANSWER THE FIRST MESSAGE"}]' "$GH_STUB_DIR/qa-issue-158" > "$GH_STUB_DIR/qa-page-2"
   qa_finding_run
   test "$qa_rc" = 0
   grep 'issue-comment 158' "$GH_STUB_DIR/qa-actions"
@@ -554,4 +557,31 @@ case_qa_title_full_last_page() {
   test "$qa_rc" = 0
   grep -Fx 'api repos/test/repo/issues?state=open&per_page=100&page=2' "$GH_STUB_DIR/calls"
   test "$(grep -c issue-create "$GH_STUB_DIR/qa-actions")" = 1
+}
+case_qa_finding_format() {
+  qa_title_fixture
+  jq '.summary="The first message gets no reply, so a new user cannot start."' "$CASE_DIR/finding.json" > "$CASE_DIR/summary.json"
+  mv "$CASE_DIR/summary.json" "$CASE_DIR/finding.json"
+  qa_finding_run
+  test "$qa_rc" = 0
+  # The shared issue format: Summary, bug sections, Done when, then Context.
+  jq -e --arg head "$(git -C "$REPO" rev-parse HEAD)" '.title=="fix(tui): answer the first message" and
+    (.body|startswith("## Summary\nThe first message gets no reply, so a new user cannot start.\n\n" +
+      "## Steps\nType hello\n\n## Expected\nResponse\n\n## Actual\nNo response\n\n" +
+      "## Done when\n- [ ] following the steps gives the expected result.\n- [ ] a test covers this case.\n\n" +
+      "## Context\nSource: real-use QA at `"+$head+"`, milestone **M1**\nEvidence: Synthetic transcript\n\n<!-- devflow-qa:QA-FINDING:")) and
+    (.body|test("<!-- devflow-qa:QA-FINDING:[0-9]+-[0-9]+ -->\n$"))' "$GH_STUB_DIR/qa-created"
+}
+case_qa_title_rejected() {
+  local title
+  qa_title_fixture
+  for title in 'Cannot start a conversation' 'fix(tui): Answer the first message' 'bug(tui): answer the first message' \
+    'fix(tui): follow up on review findings' 'fix(tui): answer what PR #12 broke' 'fix(tui): answer the 2026-10-24 message' \
+    "fix(tui): $(printf 'a%.0s' {1..73})"; do
+    jq --arg title "$title" '.title=$title' "$CASE_DIR/finding.json" > "$CASE_DIR/title.json"
+    mv "$CASE_DIR/title.json" "$CASE_DIR/finding.json"
+    qa_finding_run
+    qa_finding_no_writes
+    grep -F 'type(scope): ' "$CASE_DIR/finding.log"
+  done
 }

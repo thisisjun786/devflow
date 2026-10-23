@@ -565,7 +565,13 @@ qa_finding() (
   qa_load "$1"; issue_lock
   local finding=$2 data title kind repository marker match issues body result milestone
   data=$(jq -ce 'select((.kind=="bug" or .kind=="feature") and
-    ([.title,.steps,.expected,.actual,.evidence] | all(.[]; type=="string" and length>0)))' "$finding") || fail 'invalid QA finding'
+    ([.title,.steps,.expected,.actual,.evidence] | all(.[]; type=="string" and length>0)) and
+    (.summary==null or (.summary|type=="string" and length>0)))' "$finding") || fail 'invalid QA finding'
+  # Titles follow docs/issue-format.md; reject before any GitHub read or write.
+  jq -e --arg types "$CHANGE_TYPES|research" '.title | capture("^(\($types))(\\([^()[:space:]]+\\))?: (?<phrase>.+)$") |
+    .phrase | length<=72 and (test("^[[:space:]]|^[A-Z][a-z]")|not) and
+      (test("#[0-9]|[0-9]{4}-[0-9]{2}-[0-9]{2}|\\bfollow[ -]?ups?\\b|\\bmisc\\b";"i")|not)' <<< "$data" >/dev/null ||
+    fail "invalid QA finding title: use \"type(scope): lowercase imperative phrase\" with type one of ${CHANGE_TYPES//|/ } research, at most 72 characters after the colon, and no PR numbers, dates, \"follow up\" or \"misc\" (e.g. fix(tui): keep the progress card after restart)"
   title=$(jq -r .title <<< "$data"); kind=$(jq -r .kind <<< "$data")
   repository=$(jq -r .repository "$S/meta"); milestone=$(jq -r .milestone.number "$S/meta")
   marker="<!-- devflow-qa:$ISSUE:$(printf '%s' "$data" | cksum | awk '{print $1 "-" $2}') -->"
@@ -585,11 +591,12 @@ qa_finding() (
       (.title|ascii_downcase)==($title|ascii_downcase))] | first | .number // empty' <<< "$issues") || return 1
   fi
   body=$(mktemp "$S/.finding.XXXXXX")
-  {
-    printf '%s\n\n' "$marker"
-    printf 'QA at `%s` · milestone **%s**\n\n' "$(jq -r .head "$S/meta")" "$(jq -r '.milestone.title // "none"' "$S/meta")"
-    jq -r '"## Steps\n"+.steps+"\n\n## Expected\n"+.expected+"\n\n## Actual\n"+.actual+"\n\n## Evidence\n"+.evidence' <<< "$data"
-  } > "$body"
+  jq -r --arg marker "$marker" --arg head "$(jq -r .head "$S/meta")" --arg milestone "$(jq -r '.milestone.title // "none"' "$S/meta")" '
+    "## Summary\n"+(.summary // (if .kind=="bug" then "Real-use QA found that the steps below do not give the expected result."
+      else "Real-use QA found that the behaviour expected below is missing." end))+
+    "\n\n## Steps\n"+.steps+"\n\n## Expected\n"+.expected+"\n\n## Actual\n"+.actual+
+    "\n\n## Done when\n- [ ] following the steps gives the expected result.\n- [ ] a test covers this case.\n\n"+
+    "## Context\nSource: real-use QA at `"+$head+"`, milestone **"+$milestone+"**\nEvidence: "+.evidence+"\n\n"+$marker' <<< "$data" > "$body"
   # Create only missing labels; never overwrite a repository's existing label.
   gh label create qa -R "$repository" --color 7057ff --description 'Real-use QA finding' 2>/dev/null || gh label list -R "$repository" --json name --jq '.[].name' | grep -Fxq qa
   gh label create "$kind" -R "$repository" --color d73a4a --description 'QA finding type' 2>/dev/null || gh label list -R "$repository" --json name --jq '.[].name' | grep -Fxq "$kind"

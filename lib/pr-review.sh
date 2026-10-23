@@ -39,11 +39,19 @@ review_parse() {
     # The legacy setting may still include Devin. It can never replace Codex.
     def bot: . as $login | (test("codex";"i") and endswith("[bot]")) and
       (($bots|split(",")) | any(.[]; . as $pattern | $pattern!="" and ($login|test($pattern;"i"))));
-    def findings($source): . as $item | (.body // "" | split("\n")[]) as $line |
+    def finding_line: test("P[0-3] Badge|\\[P[0-3]\\]|^[[:space:]#*_-]*P[0-3][[:space:]]*:";"i");
+    # Detail: the first paragraph after a finding line, before the next finding.
+    def detail: map(select(test("^[[:space:]]*Useful\\? React with")|not)) |
+      until(length==0 or (.[0]|finding_line) or (.[0]|test("[^[:space:]]")); .[1:]) |
+      reduce .[] as $line ({stop:false,text:[]};
+        if .stop or ($line|finding_line) or ($line|test("[^[:space:]]")|not) then .stop=true
+        else .text+=[$line] end) | .text | join(" ");
+    def findings($source): . as $item | (.body // "" | split("\n")) as $lines |
+      range(0; $lines|length) as $index | $lines[$index] as $line |
       [$line | match("P[0-3] Badge|\\[P[0-3]\\]|^[[:space:]#*_-]*P[0-3][[:space:]]*:";"ig") |
         .string | capture("(?<severity>P[0-3])";"i").severity | ascii_upcase] | unique[] |
       {severity:.,path:($item.path // "review"),line:($item.line // $item.original_line // "summary"),
-       body:$line,id:$item.id,source:$source};
+       body:$line,detail:($lines[$index+1:] | detail),id:$item.id,source:$source};
     def review_findings($review):
       [($review | select(.!=null) | findings("summary")),
        (.inline_comments[]? | select($review!=null and .commit_id==$head and .pull_request_review_id==$review.id and
@@ -150,8 +158,42 @@ review_source_issue() {
   if [[ "$number" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$number"; fi
   return 0
 }
+review_followup_issue() {
+  local result=$1 pr=$2 number=$3 marker=$4
+  # Follow the shared issue format in docs/issue-format.md: a conventional
+  # title from the first finding and Summary/Done when/Context sections.
+  jq --arg pr "$pr" --arg number "$number" --arg marker "$marker" '
+    def clean: gsub("<!--.*?-->";"") | gsub("!\\[[^\\]]*\\]\\([^)]*\\)";"") | gsub("<[^>]*>";"") |
+      gsub("[[:space:]]+";" ") | sub("^ ";"") | sub(" $";"");
+    def stop: if test("[.!?]$") then . else .+"." end;
+    def headline: clean | ((capture("\\*\\*(?<text>.+?)\\*\\*").text) //
+        (gsub("\\[P[0-3]\\]|P[0-3] Badge";"";"i") | sub("^[[:space:]#*_-]*(P[0-3][[:space:]]*:)?";"";"i"))) |
+      clean | sub("[[:space:]*_.:;,]+$";"") | if .=="" then "address the remaining review findings" else . end;
+    def sentence: clean | ((capture("^(?<text>.*?[.!?])( |$)").text) // .) | if .=="" then . else stop end;
+    def lower_first: if test("^[A-Z][A-Z0-9]") then . else (.[0:1]|ascii_downcase)+.[1:] end;
+    def cut($size): if length>$size then .[0:$size-1] | sub("[[:space:]]+$";"") | .+"\u2026" else . end;
+    # Scope: the parent directory, or the file stem for generic directories.
+    def scope: if .source!="inline" then "" else (.path | split("/")) as $parts |
+      (if ($parts|length)>1 then $parts[-2]|ascii_downcase else "" end) as $dir |
+      (if $dir=="" or ($dir|IN("lib","src","internal","cmd","scripts","docs","tests","test","pkg","app","core","bin"))
+       then $parts[-1] | (sub("\\.[^.]*$";"") | if .=="" then null else . end) // $parts[-1] else $dir end) |
+      ascii_downcase | gsub("[^a-z0-9-]+";"-") | sub("^-+";"") | .[0:32] | sub("-+$";"") end;
+    def location: if .source=="inline" then .path+(if (.line|type)=="number" then ":\(.line)" else "" end)
+      else "review summary" end;
+    .low as $low | ($low[0] | scope) as $scope |
+    ("fix"+(if $scope=="" then "" else "("+$scope+")" end)+": ") as $prefix |
+    (if ($low|length)>1 then " (+\(($low|length)-1) more)" else "" end) as $suffix |
+    ($low[0].body | headline | lower_first | cut(72)) as $phrase |
+    {title:($prefix+($phrase | cut(90-($prefix|length)-($suffix|length)))+$suffix),
+     body:("## Summary\nP2/P3 findings left after the review of #\($pr|split("/")|last).\n\n" +
+       ([$low[] | (.detail // "" | sentence) as $detail |
+         "- \(.severity) \(location) \u2014 \(.body | headline | stop)"+(if $detail=="" then "" else " "+$detail end)] | join("\n")) +
+       "\n\n## Done when\n- [ ] each finding fixed, or answered here with the reason it stays.\n\n## Context\n" +
+       (if $number=="" then "" else "Depends on #\($number)\n" end) +
+       "Source: Codex review of \($pr)\n\($marker)\n")}' "$result"
+}
 review_followup() {
-  local pr=$1 result=$2 endpoint repository number marker issues existing body payload response milestone link tmp remote_body warning
+  local pr=$1 result=$2 endpoint repository number marker issues existing draft payload response milestone link tmp remote_body warning
   jq -e '.clean and (.low|length)>0' "$result" >/dev/null || return 0
   endpoint=$(review_endpoint "$pr"); repository=${endpoint%/pulls/*}
   number=$(review_source_issue "$pr" "${repository#repos/}")
@@ -164,19 +206,13 @@ review_followup() {
   gh api --paginate "$repository/issues?state=all&per_page=100" | jq -s 'add // []' > "$issues"
   existing=$(jq -r --arg marker "$marker" '[.[] | select(.pull_request==null and ((.body // "")|contains($marker)))] | first | .number // empty' "$issues")
   rm "$issues"
-  body=$(mktemp "$S/.followup-body.XXXXXX")
-  {
-    printf '%s\n\n' "$marker"
-    if [ -n "$number" ]; then printf 'Depends on #%s\n\n' "$number"; fi
-    printf 'P2/P3 findings from the final Codex review of %s:\n\n' "$pr"
-    jq -r '.low[] | "- \(.severity) \(.path):\(.line): \(.body | gsub("[\\r\\n]";" "))"' "$result"
-  } > "$body"
+  draft=$(mktemp "$S/.followup-draft.XXXXXX")
+  review_followup_issue "$result" "$pr" "$number" "$marker" > "$draft"
   payload=$(mktemp "$S/.followup-payload.XXXXXX")
   milestone=''
   if [ -n "$number" ]; then milestone=$(gh api "$repository/issues/$number" --jq '.milestone.number // null'); fi
   # gh --jq renders JSON null as empty output; --argjson needs literal null.
-  jq -n --rawfile body "$body" --arg title "Follow up on Codex review of PR #${pr##*/}" --argjson milestone "${milestone:-null}" \
-    '{title:$title,body:$body,milestone:$milestone}' > "$payload"
+  jq --argjson milestone "${milestone:-null}" '. + {milestone:$milestone}' "$draft" > "$payload"
   response=$(mktemp "$S/.followup-response.XXXXXX")
   if [ -n "$existing" ]; then
     gh api --method PATCH "$repository/issues/$existing" --input "$payload" > "$response"
@@ -200,5 +236,5 @@ review_followup() {
   else
     tmp=$(mktemp "$S/.followup-public.XXXXXX"); cp "$remote_body" "$tmp"; mv "$tmp" "$S/pr.md"
   fi
-  rm "$body" "$payload" "$remote_body"
+  rm "$draft" "$payload" "$remote_body"
 }

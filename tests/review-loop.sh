@@ -114,9 +114,20 @@ case_review_e2e() {
   dv land P-1
   test -f "$GH_STUB_DIR/merged"
 }
+review_set_codex_findings() {
+  # Mirror Codex inline comments: badge inside <sub> tags, bold headline,
+  # a detail paragraph and the reaction footer.
+  jq -n --arg head "$(git -C "$REPO" rev-parse HEAD)" '
+    def finding($id;$severity;$path;$line;$headline;$detail):
+      {id:$id,pull_request_review_id:1,user:{login:"chatgpt-codex-connector[bot]"},commit_id:$head,path:$path,line:$line,
+       body:("**<sub><sub>![\($severity) Badge](https://img.shields.io/badge/\($severity)-yellow?style=flat)</sub></sub>  \($headline)**\n\n\($detail)\n\nUseful? React with 👍 / 👎.")};
+    [finding(101;"P2";"lib/example.sh";12;"Preserve the current value";"Keep the old value when the update fails.\nOtherwise the next <code>read</code> loses it."),
+     finding(102;"P3";"internal/a2a/server.go";40;"Quote the server path";"Paths with spaces break the restart. Use printf %q.")]' > "$GH_STUB_DIR/comments"
+}
 case_review_followup() {
   review_fixture
   review_set 1 P2
+  review_set_codex_findings
   printf 'Original report\n' > "$DV_STATE/P-1/report.md"
   printf 'Original PR\n\nCloses #1\n' > "$DV_STATE/P-1/pr.md"
   cp "$DV_STATE/P-1/pr.md" "$GH_STUB_DIR/live-body"
@@ -124,6 +135,13 @@ case_review_followup() {
   dv pr-wait P-1 --foreground > "$CASE_DIR/result"
   jq -e '.review.clean and .review_handled and (.blocked|not)' "$CASE_DIR/result"
   jq -e '.milestone==7 and (.body|contains("Depends on #1")) and (.body|contains("lib/example.sh:12"))' "$GH_STUB_DIR/followup"
+  # The shared issue format: a conventional title and Summary/Done when/Context.
+  jq -e '.title=="fix(example): preserve the current value (+1 more)"' "$GH_STUB_DIR/followup"
+  jq -e --arg pr https://github.com/test/repo/pull/1 '.body==("## Summary\nP2/P3 findings left after the review of #1.\n\n" +
+    "- P2 lib/example.sh:12 — Preserve the current value. Keep the old value when the update fails.\n" +
+    "- P3 internal/a2a/server.go:40 — Quote the server path. Paths with spaces break the restart.\n\n" +
+    "## Done when\n- [ ] each finding fixed, or answered here with the reason it stays.\n\n" +
+    "## Context\nDepends on #1\nSource: Codex review of \($pr)\n<!-- devflow-review-followup: \($pr) -->\n")' "$GH_STUB_DIR/followup"
   test "$(grep -c '^api --method POST repos/test/repo/issues ' "$GH_STUB_DIR/calls")" = 1
   grep -F 'Review follow-up: #20' "$GH_STUB_DIR/live-body" "$DV_STATE/P-1/pr.md" "$DV_STATE/P-1/report.md"
   grep -Fx 'Original report' "$DV_STATE/P-1/report.md"
@@ -145,6 +163,9 @@ case_review_followup_no_milestone() {
   review_set 2 P3
   dv pr-wait P-1 --foreground > "$CASE_DIR/result"
   jq -e '.milestone==null and (.body|contains("P3 lib/example.sh:12")) and (.body|contains("P2 lib/example.sh:12")|not)' "$GH_STUB_DIR/followup"
+  # The update also retitles the issue; one finding has no "(+N more)".
+  jq -e '.title=="fix(example): preserve the current value" and
+    (.body|contains("- P3 lib/example.sh:12 — Preserve the current value. Details here.\n"))' "$GH_STUB_DIR/followup"
   test "$(grep -c '^api --method POST repos/test/repo/issues ' "$GH_STUB_DIR/calls")" = 1
   test "$(grep -c '^api --method PATCH repos/test/repo/issues/20 ' "$GH_STUB_DIR/calls")" = 1
   grep -F 'Review follow-up: #20' "$GH_STUB_DIR/live-body" "$DV_STATE/P-1/report.md"
@@ -730,4 +751,38 @@ case_review_followup_source() {
   ISSUE=LN-212M
   review_closing_issues '[{"number":300,"repository":{"nameWithOwner":"test/repo"}}]' > "$GH_STUB_DIR/closing-issues"
   test "$(review_source_issue "$pr" test/repo)" = 300
+}
+review_followup_title() {
+  jq -n --argjson low "$1" '{clean:true,low:$low}' > "$CASE_DIR/low.json"
+  review_followup_issue "$CASE_DIR/low.json" https://github.com/test/repo/pull/9 "${2:-}" '<!-- marker -->' > "$CASE_DIR/issue.json"
+  jq -r .title "$CASE_DIR/issue.json"
+}
+review_followup_finding() {
+  jq -cn --arg path "$1" --arg body "$2" --arg detail "${3:-}" --arg source "${4:-inline}" \
+    '{severity:"P2",path:$path,line:12,body:$body,detail:$detail,source:$source}'
+}
+case_review_followup_title() {
+  export S="$CASE_DIR"
+  # shellcheck source=/dev/null
+  source "$ROOT/lib/pr-review.sh"
+  local long title
+  # A specific parent directory is the scope; generic ones fall back to the stem.
+  test "$(review_followup_title "[$(review_followup_finding internal/a2a/server.go '**Check decoded JSON strings for reflected credentials**')]")" = \
+    'fix(a2a): check decoded JSON strings for reflected credentials'
+  test "$(review_followup_title "[$(review_followup_finding README.md '![P3 Badge](https://img.shields.io/badge/P3-blue) **Fix the install link**')]")" = \
+    'fix(readme): fix the install link'
+  test "$(review_followup_title "[$(review_followup_finding src/My_Module.ts '**Close the stream**')]")" = 'fix(my-module): close the stream'
+  test "$(review_followup_title "[$(review_followup_finding .github/workflows/ci.yml '**Pin the action**')]")" = 'fix(workflows): pin the action'
+  # Leading acronyms keep their case; a missing headline still gives a phrase.
+  test "$(review_followup_title "[$(review_followup_finding lib/a2a.sh '**API keys leak into logs**')]")" = 'fix(a2a): API keys leak into logs'
+  test "$(review_followup_title "[$(review_followup_finding lib/example.sh 'P2:')]")" = 'fix(example): address the remaining review findings'
+  # Review-summary findings have no file, so the title has no scope.
+  test "$(review_followup_title "[$(review_followup_finding review '### [P3] Improve naming' 'Details' summary)]")" = 'fix: improve naming'
+  jq -e '.body|contains("- P2 review summary — Improve naming. Details.\n") and (contains("Depends on")|not)' "$CASE_DIR/issue.json"
+  # Long headlines are cut to a 90-character title that keeps the count.
+  long="**Keep $(printf 'very %.0s' {1..30})long headlines readable**"
+  title=$(review_followup_title "[$(review_followup_finding lib/example.sh "$long"),$(review_followup_finding lib/a.sh '**B**'),$(review_followup_finding lib/c.sh '**D**')]" 5)
+  test "$(printf '%s' "$title" | jq -Rr length)" -le 90
+  case "$title" in 'fix(example): keep very very '*'very… (+2 more)') ;; *) printf 'unexpected title: %s\n' "$title" >&2; return 1 ;; esac
+  jq -e '.body|contains("## Context\nDepends on #5\nSource: Codex review of https://github.com/test/repo/pull/9\n<!-- marker -->\n")' "$CASE_DIR/issue.json"
 }
