@@ -2694,6 +2694,7 @@ case_runner_mapping() {
   if runner_check_mapping "$CASE_DIR/map.json"; then return 1; fi
 }
 registered_cases() {
+  printf '%s\n' review_future_deadline review_future_deadline_retried review_near_deadline
   printf '%s\n' \
   learned_percentile learned_active_floor learned_window learned_readonly learned_idle learned_seeds learned_unknown_resources \
   capacity_load capacity_memory capacity_award capacity_start capacity_headroom capacity_task capacity_launch_reservation capacity_probe_cleanup \
