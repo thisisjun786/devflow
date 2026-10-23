@@ -65,7 +65,28 @@ PANE
   test "$stopped" = true
   test ! -e "$fixture"
 }
+legacy_appserver_fixture() {
+  # Model an already-created legacy job without a production bypass switch.
+  # Only this disposable checkout restores the former launcher selection.
+  local legacy_root=${CLIENT_ROOT:-$CASE_DIR/legacy-appserver}
+  if [ ! -d "$legacy_root" ]; then
+    mkdir -p "$legacy_root"
+    cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/templates" "$ROOT/config.example.sh" "$legacy_root/"
+  fi
+  if ! grep -Fq '# Synthetic legacy launcher.' "$legacy_root/lib/appserver.sh"; then
+  cat >> "$legacy_root/lib/appserver.sh" <<'LEGACY'
+# Synthetic legacy launcher.
+appserver_selected() {
+  [ "$1" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ "$2" = auto ] || return 1
+  if [ "$DV_CODEX_MODE" = appserver ]; then return 0; fi
+  appserver_available
+}
+LEGACY
+  fi
+  export PATH="$legacy_root/bin:$PATH"
+}
 appserver_setup() {
+  legacy_appserver_fixture
   repo appserver "${1:-}"
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
   export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-$DV_APPSERVER_TIMEOUT}
@@ -503,6 +524,7 @@ case_appserver_question() {
   dv status --live AS-1 --json | jq -e '.[0].question_pending|not'
 }
 case_appserver_auto() {
+  legacy_appserver_fixture
   repo automatic
   unset DV_CODEX_MODE
   export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/appserver"

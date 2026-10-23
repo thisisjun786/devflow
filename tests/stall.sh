@@ -217,7 +217,7 @@ AGENT
   dv start "$REPO" DR-1 relaunch --mode goal
   wait_file "$DV_STATE/DR-1/held.pid"
   wt=$(jq -r .worktree "$DV_STATE/DR-1/meta")
-  kill -KILL "$(cat "$DV_STATE/DR-1/agent.pid")" "$(cat "$DV_STATE/DR-1/held.pid")"
+  kill -KILL "$(cat "$DV_STATE/DR-1/capacity-supervisor.pid")" "$(cat "$DV_STATE/DR-1/agent.pid")" "$(cat "$DV_STATE/DR-1/held.pid")"
   wait_file "$CASE_DIR/herdr/w-DR-1/exit"
   if [ "$status" = waiting-capacity ]; then
     # Killed during a provider wait; the restarted server lost the pane.

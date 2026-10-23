@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -eu
+# Refuse to allocate or spawn unless the kernel's own files show tight limits.
+group=$(awk -F: '$1==0 {print $3}' /proc/self/cgroup)
+root="/sys/fs/cgroup$group"
+read -r memory < "$root/memory.max"
+read -r tasks < "$root/pids.max"
+[[ "$memory" =~ ^[0-9]+$ ]] && [ "$memory" -le 67108864 ]
+[[ "$tasks" =~ ^[0-9]+$ ]] && [ "$tasks" -le 32 ]
+case "$1" in
+  tasks)
+    # A fixed ceiling as a second guard, never recursive self-invocation.
+    for ((i=0; i<48; i++)); do sleep 20 & done
+    wait ;;
+  memory)
+    chunk=$(printf '%1048576s' x)
+    data=''
+    for ((i=0; i<96; i++)); do data=$data$chunk; done ;;
+esac

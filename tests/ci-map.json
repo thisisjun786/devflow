@@ -1,8 +1,9 @@
 {
   "smoke": ["runner_*", "capacity_classifier", "screen_locale_c", "install"],
   "libraries": {
+    "lib/job-limits.sh": ["job_*", "host_*", "revive_*", "exec_*", "start_done"],
     "lib/appserver-transport.sh": ["appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*"],
-    "lib/appserver.sh": ["appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*", "status_cached_many", "status_cache_*", "recovery_sweep_progress"],
+    "lib/appserver.sh": ["job_auto_exec", "appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*", "status_cached_many", "status_cache_*", "recovery_sweep_progress"],
     "lib/autofill.sh": ["autofill_*"],
     "lib/bidding.sh": ["bid_*", "award_*", "submit_*", "goal_exit_*", "admission_*", "disk_bid", "disk_award", "manager_*", "watch_stuck*", "watch_status_*", "recovery_sweep_progress", "qa_*", "capacity_*", "learned_*", "autofill_*", "park_*"],
     "lib/capacity.sh": ["capacity_*", "appserver_*capacity*", "exec_capacity", "exec_rate", "task_capacity", "revive_*capacity*", "qa_recovered_capacity"],

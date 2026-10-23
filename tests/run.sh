@@ -166,7 +166,11 @@ wait_done() {
     # agent.exit precedes the wrapper's final done/kick. Wait for its TTY to exit
     # before assertions or teardown can race the last state-directory writes.
     if [ -s "$DV_STATE/$1/events.log" ] && [ -f "$DV_STATE/$1/agent.exit" ] &&
-      ! tmux -L "$DV_TMUX_SOCKET" has-session -t "=dv-$1" 2>/dev/null; then return; fi
+      ! tmux -L "$DV_TMUX_SOCKET" has-session -t "=dv-$1" 2>/dev/null; then
+      # Exec's resource supervisor can outlive the limited body's exit file.
+      if [ "$(jq -r .backend "$DV_STATE/$1/meta")" != exec ] ||
+        ! kill -0 "$(cat "$DV_STATE/$1/agent.pid")" 2>/dev/null; then return; fi
+    fi
     sleep 0.1
   done
   cat "$DV_STATE/$1/log" >&2
@@ -1621,7 +1625,7 @@ case_herdr_disabled_legacy() {
 herdr_isolated_path() {
   # Exclude user PATH and ~/.local/bin so native tests cannot reach real herdr.
   mkdir -p "$CASE_DIR/path" "$CASE_DIR/empty-home"
-  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed sort tail wc grep rm touch awk ln getconf df; do
+  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed sort tail wc grep rm touch awk ln getconf df uname id ps tee; do
     ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"
   done
   # Host admission samples memory/load on macOS through these standard tools.
@@ -2693,7 +2697,10 @@ case_runner_mapping() {
   jq '.libraries["lib/metrics.sh"]=["no_such_case_*"]' "$ROOT/tests/ci-map.json" > "$CASE_DIR/map.json"
   if runner_check_mapping "$CASE_DIR/map.json"; then return 1; fi
 }
+# shellcheck source=tests/job-limits.sh
+source "$ROOT/tests/job-limits.sh"
 registered_cases() {
+  printf '%s\n' job_nproc job_failure job_failure_reset job_supervisor_retry job_generic_exit job_auto_exec job_host job_fallback job_launchd job_tasks job_memory job_agent_retry
   printf '%s\n' review_future_deadline review_future_deadline_retried review_near_deadline
   printf '%s\n' \
   learned_percentile learned_active_floor learned_window learned_readonly learned_idle learned_seeds learned_unknown_resources \

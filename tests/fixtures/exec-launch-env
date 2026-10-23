@@ -9,6 +9,14 @@ exec_launch_pause() {
   read -r release < "$S/launch-release"
   test "$release" = release
 }
+uname() {
+  # The resource supervisor now owns the published PID; pause before it forks
+  # the limited body, while retaining the old hooks for regression coverage.
+  if [ "${FUNCNAME[1]:-}" = job_run_agent ] && [ "${BACKEND:-}" = exec ]; then
+    exec_launch_pause
+  fi
+  command uname "$@"
+}
 printf() {
   if [ "${FUNCNAME[1]:-}" = run_agent ] && [ "${BACKEND:-}" = exec ]; then
     exec_launch_pause

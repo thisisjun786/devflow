@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Ordinary synthetic lifecycle cases must not create scopes on the host.
+# Only resource-agent's guarded live cases resolve the real binary explicitly.
+exit 1

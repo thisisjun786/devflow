@@ -12,11 +12,17 @@ fi
 : "${DV_TMP_QUOTA_KB:=12582912}" # fallback per-user /tmp quota estimate (12 GiB); 0 = unknown
 : "${DV_HOME:=$HOME/.local/state/devflow-mac}"
 : "${DV_HOST:=$(hostname -s)}"
+: "${DV_JOB_MEMORY_MAX:=6G}" # Linux scope aggregate memory; fallback per-process virtual memory
+: "${DV_JOB_TASKS_MAX:=1500}" # Linux scope processes AND threads
+: "${DV_JOB_MEMORY_SWAP_MAX:=0}" # Linux scope swap; never changes host settings
+: "${DV_JOB_NPROC_MAX:=1000}" # extra user processes, capped at 70% of host/hard limit
+: "${DV_JOB_LAUNCHD_MAX:=200}" # owned macOS launchd registrations per job
+: "${DV_JOB_LAUNCHD_PATTERN:=com.lina.*}" # shell glob; ownership also requires worktree or DV_ISSUE
 : "${DV_AUTO_UPDATE:=1}" # clean main checkout: dv checks every 5 min; watcher on landed/safety pass
 : "${DV_KICK_HOST:=lina-os}" # host running dv-watch (lina-mac before 10-19)
 : "${DV_KICK:=}" # shell command; receives kind issue message host head as arguments
 : "${DV_CODEX_BIN:=codex}" # ~/node/bin/codex or ~/.opencodex/bin/codex
-: "${DV_CODEX_MODE:=auto}" # existing App Server, otherwise exec; appserver, exec, goal/tui
+: "${DV_CODEX_MODE:=auto}" # new auto/appserver jobs use isolated exec; goal/tui keeps terminals
 : "${DV_APPSERVER_SOCKET:=}" # empty uses Codex's existing default control socket
 : "${DV_APPSERVER_TIMEOUT:=10}" # bounded JSON-RPC response wait, seconds
 : "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds

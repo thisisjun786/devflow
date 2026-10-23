@@ -84,7 +84,9 @@ case "$command" in
   _disk-prune) cmd__disk_prune "$@" ;;
   _disk-collect) cmd__disk_collect "$@" ;;
   _host-capacity-sample) cmd__host_capacity_sample "$@" ;;
-  _agent) run_agent "$@" ;;
+  _agent) job_run_agent "$@" ;;
+  _agent-body) run_agent "$@" ;;
+  _job-watch) cmd__job_watch "$@" ;;
   _appserver-run) cmd__appserver_run "$@" ;;
   _appserver-watch) cmd__appserver_watch "$@" ;;
   _reconcile-host) cmd__reconcile_host "$@" ;;
