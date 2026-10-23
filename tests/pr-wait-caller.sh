@@ -76,7 +76,9 @@ STUB
   wait_pr_ready P-1; waiter=''
   jq -e --arg head "$(git -C "$REPO" rev-parse HEAD)" '.green and .head==$head' "$state/pr-ready.json"
   jq -e '.status=="pr"' "$state/meta"
-  test ! -s "$DV_HOME/kick.q"
+  # Creating the PR now publishes a scheduler-only readiness event; waiting
+  # still must not hand CI/review work to a manager or report done.
+  if [ -s "$DV_HOME/kick.q" ]; then jq -se 'all(.[]; .kind=="pr-opened")' "$DV_HOME/kick.q"; fi
   printf 'snapshot for current head; no manager event; lock released\n'
 }
 case_pr_wait_caller_fallback() { case_pr_wait_caller_killed fallback; }

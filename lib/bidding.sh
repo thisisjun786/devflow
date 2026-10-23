@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Contract-net requests live on the manager; bids never write state or clone.
 # shellcheck disable=SC2016
+# shellcheck source=lib/host-capacity.sh
+source "$(dirname "${BASH_SOURCE[0]}")/host-capacity.sh"
 bid_stop_tree() {
   local pid=$1 child
   # Freeze each parent before enumerating children so it cannot fork another
@@ -11,7 +13,11 @@ bid_stop_tree() {
   done
   kill -KILL "$pid" 2>/dev/null || true
 }
-bid_limit() {
+bid_limit() (
+  # A fast probe can cancel the timer before its TERM trap is installed.
+  # Isolate inherited EXIT cleanup before forking either child, so a timer's
+  # early termination cannot remove its caller's state or release its lock.
+  trap - EXIT
   local seconds=$1 pid timer rc=0; shift
   "$@" <&0 & pid=$!
   (
@@ -24,7 +30,7 @@ bid_limit() {
   kill "$timer" 2>/dev/null || true
   wait "$timer" 2>/dev/null || true
   return "$rc"
-}
+)
 bid_rpc() (
   local host=$1; shift
   if [ "$host" = "$DV_HOST" ]; then exec "$DV_ROOT/bin/dv" "$@"
@@ -37,19 +43,13 @@ bid_cores() {
   printf '%s\n' "$cores"
 }
 bid_resources() {
-  local cores load memory page cache cache_free=null
+  local cores load memory cache cache_free=null
   cores=$(bid_cores)
-  if [ -r /proc/loadavg ]; then
-    load=$(awk '{print $2}' /proc/loadavg)
-    memory=$(awk '/^MemAvailable:/ {printf "%d", $2/1024}' /proc/meminfo)
-  else
-    load=$(sysctl -n vm.loadavg | awk '{print $3}')
-    page=$(sysctl -n hw.pagesize)
-    memory=$(vm_stat | awk -v page="$page" '/Pages (free|inactive|speculative):/ {gsub("\\.", "", $NF); pages+=$NF} END {printf "%d", pages*page/1048576}')
-  fi
+  load=$(portable_load5)
+  memory=$(portable_memory_mb)
   cache=$(disk_cache_path) || cache=''
   [ -z "$cache" ] || cache_free=$(disk_available_gb "$cache" || echo null)
-  jq -cn --argjson cores "$cores" --argjson load "${load:-0}" --argjson memory "${memory:-0}" \
+  jq -cn --argjson cores "$cores" --argjson load "${load:-null}" --argjson memory "${memory:-null}" \
     --argjson disk "$(disk_available_gb || echo null)" --arg cache "$cache" --argjson cache_free "$cache_free" --argjson heavy "$(heavy_snapshot)" \
     '{cores:$cores,load5:$load,memory_available_mb:$memory,disk_available_gb:$disk,heavy:$heavy,
       go_cache_path:(if $cache=="" then null else $cache end),cache_disk_available_gb:$cache_free}'
@@ -85,7 +85,7 @@ bid_active() {
     # Release on this run's completion before its done event wakes scheduling;
     # historical or manual completions must still leave the revival counted.
     jq -c --arg revived "$revived" 'select(.cleaned_at==null and
-      (.status=="waiting-capacity" or (if $revived!="" then .done_episode!=$revived and .status!="landed" and .status!="cancelled"
+      (.status=="waiting-capacity" or (if $revived!="" then .done_episode!=$revived and .status!="landed" and .status!="cancelled" and .status!="closed" and .status!="parked"
        else .done_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required") end)))' "$path"
   done | jq -s length
 }
@@ -102,9 +102,40 @@ bid_agent() {
 }
 bid_settings() {
   disk_settings
+  host_capacity_settings
   [[ "$DV_BID_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_BID_TIMEOUT must be a positive integer'
   [[ "$DV_AWARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_AWARD_TIMEOUT must be a positive integer'
   [[ "$DV_MIN_MEMORY_MB" =~ ^[0-9]+$ ]] || fail 'DV_MIN_MEMORY_MB must be a nonnegative integer'
+  if ! [[ "$DV_TARGET_LOAD" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+    ! jq -en --argjson target "$DV_TARGET_LOAD" '$target>0' >/dev/null; then
+    fail 'DV_TARGET_LOAD must be positive'
+  fi
+}
+bid_capacity() {
+  local resources=$1 active=$2 ceiling=null model reserve=null
+  bid_settings
+  if [ -n "$DV_MAX_JOBS" ]; then
+    [[ "$DV_MAX_JOBS" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
+    ceiling=$DV_MAX_JOBS
+  fi
+  jq -e '(.cores|type=="number" and .>0) and (.load5|type=="number" and .>=0) and
+    (.memory_available_mb|type=="number" and .>=0)' <<< "$resources" >/dev/null || fail 'host resources unavailable'
+  model=$(host_capacity_current "$resources" "$active") || return 1
+  if [ "$DV_HOST" = lina-os ]; then reserve=$(jq '[1,(.cores/2|floor)]|max' <<< "$resources"); fi
+  jq --argjson ceiling "$ceiling" --argjson active "$active" --argjson target "$DV_TARGET_LOAD" \
+    --argjson memory "$DV_MIN_MEMORY_MB" --argjson model "$model" --argjson reserve "$reserve" '
+    . + {max_jobs:$ceiling,active:$active,target_load:$target,manager_limit:$reserve,
+      learned_cap:([$active,($model.target_cap // $model.learned_cap)]|max),capacity_model:$model,
+      memory_slots:(if $memory==0 then ($model.target_cap // $model.learned_cap) else (.memory_available_mb/$memory|floor) end)} |
+    .effective_slots=([$active,([.learned_cap,.max_jobs,.manager_limit,.memory_slots,
+      (if .load5>=.cores*$target then $active else null end)]|map(select(.!=null))|min)]|max) |
+    .capacity=.effective_slots | .free_slots=([0,(.capacity-.active)]|max) |
+    .capacity_reason=(if .memory_available_mb<$memory then "low memory"
+      elif .load5>=.cores*$target then "high load"
+      elif .max_jobs!=null and .active>=.max_jobs then "full"
+      elif $memory>0 and .memory_slots<=.active then "low memory"
+      elif .manager_limit!=null and .active>=.manager_limit then "manager reserve"
+      elif .free_slots==0 then "learned capacity" else "" end)' <<< "$resources"
 }
 bid_work_writable() {
   local path=$DV_WORK
@@ -118,24 +149,23 @@ bid_work_writable() {
 }
 cmd_bid() {
   bid_settings
-  local repo='' agent=$DV_AGENT json=0 resources capacity active ready=false backend=false trust=true root writable=false
+  local repo='' agent=$DV_AGENT kind=code json=0 resources ready=false backend=false trust=true root writable=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
-      --repo|--agent) [ "$#" -ge 2 ] || fail 'missing bid value'
-        case "$1" in --repo) repo=$2 ;; --agent) agent=$2 ;; esac; shift 2 ;;
+      --repo|--agent|--kind) [ "$#" -ge 2 ] || fail 'missing bid value'
+        case "$1" in --repo) repo=$2 ;; --agent) agent=$2 ;; --kind) kind=$2 ;; esac; shift 2 ;;
       *) fail 'usage: dv bid --json [--repo REPO] [--agent codex|claude|devin|omp|agy|grok|cursor]' ;;
     esac
   done
   known_agent "$agent" || fail 'unknown agent'
-  resources=$(bid_resources); capacity=$DV_MAX_JOBS
-  [ -n "$capacity" ] || capacity=$(printf '%s' "$resources" | jq '[1,(.cores/8|floor)]|max')
-  [[ "$capacity" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
-  active=$(bid_active)
+  case "$kind" in code|qa) ;; *) fail 'unknown bid kind' ;; esac
+  resources=$(bid_capacity "$(bid_resources)" "$(bid_active)") || return 1
   if bid_work_writable; then writable=true; fi
   bid_repo "$repo"
   [ -n "$repo" ] || BID_REPO_OK=true
-  if bid_agent "$agent"; then ready=true; fi
+  if [ "$kind" = qa ] && [ -n "$DV_QA_AGENT_CMD" ]; then ready=true
+  elif bid_agent "$agent"; then ready=true; fi
   if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ -n "$repo" ]; then
     root=$BID_REPO
     if [ "$BID_CLONED" = true ]; then root=$(codex_repo_root "$BID_REPO") || root=''; fi
@@ -145,17 +175,18 @@ cmd_bid() {
   if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then
     case "$(codex_default_mode "$agent")" in auto|exec) backend=true ;; esac
   fi
+  [ "$kind" != qa ] || backend=true
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
-    --argjson capacity "$capacity" --argjson active "$active" --argjson min_memory "$DV_MIN_MEMORY_MB" --argjson min_disk "$DV_MIN_DISK_GB" --argjson writable "$writable" \
-    '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready,capacity:$capacity,active:$active,free_slots:([0,($capacity-$active)]|max)} |
+    --argjson min_disk "$DV_MIN_DISK_GB" --argjson writable "$writable" \
+    '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready} |
     ([.disk_available_gb,.cache_disk_available_gb]|map(select(.!=null))|min) as $disk |
-    .reason=(if .free_slots==0 then "full" elif $writable|not then "worktree dir not writable" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .memory_available_mb<$min_memory then "low memory" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
+    .reason=(if .free_slots==0 then .capacity_reason elif $writable|not then "worktree dir not writable" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
     .status=(if .reason=="" then "submitted" else "rejected" end) |
     # Keep normal-load scores; each core-equivalent above 1.5 costs 100 more.
-    .score=(100*.free_slots/.capacity - 20*.load5/.cores - 100*([0,(.load5/.cores-1.5)]|max) + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
+    .score=(100*.free_slots/([1,.capacity]|max) - 20*.load5/.cores - 100*([0,(.load5/.cores-1.5)]|max) + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -
       (if $min_disk>0 and $disk!=null then [0,20*(2*$min_disk-$disk)/$min_disk]|max else 0 end))' |
-    if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason,("heavy="+(.heavy.in_use|tostring)+"/"+(.heavy.slots|tostring)+" waiting="+(.heavy.waiting|tostring))]|@tsv'; fi
+    if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason,.learned_cap,.effective_slots,("heavy="+(.heavy.in_use|tostring)+"/"+(.heavy.slots|tostring)+" waiting="+(.heavy.waiting|tostring))]|@tsv'; fi
 }
 # Without --agent, a brief line "Route: writing|small" selects DV_ROUTE_WRITING
 # or DV_ROUTE_SMALL; "Route: default", no line or an empty target keep DV_AGENT.
@@ -205,7 +236,12 @@ bid_request_valid() {
     (.slug|type=="string" and test("^[a-zA-Z0-9][a-zA-Z0-9-]*$")) and (.repo|type=="string" and length>0 and (startswith("-")|not)) and
     (.brief|type=="string") and (.base|type=="string") and
     ((.agent=="codex" and (.mode=="auto" or .mode=="goal" or .mode=="exec")) or
-      (.agent as $agent | ["claude","devin","omp","agy","grok","cursor"] | index($agent) != null) and .mode=="goal")' >/dev/null
+      (.agent as $agent | ["claude","devin","omp","agy","grok","cursor"] | index($agent) != null) and .mode=="goal") and
+    (if .kind=="qa" then (.agent=="codex" or .agent=="claude") and .qa.remote==.repo and .qa.base==.base and
+      (.qa.repository|type=="string" and test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")) and
+      (.qa.head|type=="string" and test("^[0-9a-f]{40}$")) and
+      (.qa.prs|type=="array" and length>0)
+     else (.kind==null or .kind=="code") end)' >/dev/null
 }
 cmd__submit() {
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || fail 'submit must be received by the manager'
@@ -223,6 +259,7 @@ cmd__submit() {
 }
 cmd_queue() {
   if [ "$DV_HOST" != "$DV_MANAGER_HOST" ]; then bid_rpc "$DV_MANAGER_HOST" queue "$@"; return; fi
+  if [ "${1:-}" = --summary ]; then shift; autofill_summary "$@"; return; fi
   local issue='' json=0 arg path
   for arg in "$@"; do case "$arg" in --json) json=1 ;; *) [ -z "$issue" ] || fail 'one issue only'; valid_issue "$arg"; issue=$arg ;; esac; done
   { for path in "$DV_HOME"/submissions/*/task.json; do
@@ -254,6 +291,7 @@ cmd_cancel() (
   trap 'rmdir "$DV_HOME/.schedule-lock"' EXIT
   jq -e '.status=="submitted" and .host==null' "$dir/task.json" >/dev/null || fail 'only unassigned submissions can be canceled'
   bid_task_set "$dir" '.status="canceled"'
+  "$DV_ROOT/bin/dv-kick" canceled "$1" 'Submission canceled' "$DV_HOST"
 )
 cmd__receipt() {
   [ "$#" = 2 ] || fail 'usage: dv _receipt ISSUE token'
@@ -271,7 +309,7 @@ cmd__receipt() {
 }
 cmd__award() (
   bid_settings
-  local request issue dir token deadline repo agent mode slug base bid rc=0 status head history='' retry=false error message
+  local request issue dir token deadline repo agent mode slug base bid rc=0 status head history='' retry=false kind error message
   request=$(cat); printf '%s\n' "$request" | bid_request_valid || fail 'invalid award'
   issue=$(printf '%s\n' "$request" | jq -r .issue)
   token=$(printf '%s\n' "$request" | jq -er '.token|select(type=="string")')
@@ -296,7 +334,8 @@ cmd__award() (
   [ "$(now)" -lt "$deadline" ] || fail 'award expired before admission'
   [ "$retry" = true ] || [ ! -e "$DV_STATE/$issue" ] || fail 'issue already exists on this host'
   repo=$(printf '%s\n' "$request" | jq -r .repo); agent=$(printf '%s\n' "$request" | jq -r .agent)
-  bid=$(cmd_bid --json --repo "$repo" --agent "$agent")
+  kind=$(jq -r '.kind // "code"' <<< "$request")
+  bid=$(cmd_bid --json --repo "$repo" --agent "$agent" --kind "$kind")
   printf '%s\n' "$bid" | jq -e '.status=="submitted"' >/dev/null || { printf '%s\n' "$bid"; exit; }
   [ "$(now)" -lt "$deadline" ] || fail 'award expired before admission'
   # Rejected/expired retries leave the last receipt and state in place.
@@ -311,6 +350,10 @@ cmd__award() (
   printf '%s\n' "$request" | jq -r .brief > "$dir/brief.md"
   printf '%s\n' "$request" | jq '{token,status:"starting"}' > "$dir/receipt.json"
   : > "$dir/startup.err"
+  if [ "$kind" = qa ]; then
+    qa_award "$request" "$dir"
+    exit
+  fi
   if ! printf '%s\n' "$bid" | jq -e .repo_cloned >/dev/null; then
     {
       if mkdir -p "$DV_REPO_ROOT"; then
@@ -326,7 +369,7 @@ cmd__award() (
   [ -z "$base" ] || args+=(--base "$base")
   if [ "$rc" = 0 ] && [ "$(now)" -lt "$deadline" ]; then
     # The wrapper writes agent.started only after startup has been confirmed.
-    DV_AWARD_TOKEN="$token" "$DV_ROOT/bin/dv" "${args[@]}" >&2 2>> "$dir/startup.err" || rc=$?
+    DV_ADMISSION_OWNER="$$" DV_AWARD_TOKEN="$token" "$DV_ROOT/bin/dv" "${args[@]}" >&2 2>> "$dir/startup.err" || rc=$?
   else rc=1; fi
   cat "$dir/startup.err" >&2
   while [ "$rc" = 0 ] && [ "$(now)" -lt "$deadline" ]; do
@@ -382,8 +425,22 @@ bid_hosts() {
     case "$host" in gos|gos-linux) printf '%s\n' "$host" ;; esac
   done
 }
+bid_publish_change() {
+  [ -n "$DV_AUTOFILL_REPOS" ] || return 0
+  local repo=$1 bids=$2 dir="$DV_HOME/autofill/bids" key tmp
+  mkdir -p "$dir"
+  key=$(printf '%s' "$repo" | cksum | awk '{print $1 "-" $2}')
+  tmp=$(mktemp "$dir/.bid.XXXXXX") || return 1
+  jq 'map({host,status,capacity:(.effective_slots // .capacity),active,free_slots,reason}) | sort_by(.host)' "$bids" > "$tmp" || { rm -f "$tmp"; return 1; }
+  if [ -f "$dir/$key.json" ] && cmp -s "$tmp" "$dir/$key.json"; then rm "$tmp"; return 0; fi
+  mv "$tmp" "$dir/$key.json"
+  # A committed change to schedulable capacity is an event. Scores/load noise
+  # alone cannot form a feedback loop, and the public bid command stays read-only.
+  "$DV_ROOT/bin/dv-kick" bid-changed FLEET "$repo" "$DV_HOST"
+}
 bid_schedule_one() {
   local dir=$1 host repo agent bids rows row token deadline reply rc status rank hosts
+  local kind_args=()
   bid_settings
   jq -e '.status=="submitted"' "$dir/task.json" >/dev/null || return 0
   if jq -e '.host!=null' "$dir/task.json" >/dev/null; then
@@ -404,12 +461,13 @@ bid_schedule_one() {
   # clearing them so an uncertain start cannot be dispatched a second time.
   bid_task_set "$dir" '.attempts=[]' || return
   repo=$(jq -r .repo "$dir/task.json"); agent=$(jq -r .agent "$dir/task.json")
+  if jq -e '.kind=="qa"' "$dir/task.json" >/dev/null; then kind_args=(--kind qa); fi
   bids=$(mktemp "$dir/.bids.XXXXXX")
   hosts=$(bid_hosts | awk '!seen[$0]++')
   for host in $hosts; do
     [[ "$host" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || continue
     if jq -e --arg host "$host" '.attempts|index($host)!=null' "$dir/task.json" >/dev/null; then continue; fi
-    if reply=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" bid --json --repo "$repo" --agent "$agent" < /dev/null 2>> "$dir/dispatch.log") &&
+    if reply=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" bid --json --repo "$repo" --agent "$agent" ${kind_args[@]+"${kind_args[@]}"} < /dev/null 2>> "$dir/dispatch.log") &&
       printf '%s\n' "$reply" | jq -e 'type=="object" and (.score|type=="number") and (.status=="submitted" or .status=="rejected")' >/dev/null 2>&1; then
       case "$host" in hx|hx-linux) rank=0 ;; amd|amd-linux) rank=1 ;; go2|go2-linux) rank=2 ;; lina-os) rank=3 ;; gos|gos-linux) rank=4 ;; *) rank=5 ;; esac
       printf '%s\n' "$reply" | jq -c --arg host "$host" --arg manager "$DV_MANAGER_HOST" --argjson rank "$rank" \
@@ -420,6 +478,7 @@ bid_schedule_one() {
   # Keep scores within each group, but never let gos outrank the manager.
   jq -s 'sort_by((if .host=="gos" or .host=="gos-linux" then 2 else .manager end),-(.score//0),.rank,.host)' "$bids" > "$dir/bids.json" || return
   rm "$bids"
+  bid_publish_change "$repo" "$dir/bids.json" || return
   rows=$(jq -c '.[]|select(.status=="submitted")' "$dir/bids.json")
   while IFS= read -r row; do
     [ -n "$row" ] || continue
@@ -451,7 +510,8 @@ bid_schedule_one() {
 bid_event() (
   local line=$1 kind issue host dir path head receipt token status event_token
   kind=$(printf '%s\n' "$line" | jq -r .kind)
-  case "$kind" in submitted|done|failed|landed|question) ;; *) exit 0 ;; esac
+  # parked and closed jobs release their slots like completed ones.
+  case "$kind" in submitted|done|failed|landed|question|blocked|parked|closed) ;; *) exit 0 ;; esac
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || exit 0
   mkdir -p "$DV_HOME/submissions"
   bid_lock "$DV_HOME/.schedule-lock" || return 1
@@ -463,10 +523,14 @@ bid_event() (
   # Legacy failures have no attempt identity, so only scoped failures can mutate it.
   if [ -f "$dir/task.json" ] && jq -e --arg host "$host" --arg token "$event_token" --arg kind "$kind" \
     '(.status=="working" or .status=="input-required" or (.status=="submitted" and .host!=null)) and
-    ($kind!="failed" or $token!="") and
+    (($kind!="failed" and $kind!="blocked") or $token!="") and
     (if $token!="" then .token==$token else .host==$host end)' "$dir/task.json" >/dev/null; then
     case "$kind" in
       done|landed) bid_task_set "$dir" --arg head "$head" '.status="completed"|.head=$head|del(.reason)' ;;
+      blocked)
+        if jq -e '.kind=="qa"' "$dir/task.json" >/dev/null; then
+          bid_task_set "$dir" '.status="failed"|.reason="QA blocked; inspect its report and log"'
+        fi ;;
       failed)
         token=$(jq -r .token "$dir/task.json")
         host=$(jq -r .host "$dir/task.json")
@@ -484,7 +548,7 @@ bid_event() (
   fi
   case "$kind" in
     submitted) [ ! -f "$dir/task.json" ] || bid_schedule_one "$dir" ;;
-    done|failed|landed)
+    done|failed|landed|parked|closed)
       while IFS= read -r path; do [ -z "$path" ] || bid_schedule_one "$path"; done < <(
         for path in "$DV_HOME"/submissions/*/task.json; do [ ! -f "$path" ] || jq -r --arg path "$(dirname "$path")" '[.submitted_at,$path]|@tsv' "$path"; done | sort -n | cut -f2-)
       ;;

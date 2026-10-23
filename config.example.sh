@@ -81,8 +81,9 @@ fi
 : "${DV_WORKER_CMD:=}" # shell command; receives prompt file path; default Hermes below
 : "${DV_HERMES_BIN:=hermes}"
 : "${DV_WATCH_INTERVAL:=3}" # local queue read interval, seconds
+: "${DV_STATUS_TIMEOUT:=10}" # background per-host status/reconcile deadline, seconds
 : "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
-: "${DV_MAX_WORKERS:=4}" # 1..8 ordinary/fallback/QA workers; managers have separate slots
+: "${DV_MAX_WORKERS:=4}" # 1..8 ordinary/fallback workers; QA uses host DV_MAX_JOBS slots
 : "${DV_RECONCILE_INTERVAL:=1800}" # status safety net seconds; capped at min(DV_STALL_AFTER, 60)
 : "${DV_METRICS_INTERVAL:=60}" # file/event activity sampling by dv-watch, seconds
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)
@@ -91,9 +92,14 @@ fi
 : "${DV_MANAGER_HOST:=lina-os}" # submit/queue manager, independent of the local kick host
 : "${DV_MANAGER_AGENT:=hermes}" # persistent per-repository Hermes session
 : "${DV_MANAGER_MAX_WAIT:=120}" # busy seconds before other issues use plain workers
-: "${DV_MAX_JOBS:=}" # host capacity; empty = max(1, floor(logical cores / 8))
+: "${DV_AUTOFILL_REPOS=}" # manager: space-separated owner/repo allowlist; empty disables
+# DV_AUTOFILL_BRIEF_owner_repo=/path/brief.md (lowercase; / . - become _).
+# Default template: enabled repo's .devflow/brief.md on its default branch.
+: "${DV_MAX_JOBS:=}" # optional upper bound on the measured host cap
+: "${DV_TARGET_LOAD:=1.2}" # p75 load5/cores threshold and live overload guard
+: "${DV_HOST_CAPACITY_WINDOW:=86400}" # recent sample window; recompute once per hour
+: "${DV_MIN_MEMORY_MB:=512}" # available memory reserved per effective slot; 0 disables
 : "${DV_HEAVY_SLOTS:=}" # host-wide heavy commands; empty = max(1, floor(logical cores / 8))
-: "${DV_MIN_MEMORY_MB:=512}" # reject bids below this available memory
 : "${DV_MIN_DISK_GB:=15}" # work/cache free GiB; reject either below this, penalize below 2x
 : "${DV_CACHE_TRIM_DAYS:=2}" # trim Go build files not accessed for this many days
 : "${DV_DISK_INTERVAL:=1800}" # dv-watch disk safety pass, seconds
@@ -109,7 +115,9 @@ fi
 : "${DV_AGENT_READY_cursor:=}"
 # DV_CONFIG: config file override (default ~/.config/devflow/config.sh).
 # DV_TEST_TMP: test temporary root (default TMPDIR or /tmp); no live agents/network.
-: "${DV_QA:=0}" # 1: real-use QA after landed; .devflow on merged base may opt in/out
+: "${DV_QA:=0}" # 1: poll enabled manager repositories for base merges; literal .devflow overrides
 : "${DV_QA_AGENT:=codex}" # codex exec or claude (fresh session)
 : "${DV_QA_AGENT_CMD:=}" # optional command receiving the QA prompt path
+: "${DV_QA_COALESCE:=600}" # quiet seconds before bidding one QA for accumulated merges
+: "${DV_QA_BASE:=}" # QA base; empty uses the registered repository's remote default
 : "${DV_MANAGER_LAST=1}" # 1: the manager host (lina-os) bids only after work hosts; 0: it competes on score like the others

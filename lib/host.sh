@@ -187,13 +187,11 @@ host_check() {
   [ "$rc" = 0 ]
 }
 host_path_block() {
-  cat <<'BLOCK'
-# BEGIN devflow PATH
-export GOROOT="$HOME/.local/go/go"
-export GOPATH="$HOME/.local/go"
-export PATH="$HOME/.opencodex/bin:$HOME/node/bin:$GOROOT/bin:$GOPATH/bin:$HOME/.local/bin:$PATH"
-# END devflow PATH
-BLOCK
+  # macOS: non-login SSH shells also need Homebrew (tmux, shellcheck, flock).
+  local brew=''
+  [ -z "${1:-}" ] || brew="$1/bin:$1/sbin:"
+  printf '%s\n' '# BEGIN devflow PATH' 'export GOROOT="$HOME/.local/go/go"' 'export GOPATH="$HOME/.local/go"' \
+    "export PATH=\"\$HOME/.opencodex/bin:\$HOME/node/bin:\$GOROOT/bin:\$GOPATH/bin:\$HOME/.local/bin:$brew\$PATH\"" '# END devflow PATH'
 }
 host_path_validate() {
   local file=$1
@@ -207,7 +205,7 @@ host_path_validate() {
   ' "$file" || fail "unbalanced devflow PATH markers: $file"
 }
 host_path_update() {
-  local file=$1 tmp
+  local file=$1 brew=${2:-} tmp
   host_path_validate "$file"
   tmp=$(mktemp "$HOME/.dv-path.XXXXXX")
   if [ -f "$file" ]; then
@@ -216,7 +214,7 @@ host_path_update() {
     awk '$0=="# BEGIN devflow PATH" {inside=1; next}
       $0=="# END devflow PATH" {inside=0; next} !inside {print}' "$file" > "$tmp"
   fi
-  host_path_block >> "$tmp"
+  host_path_block "$brew" >> "$tmp"
   if [ -f "$file" ] && cmp -s "$file" "$tmp"; then rm "$tmp"
   else mv "$tmp" "$file"; printf 'PATH: %s\n' "$file"; fi
 }
@@ -265,22 +263,28 @@ host_download_verify() {
   [ "${actual%% *}" = "$expected" ] || fail "checksum mismatch: $asset"
 }
 host_download_install() {
-  local name=$1 version=$2 stage=$3 arch=$4 url file source target machine node_arch leaks_arch
+  local name=$1 version=$2 stage=$3 arch=$4 os=${5:-linux} url file source target machine node_arch leaks_arch uv_target
   machine=$arch; node_arch=$arch; leaks_arch=$arch
   case "$arch" in amd64) machine=x86_64; node_arch=x64; leaks_arch=x64 ;; arm64) machine=aarch64 ;; esac
-  case "$name" in
-    go) url="https://go.dev/dl/go$version.linux-$arch.tar.gz"; source="$stage/go/bin/go"; target="$HOME/.local/go/go" ;;
-    node) url="https://nodejs.org/dist/v$version/node-v$version-linux-$node_arch.tar.gz"; source="$stage/node-v$version-linux-$node_arch/bin/node"; target="$HOME/node" ;;
-    uv) url="https://github.com/astral-sh/uv/releases/download/$version/uv-$machine-unknown-linux-gnu.tar.gz"; source="$stage/uv-$machine-unknown-linux-gnu/uv" ;;
-    gh) url="https://github.com/cli/cli/releases/download/v$version/gh_${version}_linux_$arch.tar.gz"; source="$stage/gh_${version}_linux_$arch/bin/gh" ;;
-    gitleaks) url="https://github.com/gitleaks/gitleaks/releases/download/v$version/gitleaks_${version}_linux_$leaks_arch.tar.gz"; source="$stage/gitleaks" ;;
-    herdr) url="https://github.com/herdrdev/herdr/releases/download/v$version/herdr-linux-$machine"; source="$stage/herdr" ;;
+  # The same pinned releases publish macOS assets under these names.
+  uv_target="$machine-unknown-linux-gnu"
+  [ "$os" != darwin ] || uv_target="$machine-apple-darwin"
+  case "$os:$name" in
+    *:go) url="https://go.dev/dl/go$version.$os-$arch.tar.gz"; source="$stage/go/bin/go"; target="$HOME/.local/go/go" ;;
+    *:node) url="https://nodejs.org/dist/v$version/node-v$version-$os-$node_arch.tar.gz"; source="$stage/node-v$version-$os-$node_arch/bin/node"; target="$HOME/node" ;;
+    *:uv) url="https://github.com/astral-sh/uv/releases/download/$version/uv-$uv_target.tar.gz"; source="$stage/uv-$uv_target/uv" ;;
+    linux:gh) url="https://github.com/cli/cli/releases/download/v$version/gh_${version}_linux_$arch.tar.gz"; source="$stage/gh_${version}_linux_$arch/bin/gh" ;;
+    darwin:gh) url="https://github.com/cli/cli/releases/download/v$version/gh_${version}_macOS_$arch.zip"; source="$stage/gh_${version}_macOS_$arch/bin/gh" ;;
+    *:gitleaks) url="https://github.com/gitleaks/gitleaks/releases/download/v$version/gitleaks_${version}_${os}_$leaks_arch.tar.gz"; source="$stage/gitleaks" ;;
+    linux:herdr) url="https://github.com/herdrdev/herdr/releases/download/v$version/herdr-linux-$machine"; source="$stage/herdr" ;;
+    darwin:herdr) url="https://github.com/herdrdev/herdr/releases/download/v$version/herdr-macos-$machine"; source="$stage/herdr" ;;
     *) fail "no installer for $name" ;;
   esac
   file="$stage/download"
   curl --fail --location --silent --show-error --connect-timeout 15 --max-time 300 --output "$file" "$url"
   host_download_verify "$name" "$version" "$url" "$file" "$stage/checksum"
   if [ "$name" = herdr ]; then mv "$file" "$source"; chmod +x "$source"
+  elif [ "${url%.zip}" != "$url" ]; then unzip -q "$file" -d "$stage"
   else tar -xzf "$file" -C "$stage"; fi
   [ "$(host_version "$source" "$name")" = "$version" ] || fail "downloaded $name has unexpected version"
   case "$name" in
@@ -291,11 +295,27 @@ host_download_install() {
       if [ "$name" = uv ] && [ -x "$(dirname "$source")/uvx" ]; then host_publish "$(dirname "$source")/uvx" "$HOME/.local/bin/uvx"; fi ;;
   esac
 }
+host_brew_prefix() {
+  local brew
+  brew=$(command -v brew 2>/dev/null) || brew=''
+  # Homebrew's default prefix also covers a later install by the operator.
+  if [ -z "$brew" ]; then
+    case "$1" in arm64) brew=/opt/homebrew/bin/brew ;; *) brew=/usr/local/bin/brew ;; esac
+  fi
+  brew=$(dirname "$(dirname "$brew")")
+  # The prefix is written into shell startup files.
+  [[ "$brew" =~ ^/[A-Za-z0-9._/-]+$ ]] || fail "unsupported Homebrew prefix: $brew"
+  printf '%s\n' "$brew"
+}
 host_sync() (
   [ "$#" = 0 ] || fail 'usage: dv host sync'
-  local rows name version install scope target current arch stage lock package missing_apt=''
-  [ "$(uname -s)" = Linux ] || fail 'host sync supports Linux only; check is available on other systems'
-  case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) fail 'unsupported Linux architecture' ;; esac
+  local rows name version install scope target current arch os brew='' stage lock package missing_apt=''
+  case "$(uname -s)" in
+    Linux) os=linux ;; Darwin) os=darwin ;;
+    *) fail 'host sync supports Linux and macOS only; check is available on other systems' ;;
+  esac
+  case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) fail "unsupported $(uname -s) architecture" ;; esac
+  [ "$os" = linux ] || brew=$(host_brew_prefix "$arch")
   rows=$(host_rows) || fail 'invalid hosts/tools.tsv'
   host_path_validate "$HOME/.profile"; host_path_validate "$HOME/.zshenv"
   mkdir -p "$HOME/.local/state/devflow-host"
@@ -320,7 +340,7 @@ host_sync() (
     case "$install" in
       archive|binary)
         stage=$(mktemp -d "$HOME/.local/.dv-host.XXXXXX")
-        host_download_install "$name" "$version" "$stage" "$arch"
+        host_download_install "$name" "$version" "$stage" "$arch" "$os"
         rm -rf "$stage"; stage='' ;;
       npm)
         [ -x "$HOME/node/bin/npm" ] || fail 'install node/npm first'
@@ -336,8 +356,12 @@ host_sync() (
       *) fail "unsupported installer: $install" ;;
     esac
   done <<< "$rows"
-  host_path_update "$HOME/.profile"; host_path_update "$HOME/.zshenv"
-  if [ -n "$missing_apt" ]; then printf 'Operator action (not executed): sudo apt-get install%s\n' "$missing_apt"; fi
+  host_path_update "$HOME/.profile" "$brew"; host_path_update "$HOME/.zshenv" "$brew"
+  if [ -z "$missing_apt" ]; then :
+  elif [ "$os" = darwin ]; then
+    # Homebrew names the sqlite3 command's formula sqlite.
+    printf 'Operator action (not executed): brew install%s\n' "$(printf '%s' "$missing_apt" | sed 's/ sqlite3/ sqlite/')"
+  else printf 'Operator action (not executed): sudo apt-get install%s\n' "$missing_apt"; fi
   printf 'Sync complete. Run dv host check in a fresh shell; check-only tools/auth may still need operator action.\n'
 )
 cmd_host() {

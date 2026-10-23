@@ -52,7 +52,7 @@ cmd_pr() {
   is_github || fail 'dv pr requires a GitHub origin'
   cd "$WT" || exit
   [ "$BRANCH" != "$BASE" ] || fail 'cannot push the base branch'
-  local head pr title endpoint body_file public_source='' public_body='' edit_args
+  local head pr title endpoint body_file public_source='' public_body='' edit_args created=0
   if [ -f "$S/pr.md" ]; then
     public_source="$S/pr.md"
   elif [ ! -f "$S/pr.json" ] && [ -f "$S/pr-body.md" ]; then
@@ -92,6 +92,7 @@ cmd_pr() {
     fi
     pr=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$body_file")
     jq -n --arg url "$pr" '{url:$url}' > "$S/pr.json"
+    created=1
     cp "$body_file" "$S/pr-body.md"
     if [ -z "$public_body" ]; then
       nohup "$DV_ROOT/bin/dv" polish "$ISSUE" >> "$S/polish.log" 2>&1 < /dev/null &
@@ -105,6 +106,7 @@ cmd_pr() {
     trap 'rmdir "$S/.operation" 2>/dev/null || true' EXIT
   fi
   meta_set --arg head "$head" --arg pr "$pr" '.status="pr" | .head=$head | .pr=$pr'
+  if [ "$created" = 1 ]; then cmd_kick pr-opened "$ISSUE" "$pr"; fi
   pr_wait_start
   printf '%s\n' "$pr"
 }
@@ -175,6 +177,206 @@ cmd_pr_wait_start() {
   [ "$(jq -r .status "$S/meta")" = pr ] || return 0
   pr_wait_start
 }
+pr_reconcile_blocked() {
+  # One blocked event per PR head and reason; later passes stay quiet.
+  [ "$(cat "$S/pr-reconcile.blocked" 2>/dev/null)" != "$1" ] || return 0
+  cmd_kick blocked "$ISSUE" "$2"
+  printf '%s\n' "$1" > "$S/pr-reconcile.blocked"
+}
+cmd_pr_reconcile() {
+  # The watcher's safety net, on the issue's host: a PR merged or closed
+  # outside dv land must not leave its job open (#253).
+  [ "$#" -eq 1 ] || fail 'usage: dv _pr-reconcile ISSUE'
+  load_issue "$1"
+  local status pr context=$REPO rc=0 reason
+  status=$(jq -r .status "$S/meta")
+  case "$status" in
+    pr|ready|waiting-base) ;;
+    # Recorded as landed, but cleanup or the landed event did not finish.
+    landed) jq -e '.pr_reconcile_pending==true' "$S/meta" >/dev/null || return 0 ;;
+    *) return 0 ;;
+  esac
+  if [ "$KIND" != code ] || [ ! -f "$S/pr.json" ] || ! is_github; then return 0; fi
+  # A live waiter already polls this PR and exits once it is no longer open.
+  if [ "$status" = pr ] && pr_wait_alive; then return 0; fi
+  # land, pr and send hold the operation lock; the next pass retries.
+  mkdir "$S/.operation" 2>/dev/null || return 0
+  trap 'rmdir "$S/.operation" 2>/dev/null || true' EXIT
+  pr=$(jq -er .url "$S/pr.json")
+  [ ! -d "$WT" ] || context=$WT
+  (cd "$context" && gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,state) > "$S/pr-reconcile.json"
+  case "$(jq -r .state "$S/pr-reconcile.json")" in
+    MERGED)
+      cp "$S/pr-reconcile.json" "$S/land-checks.json"
+      # The same gates as dv land on a PR merged elsewhere (#116). Keep errexit
+      # in the subshell (an || list would disable it): any failed step counts.
+      set +e
+      (
+        set -e
+        head=''
+        if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; head=$(git -C "$WT" rev-parse HEAD); fi
+        github_land_reconcile "$head"
+      ) 2> "$S/pr-reconcile.log"
+      rc=$?
+      set -e
+      if [ "$rc" = 0 ]; then
+        if jq -e '.pr_reconcile_pending' "$S/meta" >/dev/null; then meta_set 'del(.pr_reconcile_pending)'; fi
+        return 0
+      fi
+      # Status can already be landed (cleanup refused, such as a live worker);
+      # keep the job on later passes until cleanup and the landed event finish.
+      if jq -e '.status=="landed"' "$S/meta" >/dev/null; then meta_set '.pr_reconcile_pending=true'; fi
+      reason=$(sed -n 's/^dv: //p' "$S/pr-reconcile.log" | tail -n 1)
+      pr_reconcile_blocked "MERGED:$(jq -r .headRefOid "$S/pr-reconcile.json"):$reason" \
+        "PR merged outside dv land but not recorded as landed: ${reason:-see pr-reconcile.log}"
+      return 1 ;;
+    CLOSED)
+      meta_set --argjson time "$(now)" '.status="closed" | .closed_at=$time'
+      cmd_kick closed "$ISSUE" 'PR closed without merge; worktree and branch retained' ;;
+  esac
+}
+# Open PR jobs, and landings whose cleanup or landed event did not finish.
+pr_reconcile_filter='((.status=="pr" or .status=="ready" or .status=="waiting-base") and .pr!=null) or .pr_reconcile_pending==true'
+cmd_pr_reconcile_start() {
+  # The watcher's host pass is killed at its deadline. Detach the sweep, like
+  # a PR waiter, so GitHub queries and cleanup never lose the issue lock.
+  [ "$#" -eq 0 ] || fail 'usage: dv _pr-reconcile-start'
+  local holder
+  holder=$(cat "$DV_STATE/.pr-reconcile/owner" 2>/dev/null) || holder=''
+  if [[ "$holder" =~ ^[1-9][0-9]*$ ]] && kill -0 "$holder" 2>/dev/null; then return 0; fi
+  if command -v setsid >/dev/null; then
+    (set -m; nohup setsid "$DV_ROOT/bin/dv" _pr-reconcile-sweep >> "$DV_STATE/.pr-reconcile.log" 2>&1 < /dev/null &)
+  else
+    (set -m; nohup "$DV_ROOT/bin/dv" _pr-reconcile-sweep >> "$DV_STATE/.pr-reconcile.log" 2>&1 < /dev/null &)
+  fi
+}
+cmd_pr_reconcile_sweep() {
+  [ "$#" -eq 0 ] || fail 'usage: dv _pr-reconcile-sweep'
+  local meta
+  # One sweep per host covers every job; a dead owner's lock is reclaimed.
+  owned_lock "$DV_STATE/.pr-reconcile" "$$" || return 0
+  trap 'owned_unlock "$DV_STATE/.pr-reconcile" "$$"' EXIT
+  for meta in "$DV_STATE"/*/meta; do
+    jq -e "$pr_reconcile_filter" "$meta" >/dev/null 2>&1 || continue
+    "$DV_ROOT/bin/dv" _pr-reconcile "$(basename "$(dirname "$meta")")" || true
+  done
+}
+already_merged_verify() {
+  # Work delivered by another PR: its commit is on the base, and this branch
+  # adds nothing the base lacks. Prints the delivery record.
+  local ref=$1 base_ref number='' other='' slug commit='' snapshot tree
+  local pr_pattern='^#?([1-9][0-9]{0,8})$' url_pattern='^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)$'
+  # Digits alone name a PR; pass a longer or hexadecimal SHA for a commit.
+  if [[ "$ref" =~ $pr_pattern ]]; then number=${BASH_REMATCH[1]}
+  elif [[ "$ref" =~ $url_pattern ]]; then other=${BASH_REMATCH[1]}; number=${BASH_REMATCH[2]}
+  elif ! [[ "$ref" =~ ^[0-9a-fA-F]{7,64}$ ]]; then fail 'expected a PR number, PR URL or commit for --already-merged'; fi
+  if git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
+    git -C "$WT" fetch -q origin "$BASE:refs/remotes/origin/$BASE" || fail "could not fetch origin/$BASE"
+    base_ref="refs/remotes/origin/$BASE"
+  else base_ref="refs/heads/$BASE"; fi
+  if [ -n "$number" ]; then
+    is_github || fail 'PR references require a GitHub origin'
+    slug=$(manager_identity "$REPO"); slug=${slug#github.com/}
+    if [ -n "$other" ] && [ "$(printf '%s' "$other" | tr '[:upper:]' '[:lower:]')" != "$slug" ]; then
+      fail "PR $ref belongs to another repository"
+    fi
+    snapshot=$(cd "$WT" && gh pr view "https://github.com/$slug/pull/$number" --json state,baseRefName,mergeCommit) ||
+      fail "could not read PR #$number"
+    printf '%s\n' "$snapshot" | jq -e '.state=="MERGED"' >/dev/null || fail "PR #$number is not merged"
+    printf '%s\n' "$snapshot" | jq -e --arg base "$BASE" '.baseRefName==$base' >/dev/null || fail "PR #$number was not merged into $BASE"
+    commit=$(printf '%s\n' "$snapshot" | jq -er '.mergeCommit.oid | select(type=="string" and test("^[0-9a-f]{40,64}$"))') ||
+      fail "PR #$number has no merge commit"
+  else
+    commit=$(git -C "$WT" rev-parse --verify --quiet "$ref^{commit}") || fail "unknown commit $ref"
+  fi
+  git -C "$WT" merge-base --is-ancestor "$commit" "$base_ref" 2>/dev/null || fail "commit $commit is not on $BASE"
+  # Equal trees after a merge: patch-equivalent or empty branch changes pass.
+  tree=$(git -C "$WT" merge-tree --write-tree "$base_ref" HEAD 2>/dev/null) ||
+    fail "this branch conflicts with $BASE; deliver its changes with dv pr instead"
+  [ "${tree%%[[:space:]]*}" = "$(git -C "$WT" rev-parse "$base_ref^{tree}")" ] ||
+    fail "this branch has changes that are not on $BASE; deliver them with dv pr instead"
+  jq -cn --arg commit "$commit" --arg pr "$number" --arg base "$BASE" --arg base_head "$(git -C "$WT" rev-parse "$base_ref")" \
+    '{commit:$commit,pr:(if $pr=="" then null else ($pr|tonumber) end),base:$base,base_head:$base_head}'
+}
+already_merged_own_pr() {
+  local pr state
+  [ -f "$S/pr.json" ] || return 0
+  pr=$(jq -er .url "$S/pr.json") || fail 'invalid PR record'
+  state=$(cd "$WT" && gh pr view "$pr" --json state | jq -r .state) || fail "could not read this job's own PR $pr"
+  [ "$state" != OPEN ] || fail "this job's own PR is still open ($pr); close it or deliver it instead"
+}
+already_merged_land() {
+  # dv done --already-merged recorded the delivery; recheck it, then close the job.
+  local head
+  head=$(jq -r .head "$S/done.json")
+  if [ "$(jq -r .status "$S/meta")" != landed ]; then
+    require_worktree; require_clean "$WT"
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$head" ] || fail 'worktree changed after dv done --already-merged; run dv done again'
+    case "$BACKEND" in
+      appserver) appserver_require_idle ;;
+      exec) ! codex_exec_alive "$S" || fail 'exec is still running; cannot land' ;;
+    esac
+    already_merged_verify "$(jq -r .merged_via.commit "$S/done.json")" > /dev/null
+    metrics_note merged "$head"
+    meta_set --slurpfile completion "$S/done.json" --argjson time "$(now)" \
+      '.status="landed" | .landed_at=$time | .merged_via=$completion[0].merged_via'
+  fi
+  clean_worktree
+  if ! jq -se 'any(.[]; .kind=="landed")' "$S/events.log" >/dev/null 2>&1; then
+    cmd_kick landed "$ISSUE" "Landed through $(jq -r 'if .merged_via.pr then "#\(.merged_via.pr)" else .merged_via.commit end' "$S/done.json")"
+  fi
+}
+cmd_park() {
+  # A job blocked on open prerequisite issues releases its slot instead of
+  # idling: its branch is pushed and its GitHub issue says what it waits for.
+  [ "$#" -ge 1 ] || fail 'usage: dv park ISSUE --on N[,N...] [--note TEXT]'
+  load_issue "$1"; shift
+  local on='' note='' list='' n number slug state head marker body refs exists status
+  local on_pattern='^[1-9][0-9]*(,[1-9][0-9]*)*$'
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || fail "missing value for $1"
+    case "$1" in --on) on=$2 ;; --note) note=$2 ;; *) fail "unknown option: $1" ;; esac
+    shift 2
+  done
+  [[ "$on" =~ $on_pattern ]] || fail 'usage: dv park ISSUE --on N[,N...] [--note TEXT]'
+  [ "$KIND" = code ] || fail 'only code jobs can be parked'
+  status=$(jq -r .status "$S/meta")
+  [ "$status" = running ] || fail "only a running job can be parked (status: $status)"
+  issue_lock; require_worktree; require_clean "$WT"
+  is_github || fail 'dv park requires a GitHub origin'
+  [ "$BRANCH" != "$BASE" ] || fail 'cannot push the base branch'
+  slug=$(manager_identity "$REPO"); slug=${slug#github.com/}
+  number=$(jq -r '.source_issue // empty | tostring' "$S/meta")
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || number=${ISSUE##*-}
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || fail "cannot resolve the GitHub issue of $ISSUE"
+  list=$(printf '%s\n' "$on" | tr ',' '\n' | awk '!seen[$0]++')
+  while IFS= read -r n; do
+    [ "$n" != "$number" ] || fail "a job cannot wait for its own issue #$n"
+    state=$(gh api "repos/$slug/issues/$n" | jq -r .state) || fail "could not read prerequisite #$n"
+    [ "$state" = open ] || fail "prerequisite #$n is not open; continue the work instead"
+  done <<< "$list"
+  refs=$(printf '%s\n' "$list" | sed 's/^/#/' | paste -sd, - | sed 's/,/, /g')
+  head=$(git -C "$WT" rev-parse HEAD)
+  git -C "$WT" push -u origin "$BRANCH:refs/heads/$BRANCH"
+  marker="<!-- devflow-park:$ISSUE:$head -->"
+  exists=$(gh api --paginate "repos/$slug/issues/$number/comments" |
+    jq -s --arg marker "$marker" 'add // [] | any(.[]; (.body // "") | contains($marker))') || fail 'could not read issue comments'
+  if [ "$exists" != true ]; then
+    body=$(mktemp "$S/.park-comment.XXXXXX")
+    {
+      printf '%s\n\n' "$marker"
+      printf 'Parked: waiting for %s to close. Work so far is pushed to `%s` at `%s`.\n' "$refs" "$BRANCH" "$head"
+      [ -z "$note" ] || printf '\n%s\n' "$note"
+    } > "$body"
+    gh api --method POST "repos/$slug/issues/$number/comments" -F "body=@$body" > /dev/null
+    rm "$body"
+  fi
+  meta_set --argjson on "$(printf '%s\n' "$list" | jq -sc .)" --argjson issue "$number" --arg head "$head" --argjson time "$(now)" \
+    '.status="parked" | .head=$head | .parked={on:$on,issue:$issue,head:$head,at:$time}'
+  metrics_note parked "$head"
+  cmd_kick parked "$ISSUE" "Parked until $refs close${note:+: $note}"
+  printf 'dv: parked %s until %s close; %s is pushed\n' "$ISSUE" "$refs" "$BRANCH"
+}
 checks_green() {
   jq -e '.statusCheckRollup | length>0 and all(.[ ];
     if .__typename=="CheckRun" then .status=="COMPLETED" and .conclusion=="SUCCESS"
@@ -217,7 +419,11 @@ cmd_pr_wait() {
     mv "$tmp" "$S/pr-snapshot.json"
     if [ "$(jq -r .state "$S/pr-snapshot.json")" != OPEN ]; then
       [ "$foreground" != true ] || fail 'PR is no longer open'
-      rm "$review"; return 0
+      rm "$review"
+      # Hand a merged or closed PR straight to reconciliation (#253).
+      pr_wait_unlock; trap - EXIT
+      "$DV_ROOT/bin/dv" _pr-reconcile "$ISSUE" || true
+      return 0
     fi
     current=$(jq -r '.head // empty' "$S/meta")
     if [ -n "$current" ] && [ "$current" != "$head" ]; then continue; fi
@@ -391,15 +597,16 @@ github_land_reconcile() {
     '.status="landed" | .head=$head | .landed_at=(.landed_at // $time)'
   # Only a verified merge may bypass the App Server idle guard. Cleanup can
   # be retried after interruption, including after the worktree was removed.
-  clean_worktree merged-pr
   if ! jq -se --arg head "$head" 'any(.[]; .kind=="landed" and .head==$head)' "$S/events.log" >/dev/null 2>&1; then
     cmd_kick landed "$ISSUE" 'Landed'
   fi
+  clean_worktree merged-pr
 }
 cmd_land() {
   [ "$#" -eq 1 ] || fail 'usage: dv land ISSUE'
   load_issue "$1"; issue_lock
   local pr head='' method rc context=$WT
+  if jq -e '.merged_via.commit | type=="string"' "$S/done.json" >/dev/null 2>&1; then already_merged_land; return; fi
   if [ -d "$WT" ] || [ "$(jq -r .status "$S/meta")" != landed ]; then
     require_worktree; require_clean "$WT"
     head=$(git -C "$WT" rev-parse HEAD)
@@ -440,8 +647,8 @@ cmd_land() {
   fi
   metrics_note merged "$(git -C "$WT" rev-parse HEAD)"
   meta_set --argjson time "$(now)" '.status="landed" | .landed_at=$time'
-  clean_worktree
   cmd_kick landed "$ISSUE" 'Landed'
+  clean_worktree
 }
 local_land() {
   local test_cmd=$DV_TEST_CMD mode=$DV_LAND_MODE before target candidate result merged

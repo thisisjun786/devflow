@@ -17,7 +17,7 @@ cmd_start() {
   REPO=$(cd "$1" && git rev-parse --show-toplevel); ISSUE=$2; local slug=$3
   shift 3; valid_issue "$ISSUE"
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || fail 'invalid slug'
-  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref lower start_sha source_issue=''
+  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref lower start_sha source_issue='' capacity own_admission=0
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || fail "missing value for $1"
     case "$1" in
@@ -76,6 +76,19 @@ cmd_start() {
   start_sha=$(git -C "$REPO" rev-parse --verify "$ref^{commit}")
   lower=$(printf '%s' "$ISSUE" | tr '[:upper:]' '[:lower:]')
   BRANCH="$agent/$lower-$slug"; WT="$DV_WORK/$(basename "$REPO")-$ISSUE"
+  # An award holds admission across clone/start. A direct start must take the
+  # same lock; a token alone cannot bypass it. Recheck after the Git fetch.
+  if [ -n "${DV_AWARD_TOKEN:-}" ] && [ -n "${DV_ADMISSION_OWNER:-}" ] &&
+    [ "$(cat "$DV_STATE/.admission-lock/owner" 2>/dev/null)" = "$DV_ADMISSION_OWNER" ] &&
+    jq -e --arg token "$DV_AWARD_TOKEN" '.token==$token' "$DV_STATE/.awards/$ISSUE/request.json" >/dev/null 2>&1; then
+    own_admission=0
+  else
+    owned_lock "$DV_STATE/.admission-lock" "$$" || fail 'host admission busy'
+    own_admission=1
+    trap 'owned_unlock "$DV_STATE/.admission-lock" "$$"' EXIT
+  fi
+  capacity=$(bid_capacity "$(bid_resources)" "$(bid_active)") || return 1
+  jq -e '.free_slots>0' <<< "$capacity" >/dev/null || fail "host has no free slots: $(jq -r .capacity_reason <<< "$capacity")"
   start_worktree "$start_sha"
   cat "$DV_ROOT/templates/rules.md" > "$S/brief.md"
   printf '\nIssue: %s\nWorktree: %s\nReport: %s/report.md\n\n' "$ISSUE" "$WT" "$S" >> "$S/brief.md"
@@ -95,6 +108,7 @@ cmd_start() {
     meta_set '.status="start-failed"'
     fail "$BACKEND startup failed; state retained for dv clean (no backend fallback)"
   fi
+  if [ "$own_admission" = 1 ]; then owned_unlock "$DV_STATE/.admission-lock" "$$"; trap - EXIT; fi
   printf '%s %s %s\n' "$ISSUE" "$BRANCH" "$WT"
 }
 launch_agent() {
@@ -267,6 +281,8 @@ $original_instruction"
   trap - EXIT INT TERM
   printf '%s\n' "$rc" > "$S/agent.exit"
   if jq -e '.status=="blocked" and .capacity!=null' "$S/meta" >/dev/null; then return "$rc"; fi
+  # dv park released the slot on purpose; the exit is not a failure.
+  if jq -e '.status=="parked"' "$S/meta" >/dev/null; then return "$rc"; fi
   if [ "$KIND" = task ] && [ "$mode" = exec ] && [ "$rc" = 0 ]; then
     task_exec_done "$revived"; return
   fi
@@ -416,13 +432,19 @@ accept_folder_trust() {
   done
 }
 cmd_done() {
-  [ "$#" -ge 1 ] || fail 'usage: dv done ISSUE [--note TEXT]'
-  load_issue "$1"; shift; local note='' head files tmp episode own_revive=0 pr_complete=false
+  [ "$#" -ge 1 ] || fail 'usage: dv done ISSUE [--note TEXT] [--already-merged PR|COMMIT]'
+  load_issue "$1"; shift; local note='' head files tmp episode own_revive=0 pr_complete=false merged_ref='' merged=null
   if [ "$(jq -r '.kind // empty' "$S/meta")" = qa ]; then qa_done "$ISSUE"; return; fi
-  if [ "$#" -gt 0 ]; then
-    if [ "$#" -ne 2 ] || [ "$1" != --note ]; then fail 'expected --note TEXT'; fi
-    note=$2
-  fi
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || fail 'expected --note TEXT or --already-merged PR|COMMIT'
+    case "$1" in
+      --note) note=$2 ;;
+      --already-merged) merged_ref=$2 ;;
+      *) fail 'expected --note TEXT or --already-merged PR|COMMIT' ;;
+    esac
+    shift 2
+  done
+  [ -z "$merged_ref" ] || [ "$KIND" != task ] || fail 'task jobs have no base branch to verify'
   require_worktree
   episode=$(jq -r '.done_episode // ""' "$S/meta")
   # Only the replacement's inherited run identity can satisfy its goal wrapper.
@@ -438,7 +460,17 @@ cmd_done() {
     task_completion
   else
     head=$(git -C "$WT" rev-parse HEAD)
-    if is_github; then
+    # A plain repeat (such as the exec wrapper's) keeps the recorded delivery.
+    if [ -z "$merged_ref" ] && jq -e --arg head "$head" '.head==$head and (.merged_via.commit|type=="string")' "$S/done.json" >/dev/null 2>&1; then
+      merged_ref=$(jq -r '.merged_via.pr // .merged_via.commit' "$S/done.json")
+    fi
+    if [ -n "$merged_ref" ]; then
+      # Landed through another PR: verified by ancestry on the base, no PR of its own.
+      require_clean "$WT"
+      already_merged_own_pr
+      merged=$(already_merged_verify "$merged_ref") || exit 1
+      note="already-merged=$(printf '%s\n' "$merged" | jq -r 'if .pr then "#\(.pr) (\(.commit))" else .commit end')${note:+; $note}"
+    elif is_github; then
       pr_done_check "$head"
       pr_complete=true
       note="checks=green review=handled${note:+; $note}"
@@ -450,9 +482,10 @@ cmd_done() {
   fi
   tmp=$(mktemp "$S/.done.XXXXXX")
   jq -n --arg head "$head" --argjson files "$files" --arg report "$S/report.md" --arg note "$note" \
-    --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" \
+    --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" --argjson merged "$merged" \
     '{head:$head,files:$files,report:$report,note:$note,done_at:$done_at} +
     (if $pr_complete then {checks:"green",review:"handled"} else {} end) +
+    (if $merged==null then {} else {merged_via:$merged} end) +
     (if $episode=="" then {} else {episode:$episode} end)' > "$tmp"
   mv "$tmp" "$S/done.json"
   metrics_note 'done' "$head"
@@ -462,9 +495,9 @@ cmd_done() {
     [ -z "$run" ] || touch "$S/exec/$run/done"
   fi
   capacity_clear
-  meta_set --arg head "$head" --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" '.head=$head | .done_at=$done_at |
+  meta_set --arg head "$head" --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" --argjson merged "$merged" '.head=$head | .done_at=$done_at |
     (if $episode!="" then .done_episode=$episode else . end) |
-    if $pr_complete then .status="ready"
+    if $pr_complete or $merged!=null then .status="ready"
     elif .status=="running" or .status=="start-failed" then .status="done" | del(.failure_reason) else . end'
   cmd_kick 'done' "$ISSUE" "$note"
   if [ "$own_revive" = 1 ]; then
@@ -503,20 +536,21 @@ cmd_kick() {
 cmd_status() {
   local heavy
   heavy=$(heavy_snapshot)
-  local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
+  local selected='' json=0 live=0 time path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
   local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead provider_capacity
-  local row_agent row_worktree transcript
-  for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
+  local row_agent row_worktree transcript terminal_exit agent_exit_code
+  for path in "$@"; do case "$path" in --json) json=1 ;; --live) live=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
+  time=$(now)
   if [ "$json" = 0 ]; then
     printf '%s\n' "$heavy" | jq -r '"heavy="+(.in_use|tostring)+"/"+(.slots|tostring)+" waiting="+(.waiting|tostring)'
   fi
   {
     for path in "$DV_STATE"/*/meta; do
       [ -f "$path" ] || continue
-      [ -z "$selected" ] || [ "$(basename "$(dirname "$path")")" = "$selected" ] || continue
+      [ -z "$selected" ] || [ "$path" = "$DV_STATE/$selected/meta" ] || continue
       alive=false; tmux_alive=false; agent_status=unknown; question_pending=false
-      agent_dead=false
+      agent_dead=false; agent_exit_code=null
       goal_stalled=false; goal_active=false; agent_state_seq=null; agent_session=null
       provider_capacity=false
       backend=$(jq -r '.backend // "tmux"' "$path")
@@ -526,13 +560,17 @@ cmd_status() {
       if [ -n "$row_worktree" ] && [ -d "$row_worktree" ]; then
         transcript=$(agent_transcript "$row_agent" "$(cd "$row_worktree" && pwd -P)") || transcript=''
       fi
+      if [ "$backend" = appserver ] && [ "$live" = 0 ]; then
+        appserver_cached_row "$path" "$time" "$transcript"
+        continue
+      fi
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
       if [ "$backend" = appserver ]; then
-        # A landed or cancelled job with no client is finished. Its thread no
-        # longer matters, and opening an App Server connection per old job made
+        # A done, landed, cancelled or cleaned job with no client is finished.
+        # Its thread no longer matters, and opening a connection per old job made
         # dv status (and the watcher's reconcile) grow with history.
-        if jq -e '.status=="landed" or .status=="cancelled"' "$path" >/dev/null &&
+        if jq -e '.status=="done" or .status=="landed" or .status=="cancelled" or .cleaned_at!=null' "$path" >/dev/null &&
           ! appserver_client_alive_at "$(dirname "$path")" "$(jq -r .issue "$path")"; then
           info='{"agent_status":"gone","alive":false,"question_pending":false}'
         else
@@ -572,9 +610,20 @@ cmd_status() {
       elif command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then
         alive=true; tmux_alive=true
       fi
-      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$agent_status" = unknown ] && jq -e '.status=="running"' "$path" >/dev/null &&
-        (load_issue "$(jq -r .issue "$path")"; agent_gone); then
-        agent_dead=true
+      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$agent_status" = unknown ]; then
+        terminal_exit=$(cat "$(dirname "$path")/agent.exit" 2>/dev/null) || terminal_exit=''
+        # A task can record done before its terminal exits unsuccessfully.
+        # Keep its completion snapshot while exposing the confirmed failure.
+        if jq -e --arg exit "$terminal_exit" '.status=="running" or
+          (.kind=="task" and .status=="done" and ($exit|test("^[1-9][0-9]*$")))' "$path" >/dev/null &&
+          (load_issue "$(jq -r .issue "$path")"; agent_gone); then
+          agent_dead=true
+          # Process absence alone can be a recoverable interruption. A recorded
+          # nonzero exit confirms failure; keep metadata intact for revival.
+          if [[ "$terminal_exit" =~ ^[1-9][0-9]*$ ]]; then
+            agent_status=failed; agent_exit_code=$terminal_exit
+          fi
+        fi
       fi
       if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" or .status=="waiting-capacity"' "$path" >/dev/null; then
         screen=''
@@ -600,16 +649,20 @@ cmd_status() {
       row=$(jq -c --arg done_head "$done_head" --arg transcript "$transcript" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" \
         --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" --argjson agent_dead "$agent_dead" --argjson provider_capacity "$provider_capacity" \
         '.+{done_head:(if $done_head=="" then null else $done_head end),transcript:(if $transcript=="" then null else $transcript end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session,capacity_detected:$provider_capacity}' "$path")
-      if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
+      if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],status_age_seconds:0,recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
       row=$(printf '%s\n' "$row" | jq -c '.capacity_retry_at=(.capacity.next_try_at // null) |
         if .status=="waiting-capacity" then .agent_status="waiting-capacity" else . end')
-      if [ "$backend" = exec ] && [ "$alive" = false ] && [ "$agent_status" = failed ]; then
+      if [ "$agent_status" = failed ] &&
+        { [ "$agent_dead" = true ] || { [ "$backend" = exec ] && [ "$alive" = false ]; }; }; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
       fi
-      if [ "$json" = 1 ]; then printf '%s\n' "$row" | jq -c --argjson heavy "$heavy" '.+{heavy:$heavy}'
-      else printf '%s\n' "$row" | jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none") else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
+      if [ "$agent_exit_code" != null ]; then
+        row=$(printf '%s\n' "$row" | jq -c --argjson code "$agent_exit_code" '.agent_exit_code=$code')
+      fi
+      printf '%s\n' "$row"
     done
-  } | if [ "$json" = 1 ]; then jq -s .; else cat; fi
+  } | if [ "$json" = 1 ]; then jq -s --argjson heavy "$heavy" 'map(.+{heavy:$heavy})'
+    else jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .agent_exit_code!=null then "exit="+(.agent_exit_code|tostring) else empty end),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none"),"status_age="+(if .status_age_seconds==null then "unknown" else (.status_age_seconds|tostring)+"s" end) else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
 }
 agent_gone() {
   local reply pane pid unknown=0
@@ -727,6 +780,11 @@ cmd_send() {
     # These are for this one handoff, not the newly launched worker's calls.
     unset DV_PR_RECOVERY_HEAD DV_PR_RECOVERY_EPISODE
   fi
+  # Steering a parked job resumes it; its prerequisites are the sender's call.
+  # A live exec refuses the follow-up below, so it stays parked.
+  if jq -e '.status=="parked"' "$S/meta" >/dev/null && { [ "$BACKEND" != exec ] || ! codex_exec_alive "$S"; }; then
+    meta_set --argjson time "$(now)" '.status="running" | .unparked_at=$time'
+  fi
   if [ "$BACKEND" = appserver ]; then appserver_request send "$2"; return; fi
   if [ "$BACKEND" = exec ]; then codex_exec_send "$2"; return; fi
   # tmux can accept paste/Enter even when remain-on-exit retained a dead pane.
@@ -736,7 +794,8 @@ cmd_send() {
 }
 cmd_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean ISSUE'; load_issue "$1"; issue_lock
-  clean_worktree idle
+  # A QA job's repo is a URL; it owns only a standalone scratch clone.
+  if [ "$KIND" = qa ]; then qa_clean; else clean_worktree idle; fi
   meta_set --argjson time "$(now)" '.cleaned_at=$time'
 }
 clean_worktree() {

@@ -7,7 +7,11 @@ source() {
   case "$1:${WATCH_FAULT:-}" in
     */lib/qa.sh:qa) qa_enqueue() { [ ! -f "$DV_HOME/fail-route" ]; } ;;
     */lib/bidding.sh:bid) bid_event() { [ ! -f "$DV_HOME/fail-route" ]; } ;;
-    */lib/stack.sh:stack) stack_landed_event() { [ ! -f "$DV_HOME/fail-route" ]; } ;;
+    */lib/stack.sh:stack)
+      stack_queue_host() {
+        [ ! -f "$DV_HOME/fail-route" ] || return 1
+        touch "$DV_HOME/stack-route-ok"
+      } ;;
   esac
 }
 mv() {

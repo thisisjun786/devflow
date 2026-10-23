@@ -23,12 +23,13 @@ case_disk_bid() {
   # shellcheck source=lib/disk.sh
   source "$ROOT/lib/disk.sh"
   bid_agent() { return 0; } # Auth is independent of disk scoring.
+  local disk_bid_load baseline disk_bid_cores=16
+  seed_host_capacity "$disk_bid_cores"
   # Hold nondisk resources fixed so the disk assertions also work under load.
   bid_resources() {
-    jq -cn --argjson load "$disk_bid_load" --argjson disk "$(disk_available_gb)" \
-      '{cores:16,load5:$load,memory_available_mb:1024,disk_available_gb:$disk,go_cache_path:null,cache_disk_available_gb:null}'
+    jq -cn --argjson cores "$disk_bid_cores" --argjson load "$disk_bid_load" --argjson disk "$(disk_available_gb)" \
+      '{cores:$cores,load5:$load,memory_available_mb:1024,disk_available_gb:$disk,go_cache_path:null,cache_disk_available_gb:null}'
   }
-  local disk_bid_load baseline
   for disk_bid_load in 0 38; do
     baseline=$(DF_STUB_KB=31457280 cmd_bid --json | jq .score)
     cmd_bid --json > "$CASE_DIR/bid.json"

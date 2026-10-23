@@ -122,6 +122,36 @@ appserver_atomic() {
   tmp=$(mktemp "$target.XXXXXX")
   cat > "$tmp" && mv "$tmp" "$target"
 }
+appserver_cache_write() {
+  [ "${AS_EVENTS:-0}" = 1 ] || return 0
+  printf '%s\n' "$AS_CACHED" | jq -c --argjson at "$(now)" \
+    --arg thread "$AS_THREAD" '. + {observed_at:$at,thread_id:$thread}' |
+    appserver_atomic "$S/appserver/status.json"
+}
+appserver_cache_event() {
+  local line=$1 pending=false question
+  for question in "$S/appserver/questions/"*.json; do
+    [ ! -f "$question" ] || pending=true
+  done
+  AS_CACHED=$(printf '%s\n%s\n' "${AS_CACHED:-'{}'}" "$line" | jq -sc --argjson pending "$pending" '
+    .[0] as $old | .[1] as $event | $event.params as $p | $event.method as $method |
+    $old | .alive=true | .question_pending=$pending |
+    if $method=="turn/started" then
+      .thread.status.type="active" | .turn=$p.turn | .turn_id=$p.turn.id | .error=null
+    elif $method=="turn/completed" then
+      .thread.status.type="idle" | .turn=$p.turn | .turn_id=null | .error=$p.turn.error
+    elif $method=="thread/status/changed" then .thread.status=$p.status
+    elif $method=="thread/goal/updated" then .goal=$p.goal
+    elif $method=="error" then .error=($p.error // $p)
+    else . end |
+    .agent_status=(if .error!=null or .turn.status=="failed" or .thread.status.type=="systemError" then "failed"
+      elif .thread.status.type=="active" then "working"
+      elif .goal.status=="complete" then "goal-complete"
+      elif .goal.status=="active" then "idle-with-goal-active"
+      elif .thread.status.type=="idle" then "idle"
+      else (.agent_status // "unknown") end)')
+  appserver_cache_write
+}
 appserver_event() {
   [ "$AS_EVENTS" = 1 ] || return 0
   local line=$1 method thread request key turn
@@ -163,6 +193,7 @@ appserver_event() {
       printf '%s\n' "$line" | appserver_atomic "$S/appserver/error.json" ;;
     turn/started) rm -f "$S/appserver/error.json" ;;
   esac
+  appserver_cache_event "$line"
 }
 appserver_questions() {
   local question key
@@ -189,6 +220,8 @@ appserver_read_line() {
       printf '.' >&5
       return 0
     fi
+    # EOF makes this read return immediately. A dead proxy must stop the RPC
+    # here; otherwise the caller retries until DV_APPSERVER_TIMEOUT.
     if { [ -n "${AS_PID:-}" ] && ! appserver_connected; } || [ "$(now)" -ge "$deadline" ]; then
       return 1
     fi
@@ -214,6 +247,14 @@ appserver_rpc() {
            elif $method=="turn/steer" then (.result.turnId|type)=="string"
            elif $method=="thread/start" or $method=="thread/read" or $method=="thread/resume" then (.result.thread.id|type)=="string"
            else true end)' >/dev/null; then AS_CLASS=accepted; fi
+        if [ "$AS_CLASS" = accepted ] && [ "${AS_EVENTS:-0}" = 1 ] && [ -n "${AS_THREAD:-}" ]; then
+          case "$method" in
+            turn/start)
+              appserver_cache_event "$(printf '%s\n' "$AS_REPLY" | jq -c '{method:"turn/started",params:{turn:.result.turn}}')" ;;
+            thread/goal/set|thread/goal/get)
+              appserver_cache_event "$(printf '%s\n' "$AS_REPLY" | jq -c '{method:"thread/goal/updated",params:{goal:.result.goal}}')" ;;
+          esac
+        fi
         appserver_write_end; return 0
       fi
       appserver_event "$line"
@@ -244,6 +285,7 @@ appserver_snapshot() {
     if printf '%s\n' "$AS_REPLY" | jq -e '.error.data.codexErrorInfo=="threadNotFound" or ((.error.message // "")|test("^(thread not found|no thread found)";"i"))' >/dev/null; then state=gone; fi
     AS_SNAPSHOT=$(jq -cn --arg state "$state" '{agent_status:$state,alive:false,question_pending:false}')
     appserver_recovery_info
+    appserver_cache_snapshot
     return
   fi
   last=$(printf '%s\n' "$AS_REPLY" | jq -c '[.result.thread.turns[]?.items[]? | select(.type=="agentMessage") | .text // empty][-1] // ""')
@@ -276,6 +318,12 @@ appserver_snapshot() {
   done
   appserver_recovery_info
   printf '%s\n' "$AS_SNAPSHOT" | appserver_atomic "$S/appserver/snapshot.json"
+  appserver_cache_snapshot
+}
+appserver_cache_snapshot() {
+  [ "${AS_EVENTS:-0}" = 1 ] || return 0
+  AS_CACHED=$AS_SNAPSHOT
+  appserver_cache_write
 }
 appserver_deliver() {
   local id=$1 text=$2 recovery=${3:-0} state turn params method active cleaned
@@ -398,8 +446,9 @@ appserver_start() (
   [[ "$DV_RECOVER_MAX" =~ ^[1-9][0-9]*$ ]] || fail 'DV_RECOVER_MAX must be a positive integer'
   capacity_validate
   if command -v setsid >/dev/null; then
-    nohup setsid "$DV_ROOT/bin/dv" _appserver-run "$ISSUE" >> "$S/log" 2>&1 < /dev/null &
-    client=$!
+    # Reparent before waiting for readiness: bounded watcher cleanup must not
+    # include the persistent client among its descendants.
+    client=$(nohup setsid "$DV_ROOT/bin/dv" _appserver-run "$ISSUE" >> "$S/log" 2>&1 < /dev/null & printf '%s\n' "$!")
   else
     client=$(set -m; nohup "$DV_ROOT/bin/dv" _appserver-run "$ISSUE" >> "$S/log" 2>&1 < /dev/null & printf '%s\n' "$!")
   fi
@@ -419,7 +468,7 @@ cmd__appserver_run() {
   # EXIT also runs after this function returns; transport handles must survive
   # the function's local scope so cleanup can still reap every child.
   AS_IO='' AS_PID='' AS_SEND='' AS_RECEIVE='' AS_WRITER=''
-  local AS_LINE=''
+  local AS_LINE='' AS_CACHED='{}'
   local instruction params id file operation text line last_poll=0
   # bin/dv captures HEAD before sourcing the libraries.
   local client_commit=${entry_commit:-} current_commit
@@ -459,6 +508,7 @@ cmd__appserver_run() {
   fi
   now > "$S/appserver/activity"
   touch "$S/agent.started"
+  appserver_snapshot
   printf '%s\n' "$$" > "$S/appserver/ready"
   while :; do
     if ! appserver_connected; then appserver_reconnect; last_poll=0; fi
@@ -530,6 +580,29 @@ appserver_status() (
   appserver_recovery_info
   printf '%s\n' "$AS_SNAPSHOT"
 )
+appserver_cached_row() {
+  local path=$1 time=$2 dir=${1%/meta} client=false pid=''
+  [ ! -f "$dir/appserver/client.pid" ] || read -r pid < "$dir/appserver/client.pid" || true
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then client=true; fi
+  jq -c --argjson at "$time" --argjson client "$client" --arg transcript "${3:-}" \
+    --rawfile cache <(cat "$dir/appserver/status.json" 2>/dev/null || true) \
+    --rawfile 'done' <(cat "$dir/done.json" 2>/dev/null || true) \
+    --rawfile last <(tail -c 200 "$dir/log" 2>/dev/null || true) '
+    . as $meta |
+    ((try ($cache|fromjson|select(type=="object" and (.observed_at|type)=="number")) catch null) // null) as $cached |
+    (if $cached.thread_id!=null and $cached.thread_id!=$meta.thread_id then null else $cached end) as $valid |
+    ({agent_status:"unknown",alive:false,question_pending:false,recoveries:0,last_recovery_reason:null} + $valid |
+      if $client then . else .alive=false | .question_pending=false |
+        .agent_status=(if $meta.status=="done" or $meta.status=="landed" or $meta.status=="cancelled" or $meta.cleaned_at!=null then "gone" else "unknown" end) end |
+      .status_age_seconds=(if $valid.observed_at!=null then [0,($at-$valid.observed_at)]|max else null end)) as $info |
+    . + {done_head:(try ($done|fromjson|.head) catch null),transcript:(if $transcript=="" then null else $transcript end),backend:"appserver",alive:$info.alive,
+      agent_status:$info.agent_status,agent_dead:false,tmux:false,elapsed:($at-.started),
+      last_log:($last|split("\n")|map(select(length>0))|last // ""),question_pending:$info.question_pending,
+      goal_stalled:false,goal_active:false,agent_state_seq:null,agent_session:null,capacity_detected:false,
+      appserver:$info,recoveries:$info.recoveries,last_recovery_reason:$info.last_recovery_reason,
+      status_age_seconds:$info.status_age_seconds,capacity_retry_at:(.capacity.next_try_at // null)} |
+    if .status=="waiting-capacity" then .agent_status="waiting-capacity" else . end' "$path"
+}
 appserver_recovery_info() {
   local info='{"recoveries":0,"last_recovery_reason":null}' retry=null
   if [ -f "$S/appserver/recoveries.json" ]; then info=$(cat "$S/appserver/recoveries.json")
@@ -738,20 +811,29 @@ appserver_require_stopped() {
   appserver_request stop >/dev/null || fail 'App Server turn stop is unconfirmed; worktree retained'
 }
 cmd__appserver_watch() (
-  local path
+  local path after='' pass candidate
   [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be positive seconds'
-  for path in "$DV_STATE"/*/meta; do
-    [ -f "$path" ] || continue
-    jq -e '.backend=="appserver" and (.status=="running" or .status=="pr" or .status=="waiting-capacity")' "$path" >/dev/null || continue
-    load_issue "$(jq -r .issue "$path")"
-    if ! appserver_alive; then
-      jq -e '.status=="running" and (.thread_id|type)=="string"' "$S/meta" >/dev/null || continue
-      if [ -f "$S/appserver/blocked" ] || appserver_done_current; then continue; fi
-      # Claim before launch: repeated/concurrent scans get one attempt per job.
-      (set -C; printf '%s\n' "$(now)" > "$S/appserver/watch-restart.sent") 2>/dev/null || continue
-      appserver_start || true
-      continue
-    fi
-    appserver_request recover >/dev/null || true
+  [ ! -f "$DV_STATE/.appserver-watch-after" ] || read -r after < "$DV_STATE/.appserver-watch-after" || true
+  for pass in after wrap; do
+    for path in "$DV_STATE"/*/meta; do
+      [ -f "$path" ] || continue
+      candidate=${path%/meta}; candidate=${candidate##*/}
+      if [ "$pass" = after ]; then [[ "$candidate" > "$after" ]] || continue
+      else [[ "$candidate" > "$after" ]] && continue; fi
+      jq -e '.backend=="appserver" and (.status=="running" or .status=="pr" or .status=="waiting-capacity")' "$path" >/dev/null || continue
+      load_issue "$candidate"
+      # Advance BEFORE waiting: a host deadline may kill this sweep while an
+      # early client is unresponsive. The next round starts with its successor.
+      printf '%s\n' "$candidate" | appserver_atomic "$DV_STATE/.appserver-watch-after"
+      if ! appserver_alive; then
+        jq -e '.status=="running" and (.thread_id|type)=="string"' "$S/meta" >/dev/null || continue
+        if [ -f "$S/appserver/blocked" ] || appserver_done_current; then continue; fi
+        # Claim before launch: repeated/concurrent scans get one attempt per job.
+        (set -C; printf '%s\n' "$(now)" > "$S/appserver/watch-restart.sent") 2>/dev/null || continue
+        appserver_start || true
+        continue
+      fi
+      appserver_request recover >/dev/null || true
+    done
   done
 )

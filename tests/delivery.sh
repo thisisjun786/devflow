@@ -190,7 +190,7 @@ ENV
   test -d "$LAND_WT"
   jq -e '.status=="landed"' "$DV_STATE/LAND-1/meta"
   test -f "$DV_STATE/LAND-1/land-result.json"
-  test ! -f "$DV_STATE/LAND-1/events.log"
+  jq -se 'any(.[]; .kind=="landed")' "$DV_STATE/LAND-1/events.log"
   land_merged_success
 }
 case_land_merged_dirty() {

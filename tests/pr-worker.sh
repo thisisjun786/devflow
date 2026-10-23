@@ -112,12 +112,13 @@ case_pr_worker_revive() {
   wait_file "$DV_STATE/PW-1/agent.exit"
   wait_file "$DV_STATE/PW-1/revive/done"
   wait_file "$CASE_DIR/herdr/w-PW-1/exit"
+  if [ "${DV_PR_LATE_WAITER:-0}" = 1 ]; then wait_file "$DV_STATE/PW-1/late-waiter/exited"; fi
   local wt
   wt=$(jq -r .worktree "$DV_STATE/PW-1/meta")
   test -f "$wt/ci-fix" && test -f "$wt/review-fix"
   grep -F 'pr-snapshot.json' "$DV_STATE/PW-1/worker-input"
   jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/PW-1/done.json"
-  jq -se 'all(.[]; .kind=="done") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
+  jq -se 'all(.[]; .kind=="done" or .kind=="pr-opened") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
 }
 case_pr_worker_revive_policy() {
   case_pr_worker_revive
@@ -174,6 +175,26 @@ kill() {
   fi
   return 0
 }
+# Hold one completed liveness observation until the competing waiter has
+# revived and completed the worker. This makes the stale observation explicit.
+source() {
+  builtin source "$@" || return
+  if [ "${DV_PR_LATE_WAITER:-0}" = 1 ] && [ "${1##*/}" = commands.sh ]; then
+    eval "$(declare -f agent_gone | sed '1s/agent_gone/fixture_agent_gone/')"
+    agent_gone() {
+      fixture_agent_gone "$@" || return $?
+      if [ "${command:-}" = pr-wait ] && mkdir "$S/late-waiter" 2>/dev/null; then
+        printf '%s\n' "$$" > "$S/late-waiter/pid"
+        while [ ! -f "$S/revive/done" ] || [ ! -f "$S/agent.exit" ]; do sleep 0.05; done
+        # Let the other sender release the operation lock before resuming the
+        # stale observation; the test must reach the duplicate-revival guard.
+        while [ -d "$S/.operation" ]; do sleep 0.05; done
+        trap 'touch "$S/late-waiter/exited"' EXIT
+      fi
+      return 0
+    }
+  fi
+}
 STUB
   export BASH_ENV="$CASE_DIR/waiter-race-env" DV_PR_EXIT_GATE=1
   case_pr_worker_revive
@@ -189,7 +210,7 @@ case_pr_worker_stale_recovery() {
     sleep 0.1
   done
   ! kill -0 "$pid" 2>/dev/null
-  jq -se 'all(.[]; .kind=="done") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
+  jq -se 'all(.[]; .kind=="done" or .kind=="pr-opened") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
 }
 case_pr_worker_exec_missing_pr() {
   repo missing-pr remote
@@ -211,7 +232,7 @@ case_pr_worker_native_exec() {
   exec_wait
   jq -e '.backend=="exec" and .exec_status=="done" and .status=="ready"' "$DV_STATE/EX-1/meta"
   jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/EX-1/done.json"
-  jq -se 'map(.kind)==["done"]' "$DV_STATE/EX-1/events.log"
+  jq -se 'map(.kind)==["pr-opened","done"]' "$DV_STATE/EX-1/events.log"
   test "$(cat "$DV_STATE/EX-1/stub-count")" = 2
   test ! -d "$DV_STATE/EX-1/revive"
 }
@@ -221,4 +242,8 @@ case_pr_worker_large_comments() {
   jq -n --rawfile body "$CASE_DIR/review-body" '[{body:$body,path:"qa.sh",line:1}]' > "$GH_STUB_DIR/comments"
   dv pr-wait P-1 --foreground > "$CASE_DIR/snapshot"
   jq -e '.green and (.snapshot.inline_comments[0].body|length)==200000' "$CASE_DIR/snapshot"
+}
+case_pr_worker_late_waiter() {
+  export DV_PR_LATE_WAITER=1
+  case_pr_worker_exit_race
 }
