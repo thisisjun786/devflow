@@ -118,6 +118,24 @@ case_update_safety() {
   update_wait_watcher "$UPDATE_NEW"
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
 }
+update_wait_scan() {
+  local attempt pidfile pid busy state
+  wait_file "$CASE_DIR/scan-$1"
+  # Queue ticks no longer imply completion of a host scan. Keep the fake
+  # clock fixed until its background owner finishes, including after exec.
+  for attempt in {1..100}; do
+    busy=false
+    for pidfile in "$DV_HOME"/reconcile/*/pid; do
+      [ -f "$pidfile" ] || continue
+      pid=$(cat "$pidfile")
+      state=$(ps -p "$pid" -o stat= 2>/dev/null) || state=''
+      if kill -0 "$pid" 2>/dev/null && [[ "$state" != Z* ]]; then busy=true; fi
+    done
+    [ "$busy" = true ] || return 0
+    sleep 0.05
+  done
+  return 1
+}
 case_update_stall_cadence() {
   update_fixture; update_git_fixture
   export DV_HOSTS=$DV_HOST DV_STALL_AFTER=600
@@ -138,16 +156,21 @@ sleep() {
   fi
   command sleep "$@"
 }
-if [ "${0##*/}" = dv ] && [ "${1:-}" = status ]; then touch "$CASE_DIR/scan-$(date +%s)"; fi
+if [ "${0##*/}" = dv ] && [ "${1:-}" = status ]; then
+  # Make the asynchronous scan/queue-tick ordering deterministic on fast hosts.
+  command sleep 0.2
+  touch "$CASE_DIR/scan-$(date +%s)"
+fi
 CONFIG
   "$UPDATE_ROOT/bin/dv-watch" > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_file "$CASE_DIR/tick-10000"
   update_wait_idle
+  update_wait_scan 10000
   local tick expected
   for tick in 10060 10120; do
     printf '%s\n' "$tick" > "$CASE_DIR/clock.next"; mv "$CASE_DIR/clock.next" "$CASE_DIR/clock"
     wait_file "$CASE_DIR/tick-$tick"
-    test -f "$CASE_DIR/scan-$tick"
+    update_wait_scan "$tick"
     printf 'time=%s fetches=%s expected=1\n' "$tick" "$(wc -l < "$CASE_DIR/fetches" | tr -d ' ')"
     test "$(wc -l < "$CASE_DIR/fetches" | tr -d ' ')" = 1
   done
@@ -161,7 +184,7 @@ CONFIG
   for tick in 10180 11800 11860; do
     printf '%s\n' "$tick" > "$CASE_DIR/clock.next"; mv "$CASE_DIR/clock.next" "$CASE_DIR/clock"
     wait_file "$CASE_DIR/tick-$tick"
-    test -f "$CASE_DIR/scan-$tick"
+    update_wait_scan "$tick"
     expected=1; [ "$tick" -lt 11800 ] || expected=2
     printf 'time=%s fetches=%s expected=%s\n' "$tick" "$(wc -l < "$CASE_DIR/fetches" | tr -d ' ')" "$expected"
     test "$(wc -l < "$CASE_DIR/fetches" | tr -d ' ')" = "$expected"

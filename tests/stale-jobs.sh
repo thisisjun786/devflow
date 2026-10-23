@@ -25,6 +25,17 @@ running_job() {
     '{issue:$issue,repo:$repo,worktree:$wt,branch:$branch,base:"main",host:"test-host",agent:"codex",
       mode:"goal",started:1,status:"running",start_head:$head}' > "$DV_STATE/$issue/meta"
 }
+pr_sweep_wait() {
+  # The job host's PR sweep is detached from the watcher; let it finish.
+  local holder
+  sleep 0.3
+  for _ in {1..100}; do
+    holder=$(cat "$DV_STATE/.pr-reconcile/owner" 2>/dev/null) || return 0
+    kill -0 "$holder" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  return 1
+}
 event_count() { jq -se --arg kind "$2" '[.[]|select(.kind==$kind)]|length' "$DV_STATE/$1/events.log" 2>/dev/null || printf '0\n'; }
 case_reconcile_stale_prs() {
   # One watcher pass closes merged PRs (ready or still pr), marks a PR closed
@@ -42,6 +53,7 @@ case_reconcile_stale_prs() {
   # Later passes must not repeat the landing or the closing.
   sleep 2.5
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  pr_sweep_wait
   cat "$CASE_DIR/watch.log" "$DV_HOME/reconcile.log" 2>/dev/null || true
   for issue in R-1 R-2; do
     jq -e '.status=="landed" and .landed_at!=null' "$DV_STATE/$issue/meta"
@@ -285,6 +297,7 @@ ENV
   for _ in {1..100}; do [ -d "$DV_WORK/C-1" ] || break; sleep 0.1; done
   sleep 1.5
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  pr_sweep_wait
   jq -e '.status=="landed" and .pr_reconcile_pending==null' "$DV_STATE/C-1/meta"
   test ! -d "$DV_WORK/C-1"
   test "$(event_count C-1 landed)" = 1

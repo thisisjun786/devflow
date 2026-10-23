@@ -233,6 +233,32 @@ cmd_pr_reconcile() {
       cmd_kick closed "$ISSUE" 'PR closed without merge; worktree and branch retained' ;;
   esac
 }
+# Open PR jobs, and landings whose cleanup or landed event did not finish.
+pr_reconcile_filter='((.status=="pr" or .status=="ready" or .status=="waiting-base") and .pr!=null) or .pr_reconcile_pending==true'
+cmd_pr_reconcile_start() {
+  # The watcher's host pass is killed at its deadline. Detach the sweep, like
+  # a PR waiter, so GitHub queries and cleanup never lose the issue lock.
+  [ "$#" -eq 0 ] || fail 'usage: dv _pr-reconcile-start'
+  local holder
+  holder=$(cat "$DV_STATE/.pr-reconcile/owner" 2>/dev/null) || holder=''
+  if [[ "$holder" =~ ^[1-9][0-9]*$ ]] && kill -0 "$holder" 2>/dev/null; then return 0; fi
+  if command -v setsid >/dev/null; then
+    (set -m; nohup setsid "$DV_ROOT/bin/dv" _pr-reconcile-sweep >> "$DV_STATE/.pr-reconcile.log" 2>&1 < /dev/null &)
+  else
+    (set -m; nohup "$DV_ROOT/bin/dv" _pr-reconcile-sweep >> "$DV_STATE/.pr-reconcile.log" 2>&1 < /dev/null &)
+  fi
+}
+cmd_pr_reconcile_sweep() {
+  [ "$#" -eq 0 ] || fail 'usage: dv _pr-reconcile-sweep'
+  local meta
+  # One sweep per host covers every job; a dead owner's lock is reclaimed.
+  owned_lock "$DV_STATE/.pr-reconcile" "$$" || return 0
+  trap 'owned_unlock "$DV_STATE/.pr-reconcile" "$$"' EXIT
+  for meta in "$DV_STATE"/*/meta; do
+    jq -e "$pr_reconcile_filter" "$meta" >/dev/null 2>&1 || continue
+    "$DV_ROOT/bin/dv" _pr-reconcile "$(basename "$(dirname "$meta")")" || true
+  done
+}
 already_merged_verify() {
   # Work delivered by another PR: its commit is on the base, and this branch
   # adds nothing the base lacks. Prints the delivery record.
@@ -391,7 +417,11 @@ cmd_pr_wait() {
     mv "$tmp" "$S/pr-snapshot.json"
     if [ "$(jq -r .state "$S/pr-snapshot.json")" != OPEN ]; then
       [ "$foreground" != true ] || fail 'PR is no longer open'
-      rm "$review"; return 0
+      rm "$review"
+      # Hand a merged or closed PR straight to reconciliation (#253).
+      pr_wait_unlock; trap - EXIT
+      "$DV_ROOT/bin/dv" _pr-reconcile "$ISSUE" || true
+      return 0
     fi
     current=$(jq -r '.head // empty' "$S/meta")
     if [ -n "$current" ] && [ "$current" != "$head" ]; then continue; fi

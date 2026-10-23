@@ -12,7 +12,9 @@ capacity_clock_advance() {
 }
 capacity_status_wait() {
   local issue=$1 i
-  for i in {1..20}; do
+  # Cached status no longer waits for a client RPC; allow the client's next
+  # poll/recovery to publish capacity metadata before exhausting this wait.
+  for i in {1..100}; do
     if dv status "$issue" --json > "$CASE_DIR/capacity-status" &&
       jq -e '.[0] | .status=="waiting-capacity" and .agent_status=="waiting-capacity" and .alive and .capacity_retry_at>0' "$CASE_DIR/capacity-status"; then return; fi
     sleep 0.05
