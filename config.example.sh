@@ -51,6 +51,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_REVIEW_BOTS:=codex}" # Codex review author regex
 : "${DV_REVIEW_ROUNDS:=4}" # maximum reviewed heads before unresolved P0/P1 block
 : "${DV_POLL_INTERVAL:=10}" # PR review interval
+: "${DV_CHECKS_INTERVAL:=60}" # gh pr checks --watch refresh; GraphQL budget is shared by every worker on the account
 : "${DV_POLISH:=1}" # 0 disables optional PR prose polishing
 : "${DV_POLISH_CMD:=}" # shell command; receives the prompt as its last argument
 : "${DV_POLISH_TIMEOUT:=180}" # seconds; default command uses local agy or ssh lina-os
