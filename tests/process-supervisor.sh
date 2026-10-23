@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Sourced by run.sh. Keep the heavy fd in the supervisor, never in fixtures.
 runner_group_ids() {
-  local file
+  local file child
   for file in "$1"/groups/*; do
     [ -f "$file" ] || continue
     printf '%s\n' "${file##*/}"
   done
   for file in "$1"/children/*; do
-    [ ! -d "$file" ] || runner_group_ids "$file"
+    [ -f "$file" ] || continue
+    child=$(cat "$file" 2>/dev/null) || continue
+    [ ! -d "$child" ] || runner_group_ids "$child"
   done
 }
 runner_live_groups() {
@@ -19,8 +21,10 @@ runner_live_groups() {
     END {for(g in live) print g}'
 }
 runner_remove_case_dirs() {
-  local dir=$1 child case_dir
-  for child in "$dir"/children/*; do
+  local dir=$1 file child case_dir
+  for file in "$dir"/children/*; do
+    [ -f "$file" ] || continue
+    child=$(cat "$file" 2>/dev/null) || continue
     [ ! -d "$child" ] || runner_remove_case_dirs "$child"
   done
   if [ -f "$dir/case-dir" ]; then
@@ -28,14 +32,18 @@ runner_remove_case_dirs() {
     if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$case_dir"
     else rm -rf "$case_dir"; fi
   fi
+  rm -rf "$dir"
 }
 runner_stop_tmux() {
-  local dir=$1 child
-  for child in "$dir"/children/*; do
+  local dir=$1 file child socket
+  for file in "$dir"/children/*; do
+    [ -f "$file" ] || continue
+    child=$(cat "$file" 2>/dev/null) || continue
     [ ! -d "$child" ] || runner_stop_tmux "$child"
   done
   if [ -f "$dir/tmux-socket" ] && command -v tmux >/dev/null; then
-    tmux -L "$(cat "$dir/tmux-socket")" kill-server 2>/dev/null || true
+    socket=$(cat "$dir/tmux-socket" 2>/dev/null) || return 0
+    [ -z "$socket" ] || tmux -L "$socket" kill-server 2>/dev/null || true
   fi
 }
 runner_cleanup_case() {
@@ -62,19 +70,20 @@ runner_cleanup_case() {
     exit 1
   fi
   runner_remove_case_dirs "$DV_TEST_PROCESS_DIR"
-  rm -rf "$DV_TEST_PROCESS_DIR"
   exit "$rc"
 }
 runner_supervise_case() {
-  local runner_child='' rc=0 process_root=${DV_TEST_TMP:-${TMPDIR:-/tmp}}
+  local runner_child='' rc=0 process_root=${DV_TEST_TMP:-${TMPDIR:-/tmp}} parent=${DV_TEST_PROCESS_DIR:-}
   # A parent must own nested registries too: simultaneous TERM of both
   # supervisors must not let the outer KILL deadline strand inner fixtures.
-  if [ -n "${DV_TEST_PROCESS_DIR:-}" ] && [ -d "$DV_TEST_PROCESS_DIR/groups" ]; then
-    process_root="$DV_TEST_PROCESS_DIR/children"
-    mkdir -p "$process_root"
-  fi
+  # Keep the registry in the child's selected scratch root; only its reference
+  # belongs to the parent, which may have a different DV_TEST_TMP/TMPDIR.
   DV_TEST_PROCESS_DIR=$(mktemp -d "$process_root/dv-processes.XXXXXX")
   mkdir "$DV_TEST_PROCESS_DIR/groups"
+  if [ -n "$parent" ] && [ -d "$parent/groups" ]; then
+    mkdir -p "$parent/children"
+    printf '%s\n' "$DV_TEST_PROCESS_DIR" > "$parent/children/$$-${DV_TEST_PROCESS_DIR##*/}"
+  fi
   DV_TEST_PS=${DV_TEST_PS:-$(command -v ps)}
   DV_TEST_SUPERVISOR_GROUP=$("$DV_TEST_PS" -o pgid= -p "$$")
   DV_TEST_SUPERVISOR_GROUP=${DV_TEST_SUPERVISOR_GROUP//[[:space:]]/}
