@@ -815,6 +815,36 @@ appserver_sender_legacy() (
 )
 case_appserver_sender_legacy_idle() { appserver_sender_legacy idle; }
 case_appserver_sender_legacy_partial() { appserver_sender_legacy partial; }
+case_appserver_sender_close() (
+  DV_ROOT=$ROOT
+  source "$ROOT/lib/appserver.sh"
+  AS_IO="$CASE_DIR/sender-close"; mkdir "$AS_IO"
+  mkfifo "$AS_IO/input"
+  exec 9<> "$AS_IO/input"
+  mkdir() {
+    env mkdir "$@" || return
+    if [ "$1" = "$AS_IO/send-channel" ]; then
+      sh -c 'printf "%s\n" "$PPID"' > "$CASE_DIR/sender.pid"
+    fi
+  }
+  touch() {
+    if [ "$1" = "$AS_IO/send-channel/eof" ]; then sleep 1; fi
+    env touch "$@"
+  }
+  AS_PID='' AS_RECEIVE='' AS_WRITER=''
+  appserver_ws_send 0 < "$AS_IO/input" > "$CASE_DIR/frames" & AS_SEND=$!
+  wait_file "$CASE_DIR/sender.pid"
+  local sender recorded=$AS_SEND rc=0
+  sender=$(cat "$CASE_DIR/sender.pid")
+  trap 'teardown_stop_pidfile "$CASE_DIR/sender.pid"' EXIT
+  # The recorded child must own the sender's reader and EXIT cleanup directly.
+  printf 'recorded=%s sender=%s\n' "$recorded" "$sender"
+  appserver_close || rc=$?
+  test "$rc" = 0
+  test "$recorded" = "$sender"
+  if kill -0 "$sender" 2>/dev/null; then return 1; fi
+  test ! -d "$CASE_DIR/sender-close"
+)
 case_appserver_reader_preempt() {
   export BASH_ENV="$ROOT/tests/fixtures/legacy-read-env" DV_TEST_READ_PREEMPT=appserver_read_line
   appserver_setup

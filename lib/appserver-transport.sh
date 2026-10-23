@@ -74,7 +74,9 @@ appserver_ws_frame() {
     appserver_ws_mask "$file" "$key"
   else cat "$file"; fi
 }
-appserver_ws_send() (
+appserver_ws_send() {
+  # Callers already run the sender in a pipeline/background child. Another
+  # function subshell would make $! name a wrapper that cannot join our reader.
   local masked=$1 _wake file
   send_reader=''
   trap 'if [ -n "$send_reader" ]; then kill "$send_reader" 2>/dev/null || true; wait "$send_reader" 2>/dev/null || true; fi' EXIT
@@ -112,7 +114,7 @@ appserver_ws_send() (
       rm -f "$file" "${file%.ready}"
     done
   done
-)
+}
 appserver_ws_bytes() {
   local remaining=$1 target=$2 before after
   : > "$target"
