@@ -161,7 +161,7 @@ appserver_reexec_delivery() {
   # queued.json sorts before the new request.*.json status request. Its reply
   # therefore observes the queued mutation's receipt and completion marker,
   # including an unknown RPC that legitimately consumes the full deadline.
-  dv status AS-1 --json > "$CASE_DIR/after-queue-status"
+  dv status AS-1 --live --json > "$CASE_DIR/after-queue-status"
   test -f "$state/outbox/queued.finished"
   jq -e '.[0].alive' "$CASE_DIR/after-queue-status"
   jq -e --arg outcome "$outcome" '.outcome==$outcome' "$state/outbox/queued.receipt"
@@ -172,7 +172,7 @@ appserver_reexec_delivery() {
   rm "$CASE_DIR/server/resumed"
   appserver_checkout_update
   appserver_wait_updated
-  dv status AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
   jq -se '[.[]|select(.method=="turn/steer")]|length==2' "$CASE_DIR/server/requests"
   test "$(wc -l < "$CASE_DIR/client-versions" | tr -d ' ')" = 2
 }
@@ -225,7 +225,7 @@ appserver_legacy_guard() {
   appserver_checkout_update
   appserver_wait_updated
   dv _appserver-watch
-  dv status AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
   test -f "$state/blocked"
   jq -e '.capacity==null' "$DV_STATE/AS-1/meta"
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
@@ -319,11 +319,11 @@ case_appserver_states() {
   for state in idle active systemError gone unknown; do
     case "$state" in idle) expected=idle-with-goal-active ;; active) expected=working ;; systemError) expected=failed ;; *) expected=$state ;; esac
     printf '%s\n' "$state" > "$CASE_DIR/server/status"
-    dv status AS-1 --json | jq -e --arg expected "$expected" '.[0].agent_status==$expected'
+    dv status --live AS-1 --json | jq -e --arg expected "$expected" '.[0].agent_status==$expected'
   done
   printf 'idle\n' > "$CASE_DIR/server/status"
   printf 'complete\n' > "$CASE_DIR/server/goal"
-  dv status AS-1 --json | jq -e '.[0].agent_status=="goal-complete"'
+  dv status --live AS-1 --json | jq -e '.[0].agent_status=="goal-complete"'
   dv 'done' AS-1
   dv clean AS-1
   test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
@@ -384,7 +384,7 @@ case_appserver_large_reply() {
       items:[{type:"agentMessage",id:"m1",text:$big},{type:"agentMessage",id:"m2",text:"finished"}]}]}}' \
     > "$CASE_DIR/server/thread.json"
   printf 'complete\n' > "$CASE_DIR/server/goal"
-  dv status AS-1 --json | jq -e '.[0] | .agent_status=="goal-complete" and .alive==true'
+  dv status --live AS-1 --json | jq -e '.[0] | .agent_status=="goal-complete" and .alive==true'
   dv 'done' AS-1
   dv clean AS-1
   test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
@@ -406,7 +406,7 @@ case_appserver_status_landed_cheap() {
 case_appserver_failed() {
   appserver_setup
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"failed","items":[],"error":{"message":"model failed","codexErrorInfo":"other"}}]}}' > "$CASE_DIR/server/thread.json"
-  dv status AS-1 --json | jq -e '.[0] | .agent_status=="failed" and .appserver.error.codexErrorInfo=="other"'
+  dv status --live AS-1 --json | jq -e '.[0] | .agent_status=="failed" and .appserver.error.codexErrorInfo=="other"'
   dv _appserver-watch
   jq -se 'any(.[]; .kind=="failed" and (.message|contains("model failed")))' "$DV_STATE/AS-1/events.log"
   dv _appserver-watch
@@ -419,10 +419,10 @@ case_appserver_retried_error() {
   printf 'complete\n' > "$CASE_DIR/server/goal"
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"completed","items":[],"error":null}]}}' > "$CASE_DIR/server/thread.json"
   printf '%s\n' '{"method":"error","params":{"error":{"message":"Reconnecting... 1/5"},"willRetry":true,"threadId":"thread-1","turnId":"turn-1"}}' > "$DV_STATE/AS-1/appserver/error.json"
-  dv status AS-1 --json | jq -e '.[0] | .agent_status=="goal-complete"'
+  dv status --live AS-1 --json | jq -e '.[0] | .agent_status=="goal-complete"'
   # A final, non-retried error on the same completed turn still counts.
   printf '%s\n' '{"method":"error","params":{"error":{"message":"fatal"},"willRetry":false,"threadId":"thread-1","turnId":"turn-1"}}' > "$DV_STATE/AS-1/appserver/error.json"
-  dv status AS-1 --json | jq -e '.[0] | .agent_status=="failed"'
+  dv status --live AS-1 --json | jq -e '.[0] | .agent_status=="failed"'
 }
 case_appserver_stall() {
   appserver_setup
@@ -441,10 +441,10 @@ case_appserver_question() {
   printf '%s\n' '{"id":"question-1","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","questions":[{"id":"format","question":"Choose format","options":[]}]}}' > "$CASE_DIR/server/notify"
   for _ in {1..100}; do [ ! -f "$DV_STATE/AS-1/events.log" ] || break; sleep 0.1; done
   jq -se 'any(.[]; .kind=="question" and (.message|fromjson|.questions[0].id)=="format")' "$DV_STATE/AS-1/events.log"
-  dv status AS-1 --json | jq -e '.[0].question_pending'
+  dv status --live AS-1 --json | jq -e '.[0].question_pending'
   dv send AS-1 'JSON' | jq -e '.outcome=="accepted"'
   jq -se 'any(.[]; .id=="question-1" and .result.answers.format.answers==["JSON"])' "$CASE_DIR/server/requests"
-  dv status AS-1 --json | jq -e '.[0].question_pending|not'
+  dv status --live AS-1 --json | jq -e '.[0].question_pending|not'
 }
 case_appserver_auto() {
   repo automatic
@@ -611,7 +611,7 @@ case_appserver_reconnect() {
   appserver_setup
   kill "$(cat "$DV_STATE/AS-1/appserver/client.pid")"
   wait_file "$DV_STATE/AS-1/appserver/exited"
-  dv status AS-1 --json | jq -e '.[0].agent_status=="working" and .[0].alive'
+  dv status --live AS-1 --json | jq -e '.[0].agent_status=="working" and .[0].alive'
   dv send AS-1 'reconnect same thread' | jq -e '.outcome=="accepted"'
   jq -se '[.[]|select(.method=="thread/start")]|length==1' "$CASE_DIR/server/requests"
   jq -se 'any(.[]; .method=="thread/resume" and .params.threadId=="thread-1")' "$CASE_DIR/server/requests"
@@ -722,7 +722,7 @@ case_appserver_pipeline() {
   appserver_setup remote
   appserver_wait_work
   jq -e '.files==1' "$DV_STATE/AS-1/done.json"
-  dv status AS-1 --json | jq -e '.[0] | .status=="ready" and .agent_status=="goal-complete" and .backend=="appserver" and (.tmux|not)'
+  dv status --live AS-1 --json | jq -e '.[0] | .status=="ready" and .agent_status=="goal-complete" and .backend=="appserver" and (.tmux|not)'
   printf 'Exercise synthetic App Server delivery.\n' > "$DV_STATE/AS-1/pr.md"
   dv pr AS-1
   dv pr-wait AS-1 --foreground --review-handled > "$CASE_DIR/pr-result"
@@ -1047,7 +1047,7 @@ appserver_progress() {
   local turn
   turn=$(cat "$CASE_DIR/server/turn-id")
   jq -cn --arg turn "$turn" '{method:"item/completed",params:{threadId:"thread-1",turnId:$turn,item:{id:"progress",type:"agentMessage",text:"Finished another step"}}}' > "$CASE_DIR/server/notify"
-  dv status AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
   for _ in {1..100}; do
     [ -f "$DV_STATE/AS-1/appserver/recovery" ] || return 0
     sleep 0.1
@@ -1073,7 +1073,7 @@ appserver_idle_done() {
   appserver_age
   dv _appserver-watch
   jq -se '[.[]|select(.method=="turn/start")]|length==2' "$CASE_DIR/server/requests"
-  dv status AS-1 --json | jq -e '.[0] | .recoveries==1 and .last_recovery_reason=="idle-without-done"'
+  dv status --live AS-1 --json | jq -e '.[0] | .recoveries==1 and .last_recovery_reason=="idle-without-done"'
 }
 case_appserver_idle_done() { appserver_idle_done absent; }
 case_appserver_goal_done() { appserver_idle_done complete; }
@@ -1098,8 +1098,8 @@ case_appserver_episode() {
   appserver_age
   dv _appserver-watch
   jq -se '[.[]|select(.method=="turn/interrupt")]|length==2' "$CASE_DIR/server/requests"
-  dv status AS-1 --json | jq -e '.[0] | .recoveries==2 and .last_recovery_reason=="stalled"'
-  dv status AS-1 | grep 'recoveries=2.*last_recovery_reason=stalled'
+  dv status --live AS-1 --json | jq -e '.[0] | .recoveries==2 and .last_recovery_reason=="stalled"'
+  dv status --live AS-1 | grep 'recoveries=2.*last_recovery_reason=stalled'
 }
 case_appserver_budget() {
   appserver_setup
@@ -1114,7 +1114,7 @@ case_appserver_budget() {
   dv _appserver-watch
   jq -se '[.[]|select(.method=="turn/interrupt")]|length==3' "$CASE_DIR/server/requests"
   jq -se '[.[]|select(.kind=="blocked")]|length==1 and (.[0].message|contains("budget"))' "$DV_STATE/AS-1/events.log"
-  dv status AS-1 --json | jq -e '.[0].recoveries==3'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==3'
 }
 case_appserver_budget_restart() {
   export DV_RECOVER_MAX=1
@@ -1124,7 +1124,7 @@ case_appserver_budget_restart() {
   appserver_progress
   kill "$(cat "$DV_STATE/AS-1/appserver/client.pid")"
   wait_file "$DV_STATE/AS-1/appserver/exited"
-  dv status AS-1 --json | jq -e '.[0].recoveries==1 and .[0].last_recovery_reason=="stalled"'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==1 and .[0].last_recovery_reason=="stalled"'
   dv send AS-1 'resume after reconnect' >/dev/null
   appserver_age
   dv _appserver-watch
@@ -1141,13 +1141,13 @@ case_appserver_capacity() {
   dv _appserver-watch
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
   if [ -f "$DV_STATE/AS-1/events.log" ]; then jq -se 'all(.[]; .kind!="failed" and .kind!="blocked")' "$DV_STATE/AS-1/events.log"; fi
-  dv status AS-1 --json | jq -e '.[0].recoveries==0 and .[0].appserver.capacity_retry_at!=null'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==0 and .[0].appserver.capacity_retry_at!=null'
   # The client remains responsive during backoff. Expire only the fixture timer.
   capacity_due AS-1
   dv _appserver-watch
   dv _appserver-watch
   jq -se '[.[]|select(.method=="turn/start" and (.params.input[0].text|startswith("Continue the interrupted request")))]|length==1' "$CASE_DIR/server/requests"
-  dv status AS-1 --json | jq -e '.[0].recoveries==0 and .[0].last_recovery_reason==null'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==0 and .[0].last_recovery_reason==null'
 }
 case_appserver_rate_limit() {
   export DV_CAPACITY_BACKOFF=1
@@ -1157,12 +1157,12 @@ case_appserver_rate_limit() {
   jq -e '.capacity!=null' "$DV_STATE/AS-1/meta"
   sleep 1
   dv _appserver-watch
-  dv status AS-1 --json | jq -e '.[0].recoveries==0 and .[0].last_recovery_reason==null'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==0 and .[0].last_recovery_reason==null'
 }
 case_appserver_recovery_guards() {
   appserver_setup
   printf '%s\n' '{"id":"question-1","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","questions":[{"id":"format","question":"Choose format"}]}}' > "$CASE_DIR/server/notify"
-  dv status AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
   wait_file "$DV_STATE/AS-1/events.log"
   appserver_age
   dv _appserver-watch
@@ -1184,12 +1184,12 @@ case_appserver_recovery_uncertain() {
   dv _appserver-watch
   test -f "$DV_STATE/AS-1/appserver/blocked"
   printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"late","type":"agentMessage","text":"Late old progress"}}}' > "$CASE_DIR/server/notify"
-  dv status AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
   appserver_age
   dv _appserver-watch
   test -f "$DV_STATE/AS-1/appserver/recovery"
   jq -se '[.[]|select(.method=="turn/start")]|length==2' "$CASE_DIR/server/requests"
-  dv status AS-1 --json | jq -e '.[0].recoveries==1'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==1'
 }
 case_appserver_recovery_events() {
   appserver_setup
@@ -1200,16 +1200,16 @@ case_appserver_recovery_events() {
     '{"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","text":"Old progress"}}}' \
     '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-2"}}}' \
     '{"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-2","item":{"type":"userMessage"}}}' > "$CASE_DIR/server/notify"
-  dv status AS-1 --json >/dev/null
-  dv status AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
   test -f "$DV_STATE/AS-1/appserver/recovery"
   printf '%s\n' '{"method":"item/commandExecution/outputDelta","params":{"threadId":"thread-1","turnId":"turn-2","delta":"new output"}}' > "$CASE_DIR/server/notify"
-  dv status AS-1 --json >/dev/null
-  dv status AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
   test ! -f "$DV_STATE/AS-1/appserver/recovery"
   appserver_age
   dv _appserver-watch
-  dv status AS-1 --json | jq -e '.[0].recoveries==2'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==2'
 }
 case_appserver_recovery_early_progress() {
   appserver_setup
@@ -1219,23 +1219,23 @@ case_appserver_recovery_early_progress() {
   test ! -f "$DV_STATE/AS-1/appserver/recovery"
   appserver_age
   dv _appserver-watch
-  dv status AS-1 --json | jq -e '.[0].recoveries==2'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==2'
 }
 case_appserver_capacity_notification() {
   appserver_setup
   printf 'idle\n' > "$CASE_DIR/server/status"
   printf '%s\n' '{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"Rate limit reached"}}}' > "$CASE_DIR/server/notify"
-  dv status AS-1 --json >/dev/null
+  dv status --live AS-1 --json >/dev/null
   dv _appserver-watch
   jq -e '.capacity!=null' "$DV_STATE/AS-1/meta"
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
   capacity_due AS-1
   dv _appserver-watch
-  dv status AS-1 --json | jq -e '.[0].recoveries==0 and .[0].last_recovery_reason==null'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==0 and .[0].last_recovery_reason==null'
   appserver_progress
   appserver_age
   dv _appserver-watch
-  dv status AS-1 --json | jq -e '.[0].recoveries==1 and .[0].last_recovery_reason=="stalled"'
+  dv status --live AS-1 --json | jq -e '.[0].recoveries==1 and .[0].last_recovery_reason=="stalled"'
 }
 
 case_appserver_pr_idle_recover() {
