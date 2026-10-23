@@ -609,6 +609,10 @@ qa_finding() (
   fi
   jq -cn --arg marker "$marker" --arg url "$result" --arg match "$match" \
     '{marker:$marker,url:$url,action:(if $match=="" then "opened" else "commented" end)}' >> "$S/findings.jsonl"
+  # Publish after GitHub and the finding receipt commit, before QA completion.
+  # A matching issue's new qa label can also change scheduling priority.
+  if [ -z "$match" ]; then cmd_kick issue-opened "$ISSUE" "$result"
+  else cmd_kick issue-edited "$ISSUE" "$result"; fi
   rm "$body"
   printf '%s\n' "$result"
 )

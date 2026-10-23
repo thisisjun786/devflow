@@ -257,13 +257,99 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 ## 기기 자동 배정
 
+### 준비된 이슈 자동 채우기
+
+관리자 설정에 저장소를 한 번 등록하면 기존 `dv-watch`가 커밋된
+`done`/`landed`/`failed`/`canceled`, `bid-changed`, 이슈 열림·닫힘·label 변경 이벤트에서 빈 호스트 자리를
+채웁니다. idle tick에는 GitHub 준비 이슈를 조회하지 않습니다. 시작 시와 기존
+`DV_RECONCILE_INTERVAL`(기본 1800초) 안전 점검만 누락 이벤트를 보완하며,
+체크별 timer나 daemon을 추가하지 않습니다. 예:
+
+```bash
+DV_AUTOFILL_REPOS='example/app example/library'
+DV_AUTOFILL_BRIEF_example_app='/path/to/app-brief.md'
+```
+
+기본값은 빈 목록(비활성)입니다. 목록은 공백으로 구분한 GitHub `owner/repo`이며,
+brief override 변수는 소문자로 바꾼 `owner/repo`의 `/`, `.`, `-`를 `_`로
+치환합니다. override가 없으면 해당 저장소 기본 branch의 `.devflow/brief.md`를
+읽습니다. template은 shell로 실행하지 않습니다. 이슈 URL, 댓글 조회 명령,
+stacked 의존 PR, `Closes`와 `dv done` 지시를 덧붙여 기존 submit 경로로 전달합니다.
+template에는 저장소별 검증·승인·전달 규칙을 적으세요. 자동 ID는
+`AF-<owner>-<repo>-<repo checksum>-<issue number>`입니다.
+
+준비된 이슈는 열려 있고, 열린 sub-issue가 없고, 모든 `Depends on #N`이
+닫혔거나 열린 closing PR이 있으며, `needs-owner` label과 기존 제출·열린 PR이
+없는 이슈입니다. `Depends on owner/repo#N`과 GitHub issue URL도 읽습니다.
+열린 PR 의존성은 작업 전에 그 PR head를 fetch/merge하도록 brief에 남기며,
+같은 저장소에서는 PR 본문에 `Depends on #<PR 번호>`를 넣어 기존 stack landing
+gate를 사용합니다. 기존 수동 제출은 저장소 identity와 ID의 마지막 이슈 번호로도
+중복을 확인합니다. 이미 취소·실패한 제출은 자동으로 새 작업으로 덮어쓰지 않습니다.
+
+가장 낮은 열린 milestone 번호부터 진행하고, 같은 milestone에서는 `qa` label이
+먼저입니다. 그 뒤 다음 milestone, 마지막으로 milestone 없는 작업을 진행합니다.
+milestone/QA 완료 gate는 의존성이 없는 다음 코드를 막지 않습니다. 이는 별도
+milestone 스크립트 `fill-m1.sh`, `start-m2-worker.sh`와 고정 12개 임계값을
+대체합니다. 기존 스크립트를 함께 실행하지 말고 allowlist, template, host 설정으로
+운영하세요. 병합 후 QA 자체는 아래 `DV_QA` 설정을 따릅니다.
+
+`dv queue --summary` 또는 `dv queue --summary --json`은 host별 effective slots,
+running, free, ready-but-not-started와 이유를 보여 줍니다. API 실패는 준비 상태로
+추측하지 않고 오류를 표시하며, 누락된 brief도 제출하지 않습니다. 마지막 제출
+시도 이유는 `last_attempt_reason`으로 구별합니다. 알림과 최근 snapshot은
+`$DV_HOME/autofill/`에 남습니다. 준비 작업과 빈 슬롯이 함께 10분을 초과하면
+`stalled`, reason=`fleet-underused`를 저장소 manager notices에 한 번 보냅니다.
+owner에게 전달하지 않으며 manager가 아직 없으면 시작될 때까지 notice를 보관합니다.
+10분 초과 여부는 다음 관련 이벤트나 안전 점검에서 판단합니다.
+
+devflow는 PR 생성, QA finding 등록, 입찰 snapshot 변경, 확인된 병합·완료·실패를
+기존 이벤트 큐에 직접 발행합니다. 병합 알림은 worktree 정리보다 먼저 발행하므로
+정리 재시도가 QA를 막지 않습니다. 외부 GitHub 이슈 변경을 전달하는 기존 hook은
+`dv kick issue-opened ISSUE URL`, `dv kick issue-closed ISSUE URL`을 사용합니다.
+재열림은 `issue-reopened`, label 변경은 `issue-labeled`/`issue-unlabeled`,
+의존성 변경은 `issue-edited`, 외부 host 입찰 변경은
+`bid-changed`로 전달할 수 있습니다. 동일 webhook 재전송은 `dv-kick`의 여섯 번째
+인자에 원래 delivery ID를 넣어 중복을 제거합니다. 별도 GitHub webhook 서버를
+설치하지 않으며 전달되지 않은 외부 변경은 느린 안전 점검에서 발견합니다.
+
 시온은 lina-os에서 `dv submit ~/code/my-app APP-42 fix-save --brief /path/brief.md`를 실행합니다. `DV_MANAGER_HOST` 기본값은 lina-os이며, 다른 호스트의 submit은 기존 SSH 연결로 관리자에게 브리프 내용을 전송합니다. 개발 호스트에 관리자 방향 SSH 키가 없어도 관리자에서 제출하면 됩니다. `DV_HOSTS`에는 배정 가능한 SSH 별칭을 적고, 모든 호스트에 같은 버전의 dv를 둡니다. 원격 저장소가 있는 로컬 경로는 origin URL로 전달합니다. 각 호스트는 `$DV_REPO_ROOT`(기본 `~/code`)의 같은 이름 clone을 확인하고, 없으면 낙찰 후 clone합니다. 이름이 같은 다른 origin은 덮어쓰지 않습니다. 원격 없는 경로는 해당 경로가 있는 호스트만 입찰합니다.
 
 `--agent` 없이 제출하면 브리프의 줄 하나로 기본 에이전트를 고릅니다. `Route: writing`(문서·이슈·PR 글·조사처럼 글만 쓰는 작업)은 `DV_ROUTE_WRITING`(기본 agy), `Route: small`(한 패키지, 약 200줄 이하 예상)은 `DV_ROUTE_SMALL`(기본 omp)로 보냅니다. 줄이 없거나 `Route: default`이면 `DV_AGENT`입니다. `--agent`와 Codex 전용 `--mode auto|exec`가 항상 우선하며, 대상 값을 비우면(`DV_ROUTE_SMALL=`) 그 경로를 끕니다. 다른 값은 오타로 보고 제출을 거절합니다. 선택 결과는 stderr에 한 줄 남기고 제출 기록의 `agent`에 저장됩니다.
 
-`dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 호스트별 설정이고 기본값은 `max(1, floor(코어 수 / 8))`입니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 만석, 로그인 불가, 사용할 수 없는 저장소·터미널, `DV_MIN_MEMORY_MB`(기본 512) 미만이면 거절합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`, agy·grok·cursor `models`, omp provider·키 설정을 사용하며([에이전트](#에이전트)), 다른 CLI는 `DV_AGENT_READY_<agent>`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
+`dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 학습한 상한에 적용하는 선택적 upper bound이며 기본값은 비어 있습니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`, agy·grok·cursor `models`, omp provider·키 설정을 사용하며([에이전트](#에이전트)), 다른 CLI는 `DV_AGENT_READY_<agent>`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
 
-점수는 `100 × 빈 자리/수용량 − 20 × load5/코어 + min(64, 남은 메모리/1024) + clone 보너스 20 − 디스크 감점`입니다. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 순으로 진행하며, 점수가 높아도 뒤 그룹이 앞 그룹을 추월하지 않습니다. 같은 그룹에서는 높은 점수가 먼저이고, 기본 관리자(lina-os)에서 동점 순서는 **hx-linux → amd-linux → go2-linux → lina-os → gos-linux**입니다(준 10-20 결정). 조회는 각 그룹 안에서 `DV_HOSTS`에 적힌 순서를 따릅니다. hx·amd·go2·gos 별칭에도 같은 우선순위를 적용합니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 쓰는 최후 후보입니다. 낙찰 호스트는 잠금 안에서 수용량과 디스크를 다시 확인하고 `dv start`를 실행합니다. 직접 실행하는 `dv start`는 수동 경로이므로 자동 배정 중에는 `submit`을 사용하세요.
+자동 채우기를 활성화한 관리자는 기존 watcher tick마다 각 호스트의 active jobs,
+load5, available memory를 수집합니다. 호스트는 `$DV_STATE/.host-capacity/samples.jsonl`에
+샘플을 기록하고 한 시간마다 모델을 갱신합니다. 별도 timer나 daemon은 없습니다.
+최근 `DV_HOST_CAPACITY_WINDOW`초(기본 24시간, 최소 1시간)의 샘플을 작업 수별로
+묶고, 정렬한 load의 `ceil(0.75 × 샘플 수)`번째 값(p75)이
+`DV_TARGET_LOAD × cores` 이하인 가장 큰 작업 수를 `observed_cap`으로 선택합니다.
+`DV_TARGET_LOAD` 기본값은 1.2입니다. `learned_cap`은 이전 상한보다 시간당 최대
+2까지만 커지고, 현재 active 아래로 내려가지 않습니다. 줄어든 목표(`target_cap`)는
+별도로 보존해 기존 작업이 끝나는 동안 빈자리를 다시 채우지 않습니다. idle 샘플만 있으면 이전
+상한을 보존합니다. 샘플 기록은 매 tick, 비싼 집계·오래된 샘플 정리는 시간당 한 번입니다.
+
+첫 관측 시간에는 [측정된 knee](https://github.com/thisisjun786/devflow/issues/176#issuecomment-6339544059)를
+초기값으로 사용합니다: hx 24코어/14작업, amd·go2 16코어/12작업, gos 8코어/6작업.
+이름과 코어 수가 일치할 때만 적용하며, lina-os는 코어의 절반을 상한으로 남겨 둡니다.
+처음 보는 호스트는 1작업부터 관측하고 기존 실행 작업은 보존합니다. 새 샘플이
+쌓인 뒤에는 초기값 대신 p75 모델을 사용합니다. 관측한 적 없는 더 높은 작업 수를
+임의로 허용하지 않으므로, 측정 이력이 없는 구간의 상한을 스스로 추정하지 않습니다.
+
+`capacity`/`effective_slots`는 학습값, 선택적 `DV_MAX_JOBS`, 관리자 예약 상한,
+`floor(memory_available_mb / DV_MIN_MEMORY_MB)`를 함께 적용합니다. 메모리 기본값은
+슬롯당 512MiB이고 0이면 제한을 끕니다. 현재 load5/cores가 목표 이상이면 새 시작을
+막습니다. 어떤 경우에도 effective slots는 현재 active보다 작지 않으며
+`free_slots=max(0, effective_slots−active)`입니다. 자원 측정 실패는 시작을 거절합니다.
+실행 중인 작업은 종료하지 않으며 미래 CPU·메모리 사용량을 격리하는 장치는 아닙니다.
+
+`dv bid --json`과 `dv queue --summary --json`의 `learned_cap`, `capacity_model`
+(계산 시각·observed cap·p75 곡선·샘플 수), `max_jobs`, `memory_slots`,
+`capacity_reason`으로 근거를 확인합니다. 일반 bid 출력은 기존 다섯 열 뒤에
+learned/effective slots를 덧붙입니다. 모델이나 사용 가능한 슬롯이 바뀌면
+`bid-changed` 이벤트가 refill을 깨우며, 단순한 샘플 추가는 GitHub 재조회를 일으키지 않습니다.
+
+점수는 `100 × 빈 자리/max(1, 수용량) − 20 × load5/코어 − 100 × max(0, load5/코어 − 1.5) + min(64, 남은 메모리/1024) + clone 보너스 20 − 디스크 감점`입니다. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 순으로 진행하며, 점수가 높아도 뒤 그룹이 앞 그룹을 추월하지 않습니다. 같은 그룹에서는 높은 점수가 먼저이고, 기본 관리자(lina-os)에서 동점 순서는 **hx-linux → amd-linux → go2-linux → lina-os → gos-linux**입니다(준 10-20 결정). 조회는 각 그룹 안에서 `DV_HOSTS`에 적힌 순서를 따릅니다. hx·amd·go2·gos 별칭에도 같은 우선순위를 적용합니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 쓰는 최후 후보입니다. 낙찰 호스트는 잠금 안에서 수용량과 디스크를 다시 확인하고 `dv start`를 실행합니다. 직접 `dv start`와 task 시작도 같은 admission 잠금 아래 현재 부하·메모리 슬롯을 재검사합니다.
 
 `disk_available_gb`는 `DV_WORK`가 있는 파일시스템의 남은 GiB이며 `cache_disk_available_gb`는 Go 캐시 파일시스템의 남은 GiB입니다. 캐시 경로는 `GOCACHE`를 우선하고 비어 있으면 `go env GOCACHE`로 구합니다. 아직 없는 경로는 가장 가까운 기존 상위 디렉터리를 조회하며 생성하지 않습니다. 두 디스크 중 하나라도 `DV_MIN_DISK_GB`(기본 15) 미만이면 `low disk`, 조회 실패는 `disk unavailable`로 거절합니다. 디스크 감점은 더 작은 남은 용량을 기준으로 `max(0, 20 × (2 × 최소 용량 − 남은 용량) / 최소 용량)`이며, 기본값에서는 양쪽 모두 30GiB 이상이면 0점, 작은 쪽이 15GiB이면 20점입니다. 최소 용량 0은 용량 거절·감점을 끄지만 조회 실패는 계속 거절합니다. Go 미설치·`GOCACHE=off` 등으로 캐시 경로를 구할 수 없으면 캐시 측정은 null이고 작업 디스크만 판단합니다. `dv host check`는 두 경로·남은 용량과 Go 캐시, `~/.cache` 전체 크기를 표시합니다. JSON에는 `work_root`, `go_cache_path`, 두 디스크 측정값, `cache_sizes_kb.go_build`와 `cache_sizes_kb.total`(KiB, 각각 Go 캐시와 `~/.cache`)이 추가되며 측정 실패는 null입니다.
 
@@ -513,7 +599,8 @@ finding JSON에는 `title`, `kind` (`bug`/`feature`), `steps`, `expected`, `actu
 댓글을 달며 새 이슈를 중복 생성하지 않습니다. `report.md`를 쓴 뒤 `dv done`을
 실행하면 merged PR에 여정·발견 링크·시험 head를 요약한 댓글 하나를 남깁니다.
 manager는 현재 milestone의 열린 `qa` 이슈를 먼저 제출하고, 이들이 닫히고
-pending/running QA가 끝나기 전까지 milestone 완료와 다음 milestone 시작을 보류합니다.
+pending/running QA가 끝나기 전까지 milestone 완료를 보류합니다. 의존성이 없는
+다음 milestone 코드의 시작은 막지 않습니다.
 
 관측 지점·대기 요청은 scheduler의 `$DV_HOME/qa/`, 입찰 기록은
 `$DV_HOME/submissions/`, 실행 예약·로그는 실행 호스트의 `$DV_STATE/.qa/`,

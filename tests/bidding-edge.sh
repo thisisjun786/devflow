@@ -187,9 +187,11 @@ work_bid_setup() {
 }
 work_bid_probes() {
   # No auth, resource probes or terminal required for these synthetic bids.
+  WORK_BID_CORES=16
+  seed_host_capacity "$WORK_BID_CORES"
   bid_agent() { return 0; }
   bid_resources() {
-    printf '{"cores":16,"load5":%s,"memory_available_mb":65536,"disk_available_gb":100,"go_cache_path":null,"cache_disk_available_gb":null}\n' "${WORK_BID_LOAD:-0}"
+    printf '{"cores":%s,"load5":%s,"memory_available_mb":65536,"disk_available_gb":100,"go_cache_path":null,"cache_disk_available_gb":null}\n' "$WORK_BID_CORES" "${WORK_BID_LOAD:-0}"
   }
 }
 case_bid_work_unwritable() {

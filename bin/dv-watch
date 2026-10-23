@@ -14,6 +14,8 @@ tmp_agent_environment
 source "$DV_ROOT/lib/bidding.sh"
 # shellcheck source=lib/manager.sh
 source "$DV_ROOT/lib/manager.sh"
+# shellcheck source=lib/autofill.sh
+source "$DV_ROOT/lib/autofill.sh"
 # shellcheck source=lib/stall.sh
 source "$DV_ROOT/lib/stall.sh"
 # shellcheck source=lib/stack.sh
@@ -34,8 +36,8 @@ disk_settings
 [[ "$DV_METRICS_INTERVAL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_METRICS_INTERVAL must be positive seconds'
 [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be a positive integer'
 [[ "$DV_STATUS_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STATUS_TIMEOUT must be positive seconds'
-# Share the existing status safety net; do not leave a ten-minute stall waiting
 [[ "$DV_QA_COALESCE" =~ ^[0-9]+$ ]] || fail 'DV_QA_COALESCE must be nonnegative seconds'
+# Share the existing status safety net; do not leave a ten-minute stall waiting
 # for the old thirty-minute reconciliation interval. No extra process needed.
 stall_scan_interval=60
 [ "$DV_STALL_AFTER" -ge "$stall_scan_interval" ] || stall_scan_interval=$DV_STALL_AFTER
@@ -237,9 +239,11 @@ watch_stall() {
     "$DV_HOST:watcher-stuck:$$:$cursor:$stall_started"; then stall_reported=1; fi
 }
 while [ ! -e "$DV_HOME/stop" ]; do
+  autofill_sweep=0
   reap
   qa_recover
   pulls
+  host_capacity_tick >> "$DV_HOME/autofill.log" 2>&1 || true
   qa_github_events >> "$DV_HOME/qa.log" 2>&1
   if [ $(( $(now) - last_disk )) -ge "$disk_tick" ]; then
     disk_start
@@ -253,7 +257,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   # Frequent stall scans must not shorten the self-update safety interval.
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then
     qa_scan >> "$DV_HOME/qa.log" 2>&1
-    last_scan=$(now); update_requested=1
+    last_scan=$(now); update_requested=1; autofill_sweep=1
   fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   available=$(wc -l < "$DV_HOME/kick.q")
@@ -270,17 +274,20 @@ while [ ! -e "$DV_HOME/stop" ]; do
         qa-repository|merged|landed|done|failed|submitted|bid-changed|issue-opened|issue-closed)
           if ! qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1; then stall_reason='qa_enqueue failed'; break; fi ;;
       esac
-      # Deterministic scheduling is driven by this existing queue, never a bid poll.
+      # Existing queue receipts release slots before filling them again.
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then stall_reason='bid_event failed'; break; fi
+      autofill_event "$line" >> "$DV_HOME/autofill.log" 2>&1 || true
       # Stack candidates are discovered by the bounded host reconciliation.
       # Never repeat an inline fleet status scan for each done/landed event.
       case "$(printf '%s\n' "$line" | jq -r .kind)" in done|landed) reconcile_requested=1 ;; esac
-      if jq -e '.kind=="submitted" or .kind=="qa-repository"' <<< "$line" >/dev/null; then
+      case "$(jq -r .kind <<< "$line")" in
+      qa-repository|submitted|bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|issue-labeled|issue-unlabeled|pr-opened|pr-closed)
         metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"
         continue
-      fi
+        ;;
+      esac
       prompt="$DV_HOME/workers/$(now)-$$-$cursor.prompt.md"
       cat "$DV_ROOT/templates/worker-prompt.md" > "$prompt"
       # Literal Markdown fences.
@@ -319,6 +326,9 @@ while [ ! -e "$DV_HOME/stop" ]; do
   retry_pending
   manager_dispatch
   qa_dispatch
+  # One existing, slow reconciliation sweep backs up committed event hooks.
+  # Idle queue ticks do not query GitHub or hosts for autofill.
+  if [ "$autofill_sweep" = 1 ]; then autofill_tick >> "$DV_HOME/autofill.log" 2>&1 || true; fi
   # All events have durable cursor/pending state. Never run EXIT cleanup here:
   # workers, manager turns, QA and pull streams keep their existing handles.
   if [ ! -e "$DV_HOME/stop" ]; then

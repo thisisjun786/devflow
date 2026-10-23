@@ -3,6 +3,13 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export ROOT
 
+seed_host_capacity() {
+  local cores=$1 cap=${2:-8}
+  mkdir -p "$DV_STATE/.host-capacity"
+  jq -cn --arg host "$DV_HOST" --argjson cores "$cores" --argjson cap "$cap" \
+    '{version:1,host:$host,cores:$cores,learned_cap:$cap,computed_at:0,sample_count:0,curve:[]}' > "$DV_STATE/.host-capacity/cap.json"
+}
+
 setup() {
   CASE_DIR=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-test.XXXXXX")
   export CASE_DIR
@@ -27,6 +34,8 @@ setup() {
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
   export DV_AUTO_UPDATE=0
+  # Capacity cases override these synthetic budgets; other cases ignore live load.
+  export DV_MAX_JOBS=8 DV_TARGET_LOAD=1000000 DV_MIN_MEMORY_MB=0 DV_AUTOFILL_REPOS='' DV_HOST_CAPACITY_WINDOW=86400
   export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5
   # Ordinary lifecycle tests use the product's deadlines, even on a busy host.
   # Isolate the defaults so sourcing config cannot change other fixture values.
@@ -51,6 +60,8 @@ setup() {
   export GH_STUB_DIR="$CASE_DIR/gh" PATH="$ROOT/tests/fixtures:$ROOT/bin:$PATH"
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
   mkdir -p "$GH_STUB_DIR" "$DV_STATE" "$DV_WORK" "$DV_HOME"
+  # Unrelated cases use a premeasured synthetic cap; learner cases replace it.
+  seed_host_capacity "$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)"
   printf '"auto"\n' > "$GH_STUB_DIR/reviews"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
@@ -1609,8 +1620,12 @@ case_herdr_disabled_legacy() {
 herdr_isolated_path() {
   # Exclude user PATH and ~/.local/bin so native tests cannot reach real herdr.
   mkdir -p "$CASE_DIR/path" "$CASE_DIR/empty-home"
-  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed sort tail wc grep rm touch awk ln; do
+  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed sort tail wc grep rm touch awk ln getconf df; do
     ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"
+  done
+  # Host admission samples memory/load on macOS through these standard tools.
+  for tool in sysctl vm_stat; do
+    if command -v "$tool" >/dev/null; then ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"; fi
   done
   if [ "${1:-}" = tmux ]; then ln -s "$(command -v tmux)" "$CASE_DIR/path/tmux"; fi
   export PATH="$ROOT/bin:$CASE_DIR/path"
@@ -1907,7 +1922,7 @@ case_bid_readonly() {
   dv bid --json --repo "$REPO" --agent codex | jq -e '.free_slots==1'
   DV_AGENT_CMD_codex='' DV_CODEX_BIN=false dv bid --json --repo "$REPO" --agent codex | jq -e '.status=="rejected" and (.agent_ready|not)'
   dv bid --json --repo "$CASE_DIR/missing" --agent codex | jq -e '.status=="rejected" and (.repo_cloned|not)'
-  DV_MAX_JOBS='' dv bid --json --repo "$REPO" --agent codex | jq -e '.capacity==([1,(.cores/8|floor)]|max)'
+  DV_MAX_JOBS='' dv bid --json --repo "$REPO" --agent codex | jq -e '.max_jobs==null and .capacity==.learned_cap'
 }
 case_submit_spread() {
   bidding_hosts
@@ -2404,6 +2419,12 @@ case_bid_rejections_no_tmux() { bid_without_tmux bid_rejections; }
 # runner was reading its tail previously produced a truncated `e` command.
 # shellcheck source=tests/host.sh
 source "$ROOT/tests/host.sh"
+# shellcheck source=tests/autofill.sh
+source "$ROOT/tests/autofill.sh"
+# shellcheck source=tests/host-capacity.sh
+source "$ROOT/tests/host-capacity.sh"
+# shellcheck source=tests/learned-capacity.sh
+source "$ROOT/tests/learned-capacity.sh"
 # shellcheck source=tests/delivery.sh
 source "$ROOT/tests/delivery.sh"
 # shellcheck source=tests/pr-body.sh
@@ -2671,7 +2692,10 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
-   status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
+  learned_percentile learned_active_floor learned_window learned_readonly learned_idle learned_seeds learned_unknown_resources \
+  capacity_load capacity_memory capacity_award capacity_start capacity_headroom capacity_task capacity_launch_reservation capacity_probe_cleanup \
+  autofill_submit autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence autofill_repository_events autofill_slot_release_events autofill_cancel_event autofill_label_event qa_merge_commit_event \
+  status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
   task_tmux_done_failed_status task_herdr_done_failed_status task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
   config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
   appserver_sender_close \

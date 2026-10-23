@@ -276,7 +276,8 @@ case_park_exec_exit() {
 }
 case_reconcile_merged_cleanup_retry() {
   # Cleanup can fail after the merged PR is recorded as landed (for example
-  # while the worker still runs). Later passes finish it and send landed once.
+  # while the worker still runs). Publish the confirmed merge immediately;
+  # later passes finish cleanup without sending landed a second time.
   repo cleanup remote
   stale_job C-1 ready 31
   printf '{"31":"MERGED"}\n' > "$GH_STUB_DIR/pr-states"
@@ -289,7 +290,7 @@ ENV
   if BASH_ENV="$CASE_DIR/cleanup-failure" dv _pr-reconcile C-1; then return 1; fi
   jq -e '.status=="landed" and .pr_reconcile_pending==true' "$DV_STATE/C-1/meta"
   test -d "$DV_WORK/C-1"
-  test "$(event_count C-1 landed)" = 0
+  test "$(event_count C-1 landed)" = 1
   test "$(event_count C-1 blocked)" = 1
   watch_fixture
   export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=1

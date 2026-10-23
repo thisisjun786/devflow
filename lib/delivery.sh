@@ -52,7 +52,7 @@ cmd_pr() {
   is_github || fail 'dv pr requires a GitHub origin'
   cd "$WT" || exit
   [ "$BRANCH" != "$BASE" ] || fail 'cannot push the base branch'
-  local head pr title endpoint body_file public_source='' public_body='' edit_args
+  local head pr title endpoint body_file public_source='' public_body='' edit_args created=0
   if [ -f "$S/pr.md" ]; then
     public_source="$S/pr.md"
   elif [ ! -f "$S/pr.json" ] && [ -f "$S/pr-body.md" ]; then
@@ -92,6 +92,7 @@ cmd_pr() {
     fi
     pr=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$body_file")
     jq -n --arg url "$pr" '{url:$url}' > "$S/pr.json"
+    created=1
     cp "$body_file" "$S/pr-body.md"
     if [ -z "$public_body" ]; then
       nohup "$DV_ROOT/bin/dv" polish "$ISSUE" >> "$S/polish.log" 2>&1 < /dev/null &
@@ -105,6 +106,7 @@ cmd_pr() {
     trap 'rmdir "$S/.operation" 2>/dev/null || true' EXIT
   fi
   meta_set --arg head "$head" --arg pr "$pr" '.status="pr" | .head=$head | .pr=$pr'
+  if [ "$created" = 1 ]; then cmd_kick pr-opened "$ISSUE" "$pr"; fi
   pr_wait_start
   printf '%s\n' "$pr"
 }
@@ -595,10 +597,10 @@ github_land_reconcile() {
     '.status="landed" | .head=$head | .landed_at=(.landed_at // $time)'
   # Only a verified merge may bypass the App Server idle guard. Cleanup can
   # be retried after interruption, including after the worktree was removed.
-  clean_worktree merged-pr
   if ! jq -se --arg head "$head" 'any(.[]; .kind=="landed" and .head==$head)' "$S/events.log" >/dev/null 2>&1; then
     cmd_kick landed "$ISSUE" 'Landed'
   fi
+  clean_worktree merged-pr
 }
 cmd_land() {
   [ "$#" -eq 1 ] || fail 'usage: dv land ISSUE'
@@ -645,8 +647,8 @@ cmd_land() {
   fi
   metrics_note merged "$(git -C "$WT" rev-parse HEAD)"
   meta_set --argjson time "$(now)" '.status="landed" | .landed_at=$time'
-  clean_worktree
   cmd_kick landed "$ISSUE" 'Landed'
+  clean_worktree
 }
 local_land() {
   local test_cmd=$DV_TEST_CMD mode=$DV_LAND_MODE before target candidate result merged

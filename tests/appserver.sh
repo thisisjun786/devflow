@@ -1106,7 +1106,9 @@ appserver_merged_active() {
     if dv land AS-1; then return 1; fi
     test -d "$wt"
     test -f "$DV_STATE/AS-1/appserver/client.pid"
-    test ! -f "$DV_STATE/AS-1/events.log"
+    # The merge is already confirmed. QA must receive it even when stopping
+    # the old App Server turn times out and cleanup is retried later.
+    jq -se '[.[]|select(.kind=="landed")]|length==1' "$DV_STATE/AS-1/events.log"
     rm "$CASE_DIR/server/interrupt-polls" "$CASE_DIR/server/interrupt-remaining"
     printf 'idle\n' > "$CASE_DIR/server/status"
   fi
