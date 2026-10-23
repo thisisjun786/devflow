@@ -1,5 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
+start_fixture_work() {
+  local issue=$1 agent=$2 pid work_result='' work_status_file=''
+  rm -f "$CASE_DIR/server/work.done" "$CASE_DIR/server/work.exit"
+  (
+    # Only this worker publishes its exit; pre-exec children may inherit EXIT.
+    work_owner_subshell=$BASH_SUBSHELL
+    trap 'work_result=$?; if [ "$BASH_SUBSHELL" = "$work_owner_subshell" ]; then
+      work_status_file=$(mktemp "$CASE_DIR/server/.work-exit.XXXXXX")
+      printf "%s\n" "$work_result" > "$work_status_file"
+      mv "$work_status_file" "$CASE_DIR/server/work.exit"
+    fi' EXIT
+    cd "$(jq -r .worktree "$DV_STATE/$issue/meta")" || exit 1
+    env DV_ISSUE="$issue" "$agent" || exit "$?"
+    printf 'idle\n' > "$CASE_DIR/server/status"
+    touch "$CASE_DIR/server/work.done"
+  ) > "$CASE_DIR/server/work.log" 2>&1 & pid=$!
+  printf '%s\n' "$pid" > "$CASE_DIR/server/work-$pid.pid"
+}
+# Also register when a case supplies its own BASH_ENV (no-setsid coverage).
+# shellcheck source=tests/process-group.sh
+source "$ROOT/tests/process-group.sh"
 if [ "${1:-}" = --peer ]; then
   # shellcheck source=lib/appserver-transport.sh
   source "$ROOT/lib/appserver-transport.sh"
@@ -19,6 +40,8 @@ if [ "${1:-}" != --json ]; then
 [ "${1:-}" = app-server ] || exit 1
 [ "${2:-}" = proxy ] || exit 1
 command -v nc >/dev/null || { echo 'App Server socket tests require OpenBSD nc' >&2; exit 1; }
+date +%s >> "$CASE_DIR/server/connections"
+[ ! -f "$CASE_DIR/server/offline" ] || exit 1
 # Two shell processes exchange JSON-RPC through a real Unix socket, using
 # the same stdio-to-socket boundary as `codex app-server proxy`.
 socket_dir=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-as.XXXXXX")
@@ -27,6 +50,7 @@ exec 6<> "$socket_dir/in" 7<> "$socket_dir/out"
 bash "$0" --peer < "$socket_dir/in" > "$socket_dir/out" 6>&- 7>&- & peer=$!
 # Relative socket names avoid sun_path limits even under a long scratch root.
 (cd "$socket_dir" && exec nc -lU socket) < "$socket_dir/out" > "$socket_dir/in" 6>&- 7>&- & listener=$!
+printf '%s\n' "$listener" > "$CASE_DIR/server/daemon.pid"
 client=''
 # EXIT invokes this callback; older ShellCheck reports SC2317, newer SC2329.
 # shellcheck disable=SC2317,SC2329
@@ -40,6 +64,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 143' TERM
+printf '%s\n' "$$" > "$CASE_DIR/server/proxy.pid"
 for _ in {1..100}; do [ ! -S "$socket_dir/socket" ] || break; sleep 0.01; done
 (cd "$socket_dir" && exec nc -U socket) <&0 6>&- 7>&- & client=$!
 touch "$CASE_DIR/server/socket-used"
@@ -138,20 +163,10 @@ while IFS= read -r line; do
   if [ "$method" = turn/start ] &&
     { { [ "${DV_APP_TEST_WORK:-0}" = 1 ] && [ "$id" = '"initial-turn"' ]; } ||
       { [ -f "$CASE_DIR/server/recovery-work" ] && [ "$id" != '"initial-turn"' ]; }; }; then
-    (
-      cd "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
-      DV_ISSUE=AS-1 "$ROOT/tests/fixtures/agent"
-      printf 'idle\n' > "$CASE_DIR/server/status"
-      touch "$CASE_DIR/server/work.done"
-    ) > "$CASE_DIR/server/work.log" 2>&1 &
+    start_fixture_work AS-1 "$ROOT/tests/fixtures/agent"
   fi
   if [ "${DV_TASK_APP_TEST_WORK:-0}" = 1 ] && [ "$method" = turn/start ] && [ "$id" = '"initial-turn"' ]; then
-    (
-      cd "$(jq -r .worktree "$DV_STATE/TK-1/meta")"
-      DV_ISSUE=TK-1 "$ROOT/tests/fixtures/task-agent"
-      printf 'idle\n' > "$CASE_DIR/server/status"
-      touch "$CASE_DIR/server/work.done"
-    ) > "$CASE_DIR/server/work.log" 2>&1 &
+    start_fixture_work TK-1 "$ROOT/tests/fixtures/task-agent"
   fi
   if [ -f "$CASE_DIR/server/notify" ]; then
     mv "$CASE_DIR/server/notify" "$CASE_DIR/server/notified"

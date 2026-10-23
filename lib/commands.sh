@@ -17,7 +17,7 @@ cmd_start() {
   REPO=$(cd "$1" && git rev-parse --show-toplevel); ISSUE=$2; local slug=$3
   shift 3; valid_issue "$ISSUE"
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || fail 'invalid slug'
-  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref lower start_sha
+  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref lower start_sha source_issue=''
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || fail "missing value for $1"
     case "$1" in
@@ -80,11 +80,16 @@ cmd_start() {
   cat "$DV_ROOT/templates/rules.md" > "$S/brief.md"
   printf '\nIssue: %s\nWorktree: %s\nReport: %s/report.md\n\n' "$ISSUE" "$WT" "$S" >> "$S/brief.md"
   if [ -n "$brief" ]; then cat "$brief" >> "$S/brief.md"; else printf 'Complete issue %s.\n' "$ISSUE" >> "$S/brief.md"; fi
+  # Only an exact header for this job supplies explicit GitHub issue metadata.
+  source_issue=$(sed -n "s/^# $ISSUE = GitHub issue #\([1-9][0-9]*\)\([[:space:]].*\)\{0,1\}$/\1/p" "$S/brief.md" | sort -u)
+  [[ "$source_issue" =~ ^[1-9][0-9]*$ ]] || source_issue=''
   jq -n --arg issue "$ISSUE" --arg repo "$REPO" --arg worktree "$WT" --arg branch "$BRANCH" \
     --arg base "$base" --arg start_head "$start_sha" --arg agent "$agent" --arg mode "$mode" --arg slug "$slug" \
     --arg host "$DV_HOST" --arg backend "$BACKEND" --arg token "${DV_AWARD_TOKEN:-}" --argjson started "$(now)" \
+    --arg source_issue "$source_issue" \
     '{issue:$issue,repo:$repo,worktree:$worktree,branch:$branch,base:$base,start_head:$start_head,agent:$agent,mode:$mode,slug:$slug,host:$host,started:$started,backend:$backend,status:"running"} +
-    (if $token=="" then {} else {award_token:$token} end)' > "$S/meta"
+    (if $token=="" then {} else {award_token:$token} end) +
+    (if $source_issue=="" then {} else {source_issue:($source_issue|tonumber)} end)' > "$S/meta"
   : > "$S/log"
   if ! launch_agent; then
     meta_set '.status="start-failed"'
@@ -93,11 +98,12 @@ cmd_start() {
   printf '%s %s %s\n' "$ISSUE" "$BRANCH" "$WT"
 }
 launch_agent() {
+  tmp_agent_environment
   if [ "$BACKEND" = appserver ]; then appserver_start; return; fi
   # Terminal server environments can predate this shell. Pass exported DV_* values explicitly.
   local env_args=() key launcher
   while IFS= read -r key; do
-    case "$key" in DV_*|CODEX_HOME|CLAUDE_CONFIG_DIR|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
+    case "$key" in DV_*|TMPDIR|GOCACHE|CODEX_HOME|CLAUDE_CONFIG_DIR|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
   done < <(compgen -e)
   launcher=$(shell_join env "PATH=$PATH" "${env_args[@]}" "$DV_ROOT/bin/dv" _agent "$ISSUE" "$@")
   if [ "$BACKEND" = exec ]; then
@@ -132,7 +138,12 @@ launch_agent() {
   fi
 }
 run_agent() {
-  load_issue "$1"; require_worktree; cd "$WT" || exit
+  load_issue "$1"
+  case "${2:-}" in
+    --revived|--exec-prompt) require_worktree --allow-branch-change ;;
+    *) require_worktree ;;
+  esac
+  cd "$WT" || exit
   export DV_ISSUE="$ISSUE"
   local agent mode override instruction rc=0 sentinel='' helper='' revived=0 original_instruction
   [ "${2:-}" != --revived ] || revived=1
@@ -629,7 +640,7 @@ revive_blocked() {
   printf 'dv: %s; automatic revival already attempted\n' "$1" >&2
 }
 revive_agent() {
-  require_worktree
+  require_worktree --allow-branch-change
   case "$(jq -r .status "$S/meta")" in landed|cancelled) fail 'cannot revive a finished issue' ;; esac
   if [ -d "$S/revive" ]; then
     revive_blocked 'agent unavailable after revival'
@@ -648,10 +659,17 @@ revive_agent() {
     if [ "$KIND" = task ]; then
       printf 'Continue the task in %s; preserve partial work and write deliverables to out/. No Git or PR.\n' "$WT"
     else
-      printf 'Continue in the existing worktree %s on branch %s.\n' "$WT" "$BRANCH"
+      printf 'Continue in the existing worktree %s on its current checkout (%s).\n' "$WT" "$(git -C "$WT" rev-parse --abbrev-ref HEAD)"
     fi
     printf 'Read %s/brief.md and, if present, %s/report.md for context.\n' "$S" "$S"
-    printf 'This continues the same request; preserve %s/review-fix.sent and the one-fix-per-PR limit.\n' "$S"
+    printf 'This continues the same request; preserve %s/review-fix.sent.\n' "$S"
+    if [ "$KIND" != task ]; then
+      if is_github; then
+        printf 'Preserve %s/pr-loop.json review round counts. Each new head requires a fresh Codex review; fix P0/P1 within DV_REVIEW_ROUNDS before completion.\n' "$S"
+      else
+        printf 'Keep the single local review and one P0/P1 correction limit; do not request another local review.\n'
+      fi
+    fi
     printf 'Do not create a new branch or force push. Finish with dv done %s.\n' "$ISSUE"
   } > "$S/revive/prompt.md"
   # Cleanup belongs to the previous run. Publish this before launching so all
@@ -668,7 +686,7 @@ revive_agent() {
 }
 cmd_send() {
   [ "$#" -eq 2 ] || fail 'usage: dv send ISSUE text'
-  load_issue "$1"; issue_lock; require_worktree
+  load_issue "$1"; issue_lock; require_worktree --allow-branch-change
   if [ -n "${DV_PR_RECOVERY_HEAD:-}" ]; then
     # A background waiter may be descheduled before taking this issue lock.
     # Another waiter can meanwhile revive or finish the job. Revalidate here

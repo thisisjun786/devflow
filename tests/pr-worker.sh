@@ -4,7 +4,7 @@ case_pr_worker_foreground() {
   pr_fixture
   printf '[{"body":"P1: fix the write","path":"file.sh","line":3,"commit_id":"old"}]\n' > "$GH_STUB_DIR/comments"
   dv pr-wait P-1 --foreground > "$CASE_DIR/snapshot"
-  jq -e '.green and .review_timed_out and .snapshot.inline_comments[0].body=="P1: fix the write"' "$CASE_DIR/snapshot"
+  jq -e '.green and .review_handled and (.review_timed_out|not) and .snapshot.inline_comments[0].body=="P1: fix the write"' "$CASE_DIR/snapshot"
   test ! -s "$DV_HOME/kick.q"
   jq -e '.status=="pr"' "$DV_STATE/P-1/meta"
 }
@@ -119,21 +119,28 @@ case_pr_worker_revive() {
   jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/PW-1/done.json"
   jq -se 'all(.[]; .kind=="done") and any(.[]; .kind=="done")' "$DV_HOME/kick.q"
 }
-case_pr_worker_no_rereview() {
+case_pr_worker_revive_policy() {
+  case_pr_worker_revive
+  local prompt="$DV_STATE/PW-1/revive/prompt.md"
+  if grep -F 'one-fix-per-PR limit' "$prompt"; then
+    printf 'FAIL: GitHub revival still imposes the obsolete single-fix limit\n'
+    return 1
+  fi
+  grep -F "$DV_STATE/PW-1/review-fix.sent" "$prompt"
+  grep -F "$DV_STATE/PW-1/pr-loop.json review round counts" "$prompt"
+  grep -F 'Each new head requires a fresh Codex review' "$prompt"
+  ! grep -F 'single local review' "$prompt"
+}
+case_pr_worker_requires_review() {
   pr_fixture
-  local head
-  head=$(git -C "$REPO" rev-parse HEAD)
-  jq -n --arg head "$head" '[{author:{login:"devin-ai-integration[bot]"},commit:{oid:$head}},{author:{login:"chatgpt-codex-connector[bot]"},commit:{oid:$head}}]' > "$GH_STUB_DIR/reviews"
-  export DV_REVIEW_WAIT=30
-  dv pr-wait P-1 --foreground > /dev/null
-  dv pr-wait P-1 --foreground --review-handled > /dev/null
+  dv pr-wait P-1 --foreground >/dev/null
+  dv pr-wait P-1 --foreground --review-handled >/dev/null
   git -C "$REPO" commit --allow-empty -qm 'CI correction after review'
+  printf '[]\n' > "$GH_STUB_DIR/reviews"
   dv pr P-1
-  dv pr-wait P-1 --foreground > "$CASE_DIR/snapshot" & waiter=$!
-  # The foreground result must arrive well before the new-head review timeout.
-  wait_file "$CASE_DIR/snapshot"
-  wait "$waiter"; waiter=''
-  jq -e '.green and .review_handled and (.review_timed_out|not) and (.bot_review|not)' "$CASE_DIR/snapshot"
+  if dv pr-wait P-1 --foreground > "$CASE_DIR/snapshot"; then return 1; fi
+  jq -e '.green and (.review_handled|not) and .review_timed_out and .blocked' "$CASE_DIR/snapshot"
+  test "$(grep -c '^pr comment .*@codex review' "$GH_STUB_DIR/calls")" = 2
 }
 case_pr_worker_revive_exec() {
   export DV_PR_EXIT_CODE=1 DV_PR_TEST_MODE=exec
@@ -144,7 +151,7 @@ case_pr_worker_exit_race() {
 mkdir() {
   if [ "${DV_PR_STALE_SEND:-0}" = 1 ] && [ "${command:-}" = send ] &&
     [ "$#" = 1 ] && [ "$1" = "$DV_STATE/PW-1/.operation" ] &&
-    command mkdir "$DV_STATE/PW-1/stale-send-once" 2>/dev/null; then
+    env mkdir "$DV_STATE/PW-1/stale-send-once" 2>/dev/null; then
     printf '%s\n' "$$" > "$DV_STATE/PW-1/stale-send.pid"
     # The other waiter finishes recovery while this send is descheduled before
     # acquiring the issue lock. Resume only after the new wrapper has exited.
@@ -153,7 +160,7 @@ mkdir() {
       sleep 0.05
     done
   fi
-  command mkdir "$@"
+  env mkdir "$@"
 }
 kill() {
   builtin kill "$@" || return $?
@@ -197,7 +204,7 @@ case_pr_worker_exec_missing_pr() {
 }
 case_pr_worker_native_exec() {
   exec_setup pr-loop remote
-  export DV_PR_EARLY_EXIT=1 DV_STALL_AFTER=30
+  export DV_PR_EARLY_EXIT=1
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]\n' > "$GH_STUB_DIR/checks"
   printf '[{"body":"P1: fix the write","path":"file.sh","line":3}]\n' > "$GH_STUB_DIR/comments"
   dv start "$REPO" EX-1 worker

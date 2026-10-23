@@ -24,9 +24,8 @@ while :; do
     git commit -qm "$DV_ISSUE: fix CI"
     printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   fi
-  # gh reads the pushed head, even while the worker has unpushed corrections.
-  jq -r .head "$state/meta" > "$GH_STUB_DIR/head"
-  dv pr-wait "$DV_ISSUE" --foreground --review-handled > "$state/worker-snapshot"
+  printf '"auto"\n' > "$GH_STUB_DIR/reviews"
+  printf '[]\n' > "$GH_STUB_DIR/comments"
   dv pr "$DV_ISSUE"
   git rev-parse HEAD > "$GH_STUB_DIR/head"
   dv pr-wait "$DV_ISSUE" --foreground > "$state/worker-snapshot"

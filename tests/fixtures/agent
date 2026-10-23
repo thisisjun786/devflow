@@ -10,4 +10,5 @@ if git config --get remote.origin.url | grep -q github.com; then
   dv pr-wait "$DV_ISSUE" --foreground
   dv pr-wait "$DV_ISSUE" --foreground --review-handled
 fi
+if [ "${DV_APP_WORK_DELAY:-0}" != 0 ]; then sleep "$DV_APP_WORK_DELAY"; fi
 dv 'done' "$DV_ISSUE"

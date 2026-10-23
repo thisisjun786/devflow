@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Model Bash 3.2 timed read on modern Bash as well: consumed partial bytes
+# are not returned to the caller when the read times out.
+read() {
+  local read_name=${!#} read_before read_rc=0 read_arg read_timed=false read_target=false
+  read_before=${!read_name-}
+  # The caller supplies the read options unchanged.
+  # shellcheck disable=SC2162
+  builtin read "$@" || read_rc=$?
+  # A read(2) can consume its byte before SIGALRM interrupts assignment.
+  # Reproduce that scheduling boundary without slowing every read in a case.
+  for read_arg in "$@"; do [ "$read_arg" != -t ] || read_timed=true; done
+  for read_arg in "${FUNCNAME[@]}"; do [ "$read_arg" != "${DV_TEST_READ_PREEMPT:-}" ] || read_target=true; done
+  if [ "$read_rc" = 0 ] && [ "$read_timed" = true ] && [ "$read_target" = true ] &&
+    [ ! -f "$CASE_DIR/read-preempted" ]; then
+    touch "$CASE_DIR/read-preempted"
+    printf -v "$read_name" '%s' "$read_before"
+    return 1
+  fi
+  if [ "$read_rc" -gt 128 ]; then
+    printf -v "$read_name" '%s' "$read_before"
+    return 1
+  fi
+  return "$read_rc"
+}
