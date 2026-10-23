@@ -14,3 +14,4 @@ Closes #
 - [ ] Scope stays on the linked issue; no unrelated cleanup.
 - [ ] Docs updated where behaviour or contracts changed.
 - [ ] Secrets, auth and unsafe defaults reviewed.
+- [ ] No private paths, host names or brief text in this description.

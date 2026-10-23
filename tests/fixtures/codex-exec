@@ -20,8 +20,9 @@ case "$scenario" in
     printf '%s\n' "$PPID" > "$s/wrapper.pid"
     printf 'completed work\n' > completed.txt
     git add completed.txt
-    git diff --cached --quiet || git commit -qm "$DV_ISSUE: completed fixture work"
+    git diff --cached --quiet || git commit -qm 'feat(fixture): complete the fixture work'
     if git config --get remote.origin.url | grep -q github.com; then
+      pr-template-body 'Completes the fixture work.' > "$s/pr.md"
       dv pr "$DV_ISSUE" > /dev/null
       dv pr-wait "$DV_ISSUE" --foreground > /dev/null
       dv pr-wait "$DV_ISSUE" --foreground --review-handled > /dev/null

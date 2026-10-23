@@ -7,7 +7,7 @@
 - 개발 중 리뷰 루프·설계 비평·크로스체크·CRW/relay를 실행하지 않습니다.
 - base 브랜치 직접 push, force push, 원격 브랜치 삭제는 금지합니다.
 - 작업자는 자신의 PR을 병합하지 않습니다. 관리자가 `dv land`로 병합합니다.
-- 커밋 메시지는 `<ISSUE>: ...` 형식입니다.
+- 커밋 제목은 영어 Conventional Commits `type(scope): subject`입니다(예: `fix(tui): keep the progress card after restart`). type은 feat·fix·docs·test·refactor·perf·chore·ci, scope는 바뀐 영역(패키지·화면)이며 이슈 키는 넣지 않습니다. 마지막 커밋 제목이 PR 제목이 되고 브랜치는 dv가 `<type>/<번호>-<slug>`로 만듭니다. `dv pr`은 형식이 틀린 제목을 push 전에 거절하므로 커밋 제목을 직접 고칩니다.
 - docker는 hx-linux·amd-linux에 있다(10-21, jun은 docker 그룹). 에이전트 세션이 그룹 추가 전에 시작됐으면 `docker`가 권한 오류를 내니 `sg docker -c '<명령>'`으로 돌린다. go2-linux에는 없다.
 - 작업용 리눅스 기기(hx-linux, go2-linux 등)에서는 jun 계정 sudo로 작업에 필요한 시스템 패키지를 직접 설치해도 됩니다(준 10-20). 설치한 것은 보고서에 한 줄 남깁니다. lina-os와 gos-linux의 시스템 설정은 바꾸지 않습니다.
 - `$DV_STATE/<ISSUE>/report.md`에 바꾼 것, 시험 명령·결과, red/green, 남은 것을 기록합니다.
@@ -20,4 +20,4 @@
 - 열린 선행 이슈 때문에 더 진행할 수 없으면 작업을 커밋하고 `dv park <ISSUE> --on <번호>[,<번호>] --note "<한 줄 이유>"`로 보류한 뒤 끝냅니다. dv가 브랜치를 push하고 이슈에 댓글을 남기고 슬롯을 반환합니다. 선행 이슈가 닫히면 관리자가 `dv send`로 재개합니다.
 - 현재 head의 CI가 초록이고 최신 Codex 리뷰의 P0·P1이 0건일 때만 `dv done <ISSUE>`를 실행합니다. done과 land는 이 조건을 GitHub에서 다시 확인합니다. done은 head와 checks=green, review=handled를 전달합니다. 백그라운드 pr-wait는 조기 종료된 작업자를 같은 worktree에서 재개하는 안전망이며 회차 기록을 보존합니다. 관리자는 이슈 완료 조건·범위 확인과 병합을 담당합니다.
 - 원격 없는 로컬 저장소의 리뷰와 병합은 시온이 진행합니다. 로컬 리뷰 수정은 시온의 `dv send` 지시를 받아 P0·P1만 한 번 처리하며 재리뷰하지 않습니다. 로컬 작업도 마지막에 `dv done <ISSUE>`를 실행합니다.
-- GitHub 저장소면 `$DV_STATE/<ISSUE>/pr.md`에 PR 본문을 영어로 씁니다: 무엇을 왜 바꿨는지, 실행한 시험과 결과, `Closes #<n>`. 이 본문은 그대로 공개될 수 있으니 브리프·내부 경로·호스트 이름·개인 정보를 넣지 않습니다. `dv pr`은 이 파일이 있으면 그대로 씁니다.
+- GitHub 저장소면 `$DV_STATE/<ISSUE>/pr.md`에 PR 본문을 영어로 `.github/PULL_REQUEST_TEMPLATE.md` 구성대로 씁니다: `## Summary`(무엇을 왜 바꿨는지), `Closes #<n>`, `## Verification`(실행한 명령과 결과, 화면 변경은 캡처), `## Checklist`. `dv pr`은 세 제목과 `Closes #`를 확인합니다. 이 본문은 그대로 공개될 수 있으니 브리프·내부 경로·호스트 이름·개인 정보를 넣지 않습니다. `dv pr`은 이 파일이 있으면 그대로 씁니다.

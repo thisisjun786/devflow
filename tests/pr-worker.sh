@@ -30,10 +30,10 @@ case_pr_worker_loop() {
   (cd "$REPO" && DV_ISSUE=P-1 "$ROOT/tests/fixtures/pr-worker")
   jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/P-1/done.json"
   jq -se 'length==1 and .[0].kind=="done" and (.[0].message|contains("checks=green review=handled"))' "$DV_HOME/kick.q"
-  test "$(git -C "$REPO" log --oneline --grep='fix review P1' | wc -l | tr -d ' ')" = 1
+  test "$(git -C "$REPO" log --oneline --grep='address the review P1' | wc -l | tr -d ' ')" = 1
   # Re-entering the same loop preserves the review correction and does not fix twice.
   (cd "$REPO" && DV_ISSUE=P-1 "$ROOT/tests/fixtures/pr-worker")
-  test "$(git -C "$REPO" log --oneline --grep='fix review P1' | wc -l | tr -d ' ')" = 1
+  test "$(git -C "$REPO" log --oneline --grep='address the review P1' | wc -l | tr -d ' ')" = 1
   jq -e '.ci_rounds==1 and .review_handled' "$DV_STATE/P-1/pr-ready.json"
 }
 case_pr_worker_cap() {

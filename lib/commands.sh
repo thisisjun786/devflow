@@ -12,12 +12,34 @@ start_worktree() (
   mkdir "$S" || fail 'issue was started concurrently'
   git -C "$REPO" worktree add -b "$BRANCH" "$WT" "$1"
 )
+# Conventional Commits types: the PR title prefix and the branch directory.
+CHANGE_TYPES='feat|fix|docs|test|refactor|perf|chore|ci'
+issue_branch() {
+  # <type>/<issue number>-<slug>. A leading type word selects the type
+  # (fix-save -> fix/42-save, otherwise feat). The dv key stays in dv state:
+  # a slug that repeats the key or number is dropped, never doubled.
+  local issue=$1 slug=$2 number=${3:-} type=feat key lowered repeated pattern="^($CHANGE_TYPES)(-(.*))?\$"
+  key=$(printf '%s' "$issue" | tr '[:upper:]' '[:lower:]')
+  if [[ "$slug" =~ $pattern ]]; then type=${BASH_REMATCH[1]}; slug=${BASH_REMATCH[3]}; fi
+  if [ -z "$number" ]; then
+    number=${issue##*-}
+    [[ "$number" =~ ^[1-9][0-9]*$ ]] || number=$key
+  fi
+  lowered=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
+  for repeated in "$key" "$number"; do
+    case "$lowered" in
+      "$repeated") slug=''; break ;;
+      "$repeated"-*) slug=${slug:$((${#repeated} + 1))}; break ;;
+    esac
+  done
+  printf '%s/%s%s\n' "$type" "$number" "${slug:+-$slug}"
+}
 cmd_start() {
   [ "$#" -ge 3 ] || fail 'usage: dv start <repo> <ISSUE> <slug> [options]'
   REPO=$(cd "$1" && git rev-parse --show-toplevel); ISSUE=$2; local slug=$3
   shift 3; valid_issue "$ISSUE"
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || fail 'invalid slug'
-  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref lower start_sha source_issue='' capacity own_admission=0
+  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref start_sha source_issue='' capacity own_admission=0
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || fail "missing value for $1"
     case "$1" in
@@ -74,8 +96,13 @@ cmd_start() {
   fi
   git check-ref-format "refs/heads/$base" >/dev/null || fail 'invalid base'
   start_sha=$(git -C "$REPO" rev-parse --verify "$ref^{commit}")
-  lower=$(printf '%s' "$ISSUE" | tr '[:upper:]' '[:lower:]')
-  BRANCH="$agent/$lower-$slug"; WT="$DV_WORK/$(basename "$REPO")-$ISSUE"
+  # Only an exact header for this job supplies explicit GitHub issue metadata.
+  if [ -n "$brief" ]; then
+    source_issue=$(sed -n "s/^# $ISSUE = GitHub issue #\([1-9][0-9]*\)\([[:space:]].*\)\{0,1\}$/\1/p" "$brief" | sort -u)
+  fi
+  [[ "$source_issue" =~ ^[1-9][0-9]*$ ]] || source_issue=''
+  BRANCH=$(issue_branch "$ISSUE" "$slug" "$source_issue"); WT="$DV_WORK/$(basename "$REPO")-$ISSUE"
+  git check-ref-format "refs/heads/$BRANCH" >/dev/null || fail 'invalid branch'
   # An award holds admission across clone/start. A direct start must take the
   # same lock; a token alone cannot bypass it. Recheck after the Git fetch.
   if [ -n "${DV_AWARD_TOKEN:-}" ] && [ -n "${DV_ADMISSION_OWNER:-}" ] &&
@@ -93,9 +120,6 @@ cmd_start() {
   cat "$DV_ROOT/templates/rules.md" > "$S/brief.md"
   printf '\nIssue: %s\nWorktree: %s\nReport: %s/report.md\n\n' "$ISSUE" "$WT" "$S" >> "$S/brief.md"
   if [ -n "$brief" ]; then cat "$brief" >> "$S/brief.md"; else printf 'Complete issue %s.\n' "$ISSUE" >> "$S/brief.md"; fi
-  # Only an exact header for this job supplies explicit GitHub issue metadata.
-  source_issue=$(sed -n "s/^# $ISSUE = GitHub issue #\([1-9][0-9]*\)\([[:space:]].*\)\{0,1\}$/\1/p" "$S/brief.md" | sort -u)
-  [[ "$source_issue" =~ ^[1-9][0-9]*$ ]] || source_issue=''
   jq -n --arg issue "$ISSUE" --arg repo "$REPO" --arg worktree "$WT" --arg branch "$BRANCH" \
     --arg base "$base" --arg start_head "$start_sha" --arg agent "$agent" --arg mode "$mode" --arg slug "$slug" \
     --arg host "$DV_HOST" --arg backend "$BACKEND" --arg token "${DV_AWARD_TOKEN:-}" --argjson started "$(now)" \

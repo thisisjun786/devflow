@@ -46,6 +46,28 @@ pr_report_summary() {
     printf 'Implementation report is not available.\n'
   fi
 }
+pr_title_check() {
+  # The title is the HEAD commit subject. The worker fixes it; dv never rewrites it.
+  local title=$1 problem pattern="^($CHANGE_TYPES)(\\([^()[:space:]]+\\))?!?: [^[:space:]]" key='^[A-Za-z][A-Za-z0-9]*-[0-9]+([^0-9]|$)'
+  if [[ "$title" =~ $key ]]; then problem='starts with an issue key'
+  elif ! [[ "$title" =~ $pattern ]]; then problem='does not start with type(scope): subject'
+  else return 0; fi
+  fail "PR title \"$title\" $problem. The HEAD commit subject is the PR title: type(scope): subject in English without the issue key, type one of ${CHANGE_TYPES//|/ } (e.g. fix(tui): keep the progress card after restart). Reword the commit subject (git commit --amend while it is unpushed) and rerun dv pr."
+}
+pr_body_check() {
+  local body=$1 heading missing=''
+  for heading in Summary Verification Checklist; do
+    grep -Eq "^#{1,6}[[:space:]]+${heading}[[:space:]]*\$" "$body" || missing="$missing, ## $heading"
+  done
+  grep -Eqi '(^|[^[:alnum:]_])closes #[1-9][0-9]*' "$body" || missing="$missing, Closes #<n>"
+  [ -z "$missing" ] || fail "pr.md must follow .github/PULL_REQUEST_TEMPLATE.md; missing: ${missing#, }"
+}
+pr_formatted_branch() {
+  # dv names new branches <type>/<n>-<slug>. Jobs started earlier keep their
+  # <agent>/<key>-<slug> branch, and their PRs stay as they are.
+  local pattern="^($CHANGE_TYPES)/"
+  [[ "$BRANCH" =~ $pattern ]]
+}
 cmd_pr() {
   [ "$#" -eq 1 ] || fail 'usage: dv pr ISSUE'
   load_issue "$1"; issue_lock; require_worktree; require_clean "$WT"
@@ -53,11 +75,18 @@ cmd_pr() {
   cd "$WT" || exit
   [ "$BRANCH" != "$BASE" ] || fail 'cannot push the base branch'
   local head pr title endpoint body_file public_source='' public_body='' edit_args created=0
+  title=$(git log -1 --format=%s)
   if [ -f "$S/pr.md" ]; then
     public_source="$S/pr.md"
   elif [ ! -f "$S/pr.json" ] && [ -f "$S/pr-body.md" ]; then
     # Older workers prepared this filename before the first publication.
     public_source="$S/pr-body.md"
+  fi
+  if pr_formatted_branch; then
+    # Check before push, so a rejected subject is still unpushed and amendable.
+    pr_title_check "$title"
+    [ -n "$public_source" ] || [ -f "$S/pr.json" ] ||
+      fail "write the public PR body to $S/pr.md following .github/PULL_REQUEST_TEMPLATE.md (## Summary, Closes #<n>, ## Verification, ## Checklist), then rerun dv pr"
   fi
   if [ -n "$public_source" ]; then
     # Coordinate with an older in-flight polish before publishing exact prose.
@@ -65,9 +94,9 @@ cmd_pr() {
     trap 'rm -f "$S/.polish/public-body"; rmdir "$S/.polish" "$S/.operation" 2>/dev/null || true' EXIT
     public_body="$S/.polish/public-body"
     cp "$public_source" "$public_body"
+    if pr_formatted_branch; then pr_body_check "$public_body"; fi
   fi
   head=$(git rev-parse HEAD)
-  title=$(git log -1 --format=%s)
   git push -u origin "$BRANCH:refs/heads/$BRANCH"
   if [ -f "$S/pr.json" ]; then
     pr=$(jq -er .url "$S/pr.json")
