@@ -3,7 +3,8 @@
 # shellcheck disable=SC2154,SC2016
 startup_case() {
   local mode=$1
-  repo "startup $mode"; herdr_setup; export DV_START_WAIT=2
+  repo "startup $mode"; herdr_setup
+  case "$mode" in idle|enter-stuck|history) export DV_START_WAIT=2 ;; esac
   mkdir -p "$CASE_DIR/herdr"
   printf '%s\n' "$mode" > "$CASE_DIR/herdr/startup-mode"
   dv start "$REPO" HS-1 startup
@@ -94,9 +95,11 @@ case_codex_repo_trust() {
 }
 case_codex_tmux_startup() {
   needs_tmux; repo tmux-startup
-  export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive" DV_START_WAIT=2
-  local mode reason
+  export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/interactive"
+  local mode reason startup_wait=$DV_START_WAIT
   for mode in hook folder idle; do
+    DV_START_WAIT=$startup_wait
+    [ "$mode" != idle ] || DV_START_WAIT=2
     printf '%s\n' "$mode" > "$CASE_DIR/codex-startup-mode"
     dv start "$REPO" "HT-$mode" startup
     wait_file "$DV_STATE/HT-$mode/events.log"

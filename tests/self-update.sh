@@ -129,8 +129,9 @@ date() {
 sleep() {
   if [ "${0##*/}" = dv-watch ] && [ "$*" = 0.1 ]; then
     local tick
-    # Observe the completed background scan before advancing the fake clock.
-    [ -z "${reconcile_pid:-}" ] || wait "$reconcile_pid" 2>/dev/null || true
+    # Reconciliation now runs beside the queue. Only advance this test's
+    # synthetic clock after the scheduled scan has actually finished.
+    [ -z "${reconcile_pid:-}" ] || wait "$reconcile_pid"
     tick=$(date +%s)
     touch "$CASE_DIR/tick-$tick"
     while [ "$(date +%s)" = "$tick" ] && [ ! -e "$DV_HOME/stop" ]; do command sleep 0.02; done
@@ -225,6 +226,7 @@ case_update_host() {
   update_publish
   git -C "$UPDATE_ROOT" fetch -q origin
   DV_AUTO_UPDATE=0 "$UPDATE_ROOT/bin/dv" host check --json > "$CASE_DIR/check.json"
+  jq -e '.tmp | .usage_kb==64 and .quota_kb==1024 and .source=="quota"' "$CASE_DIR/check.json"
   jq -e --arg old "$UPDATE_OLD" --arg new "$UPDATE_NEW" '.watcher | .running and .status=="outdated" and .commit==$old and .origin_main==$new' "$CASE_DIR/check.json"
   DV_AUTO_UPDATE=0 "$UPDATE_ROOT/bin/dv" host check > "$CASE_DIR/check.txt"
   grep "watcher: outdated commit=$UPDATE_OLD origin/main=$UPDATE_NEW" "$CASE_DIR/check.txt"

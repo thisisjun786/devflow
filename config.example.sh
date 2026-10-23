@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # ~/.config/devflow/config.sh. Shell code: use only trusted configuration.
 # ${VAR:=default} keeps environment overrides, including test agent commands.
-if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOME/dv/wt}"; fi
+if { [ -d /scratch ] && [ -w /scratch ] && [ -x /scratch ]; } ||
+   { [ -d /scratch/dv-wt ] && [ -w /scratch/dv-wt ] && [ -x /scratch/dv-wt ]; }; then
+  : "${DV_WORK:=/scratch/dv-wt}"
+else
+  : "${DV_WORK:=$HOME/dv/wt}"
+fi
 : "${DV_STATE:=$HOME/.local/state/devflow}"
+: "${DV_TMP:=$HOME/.cache/dv/tmp}" # host-local disk scratch for dv and its agents
+: "${DV_TMP_QUOTA_KB:=12582912}" # fallback per-user /tmp quota estimate (12 GiB); 0 = unknown
 : "${DV_HOME:=$HOME/.local/state/devflow-mac}"
 : "${DV_HOST:=$(hostname -s)}"
 : "${DV_AUTO_UPDATE:=1}" # clean main checkout: dv checks every 5 min; watcher on landed/safety pass
@@ -49,6 +56,7 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_REVIEW_BOTS:=codex}" # Codex review author regex
 : "${DV_REVIEW_ROUNDS:=4}" # maximum reviewed heads before unresolved P0/P1 block
 : "${DV_POLL_INTERVAL:=10}" # PR review interval
+: "${DV_CHECKS_INTERVAL:=60}" # gh pr checks --watch refresh; GraphQL budget is shared by every worker on the account
 : "${DV_POLISH:=1}" # 0 disables optional PR prose polishing
 : "${DV_POLISH_CMD:=}" # shell command; receives the prompt as its last argument
 : "${DV_POLISH_TIMEOUT:=180}" # seconds; default command uses local agy or ssh lina-os

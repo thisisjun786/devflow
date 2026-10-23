@@ -52,11 +52,16 @@ case_capacity_appserver_once() {
   dv _appserver-watch
   capacity_status_wait AS-1
   capacity_clock_advance 120
-  wait_file "$CASE_DIR/server/work.done"
+  appserver_wait_work
   jq -e '.status=="done"' "$DV_STATE/AS-1/meta"
   dv status AS-1 --json | jq -e '.[0].recoveries==1 and .[0].last_recovery_reason=="stalled"'
   test ! -f "$DV_STATE/AS-1/appserver/recovery"
   jq -se 'map(.kind)==["waiting-capacity","done"]' "$DV_STATE/AS-1/events.log"
+}
+case_capacity_appserver_slow_work() {
+  # Local work may outlast a single RPC deadline without any RPC timing out.
+  export DV_APP_WORK_DELAY=11
+  case_capacity_appserver_once
 }
 case_capacity_qa_once() {
   qa_fixture
@@ -200,7 +205,7 @@ case_capacity_legacy_terminal() {
 }
 case_capacity_appserver_rpc() {
   capacity_clock_setup
-  export DV_APP_CAPACITY_RPC=2 DV_APPSERVER_TIMEOUT_CASE=5
+  export DV_APP_CAPACITY_RPC=2
   appserver_setup
   touch "$CASE_DIR/server/recovery-work"
   capacity_status_wait AS-1
@@ -212,11 +217,7 @@ case_capacity_appserver_rpc() {
   done
   jq -e '.capacity.attempt==2' "$DV_STATE/AS-1/meta"
   capacity_clock_advance 300
-  for i in {1..300}; do
-    [ ! -f "$CASE_DIR/server/work.done" ] || break
-    sleep 0.1
-  done
-  test -f "$CASE_DIR/server/work.done"
+  appserver_wait_work
   jq -e '.status=="done" and .capacity==null' "$DV_STATE/AS-1/meta"
   dv status AS-1 --json | jq -e '.[0].recoveries==0'
   jq -se 'map(.kind)==["waiting-capacity","done"]' "$DV_STATE/AS-1/events.log"

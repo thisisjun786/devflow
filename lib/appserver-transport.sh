@@ -6,14 +6,11 @@ appserver_ws_accept() {
   printf '%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11' "$1" |
     openssl dgst -sha1 -binary | openssl base64 -A
 }
-appserver_ws_upgrade() {
-  local key expected line status='' accept='' upgrade='' connection='' deadline complete=0
-  key=$(openssl rand -base64 16) || return 1
-  expected=$(appserver_ws_accept "$key") || return 1
-  printf 'GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n' "$key" >&7
-  deadline=$(( $(date +%s) + DV_APPSERVER_TIMEOUT ))
-  while [ "$(date +%s)" -le "$deadline" ]; do
-    IFS= read -r -t 1 line <&6 || continue
+appserver_ws_upgrade_headers() {
+  local expected=$1 line status='' accept='' upgrade='' connection='' complete=0
+  # Untimed reads retain bytes even if Bash 3.2 is descheduled. The parent
+  # owns the handshake deadline and stops this reader if headers stall.
+  while IFS= read -r line <&6; do
     line=${line%$'\r'}
     if [ -z "$status" ]; then status=$line; continue; fi
     if [ -z "$line" ]; then complete=1; break; fi
@@ -25,6 +22,30 @@ appserver_ws_upgrade() {
   done
   [ "$complete" = 1 ] && [[ "$status" = 'HTTP/1.1 101 '* ]] && [ "$accept" = "$expected" ] && [ "$upgrade" = websocket ] && [[ "$connection" = *upgrade* ]]
 }
+appserver_ws_upgrade() (
+  local key expected deadline _wake
+  # Subshell-scoped handles remain available to EXIT cleanup.
+  upgrade_reader=''
+  trap 'if [ -n "$upgrade_reader" ]; then kill "$upgrade_reader" 2>/dev/null || true; wait "$upgrade_reader" 2>/dev/null || true; fi' EXIT
+  trap 'exit 143' TERM
+  key=$(openssl rand -base64 16) || return 1
+  expected=$(appserver_ws_accept "$key") || return 1
+  printf 'GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n' "$key" >&7 || return 1
+  mkfifo "$AS_IO/upgrade-wake" || return 1
+  exec 3<> "$AS_IO/upgrade-wake"
+  (
+    trap - EXIT INT TERM
+    if appserver_ws_upgrade_headers "$expected"; then touch "$AS_IO/upgraded"; fi
+    printf '.' >&3
+  ) & upgrade_reader=$!
+  deadline=$(( $(date +%s) + DV_APPSERVER_TIMEOUT ))
+  while [ "$(date +%s)" -le "$deadline" ]; do
+    IFS= read -r -n 1 -t 1 _wake <&3 || true
+    [ ! -f "$AS_IO/upgraded" ] || return 0
+    kill -0 "$upgrade_reader" 2>/dev/null || return 1
+  done
+  return 1
+)
 appserver_ws_byte() { printf '%b' "\\$(printf '%03o' "$1")"; }
 appserver_ws_mask() {
   # POSIX awk has no xor operator. Work in the C locale, including NUL bytes.
@@ -54,19 +75,39 @@ appserver_ws_frame() {
   else cat "$file"; fi
 }
 appserver_ws_send() {
-  local masked=$1 first line rc file
+  # Callers already run the sender in a pipeline/background child. Another
+  # function subshell would make $! name a wrapper that cannot join our reader.
+  local masked=$1 _wake file
+  send_reader=''
+  trap 'if [ -n "$send_reader" ]; then kill "$send_reader" 2>/dev/null || true; wait "$send_reader" 2>/dev/null || true; fi' EXIT
+  trap 'exit 143' TERM
+  mkdir "$AS_IO/send-channel"
+  mkfifo "$AS_IO/send-channel/wake" "$AS_IO/send-channel/ack"
+  exec 3<> "$AS_IO/send-channel/wake" 4<> "$AS_IO/send-channel/ack"
+  (
+    trap - EXIT INT TERM
+    # Only the consumer owns the acknowledgement writer. Its death must
+    # release a producer waiting for acknowledgement, including after KILL.
+    exec 3> "$AS_IO/send-channel/wake" 4< "$AS_IO/send-channel/ack"
+    while IFS= read -r line; do
+      printf '%s' "$line" > "$AS_IO/send-channel/pending"
+      mv "$AS_IO/send-channel/pending" "$AS_IO/send-channel/ready"
+      printf '.' >&3
+      IFS= read -r -n 1 _ack <&4 || exit 1
+    done
+    touch "$AS_IO/send-channel/eof"
+    printf '.' >&3
+  ) <&0 & send_reader=$!
   while :; do
-    # Bash 3.2 returns 1 and leaves the variable untouched on timeout; EOF
-    # clears it. Poll one character so a timeout cannot discard a partial
-    # record, then read the rest of our internal JSON line without a timeout.
-    rc=0; first=timeout
-    IFS= read -r -n 1 -t 1 first || rc=$?
-    if [ "$rc" = 0 ]; then
-      line=''
-      if [ -n "$first" ]; then IFS= read -r line || return 0; fi
-      printf '%s%s' "$first" "$line" > "$AS_IO/send.payload"
+    # A timed read can lose even one consumed byte on Bash 3.2. Only the
+    # wakeup is expendable: the complete record remains until acknowledged.
+    IFS= read -r -n 1 -t 1 _wake <&3 || true
+    if [ -f "$AS_IO/send-channel/ready" ]; then
+      mv "$AS_IO/send-channel/ready" "$AS_IO/send.payload"
+      printf '.' >&4
       appserver_ws_frame "$AS_IO/send.payload" 1 "$masked" || return 1
-    elif [ "$rc" -le 128 ] && [ "$first" != timeout ]; then return 0; fi
+    elif [ -f "$AS_IO/send-channel/eof" ]; then return 0
+    elif ! kill -0 "$send_reader" 2>/dev/null; then return 1; fi
     for file in "$AS_IO"/pong.*.ready; do
       [ -f "$file" ] || continue
       appserver_ws_frame "$file" 10 "$masked" || return 1
@@ -86,7 +127,7 @@ appserver_ws_bytes() {
   done
 }
 appserver_ws_receive() {
-  local masked=$1 header first second opcode final length byte key file fragmented=0 total=0
+  local masked=$1 record=${2:-} header first second opcode final length byte key file _ack fragmented=0 total=0
   : > "$AS_IO/message"
   while :; do
     appserver_ws_bytes 2 "$AS_IO/header" || return 1
@@ -122,7 +163,13 @@ appserver_ws_receive() {
     total=$((total + length)); [ "$total" -le 16777216 ] || return 1
     cat "$AS_IO/payload" >> "$AS_IO/message"
     if [ "$final" = 1 ]; then
-      cat "$AS_IO/message"; printf '\n'
+      if [ -n "$record" ]; then
+        mv "$AS_IO/message" "$record"
+        printf '.'
+        IFS= read -r -n 1 _ack <&5 || return 1
+      else
+        cat "$AS_IO/message"; printf '\n'
+      fi
       : > "$AS_IO/message"; fragmented=0; total=0
     fi
   done
