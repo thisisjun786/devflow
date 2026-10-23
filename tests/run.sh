@@ -2346,6 +2346,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+  process_group_list_portable \
   appserver_sender_close \
   metrics_restart_slow_start \
   award_timeout_slow_success \

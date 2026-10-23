@@ -2,6 +2,28 @@
 # Synthetic nested runners exercise their real EXIT/signal paths. On red, the
 # outer test still stops every group it created before reporting the failure.
 # shellcheck disable=SC2016
+case_process_group_list_portable() (
+  local probe="$CASE_DIR/group-probe"
+  mkdir -p "$probe/registry/groups"
+  touch "$probe/registry/groups/101" "$probe/registry/groups/202" "$probe/registry/groups/303"
+  DV_TEST_PROCESS_DIR="$probe/registry"
+  cat > "$probe/ps" <<'PS'
+#!/bin/sh
+printf '101 S\n101 S\n202 Z\n303 S\n404 S\n'
+PS
+  chmod +x "$probe/ps"
+  DV_TEST_PS="$probe/ps"
+  awk() {
+    local argument
+    for argument in "$@"; do
+      case "$argument" in groups=*$'\n'*) printf 'awk: newline in string\n' >&2; return 2 ;; esac
+    done
+    command awk "$@"
+  }
+  runner_live_groups | sort -n > "$probe/actual"
+  printf '101\n303\n' > "$probe/expected"
+  cmp "$probe/expected" "$probe/actual"
+)
 process_cleanup_probe() {
   local mode=$1 lab="$CASE_DIR/lifecycle" runner rc=0 leaked=0 group pid stat _
   mkdir -p "$lab/root" "$lab/tmp"
