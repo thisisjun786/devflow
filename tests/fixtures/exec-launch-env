@@ -21,5 +21,6 @@ jq() {
   if [ "${FUNCNAME[1]:-}" = run_agent ] && [ "${BACKEND:-}" = exec ]; then
     exec_launch_pause
   fi
-  command jq "$@"
+  # Preserve expected nonzero jq predicates under Bash 3.2's errexit rules.
+  env jq "$@"
 }

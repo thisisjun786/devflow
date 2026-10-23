@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 state="$DV_STATE/$DV_ISSUE"
-if [ "$(jq -r '.agent+":"+.mode' "$state/meta")" = codex:goal ]; then
-  printf 'dv-ready>\n'
-  for _ in {1..100}; do
-    [ ! -f "$state/goal-input" ] || break
+wait_start_file() {
+  local deadline=$((SECONDS + DV_START_WAIT))
+  while [ ! -f "$1" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep 0.05
   done
-  test -f "$state/goal-input"
+}
+agent_mode=$(jq -r '.agent+":"+.mode' "$state/meta")
+if [ "$agent_mode" = codex:goal ]; then
+  printf 'dv-ready>\n'
+  wait_start_file "$state/goal-input"
+  printf 'Pursuing goal\n'
+elif [[ "$agent_mode" = devin:* ]]; then
+  # The fake herdr records Enter in the same place as initial Devin startup.
+  printf 'Do you trust this folder?\n'
+  wait_start_file "$state/trust-enter"
 fi
 # A terminal may enter through the physical path even if metadata kept an alias.
 jq -n --arg cwd "$(pwd -P)" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" > "$state/revived-input.json"

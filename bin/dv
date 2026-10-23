@@ -39,6 +39,7 @@ source "$DV_ROOT/lib/task.sh"
 # shellcheck source=lib/qa.sh
 source "$DV_ROOT/lib/qa.sh"
 command=${1:-help}; [ "$#" -eq 0 ] || shift
+case "$command" in heavy|_agent|_appserver-run|_qa-run|_manager-run) tmp_agent_environment ;; esac
 if [ "$command" = heavy ]; then cmd_heavy "$@"; exit; fi
 if [ "$command" = submit ] && [ "${1:-}" = --kind ]; then
   [ "$#" -ge 2 ] || fail 'missing --kind value'

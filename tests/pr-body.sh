@@ -13,7 +13,13 @@ pr_body_setup() {
   printf 'Private instructions: hx-linux; read %s/brief.md.\n' "$PR_STATE" > "$PR_STATE/brief.md"
   printf '# Changes\n\nPublishes a safe report summary.\n\n## Details\n\nInternal report tail.\n' > "$PR_STATE/report.md"
 }
-pr_body_publish() { dv pr PUB-1; wait_pr_ready PUB-1; }
+pr_body_publish() {
+  # A successor waiter may still be starting. Its predecessor's receipt/PID
+  # must not let teardown remove the fixture while startup creates disk scratch.
+  rm -f "$PR_STATE/pr-ready.json"
+  dv pr PUB-1
+  wait_pr_ready PUB-1
+}
 case_pr_fallback_body() {
   pr_body_setup
   pr_body_publish
@@ -195,4 +201,31 @@ case_polish_unreachable() {
 case_polish_unreachable_timeout() {
   export SSH_POLISH_UNREACHABLE=hang DV_POLISH_TIMEOUT=1
   case_polish_unreachable
+}
+case_pr_body_delayed_wait() {
+  pr_body_setup; pr_body_publish
+  git -C "$PR_WT" commit --allow-empty -qm 'DF-228: publish another head'
+  mkdir "$CASE_DIR/delayed-bin"
+  cat > "$CASE_DIR/delayed-bin/setsid" <<'DELAY'
+#!/usr/bin/env bash
+touch "$CASE_DIR/waiter-starting"
+while [ ! -f "$CASE_DIR/release-waiter" ]; do sleep 0.01; done
+exec "$@"
+DELAY
+  chmod +x "$CASE_DIR/delayed-bin/setsid"
+  export PATH="$CASE_DIR/delayed-bin:$PATH"
+  local publisher early=false
+  (pr_body_publish; touch "$CASE_DIR/publisher-returned") & publisher=$!
+  wait_file "$CASE_DIR/waiter-starting"
+  sleep 0.2
+  [ ! -f "$CASE_DIR/publisher-returned" ] || early=true
+  touch "$CASE_DIR/release-waiter"
+  wait "$publisher"
+  # Wait for the new receipt even on red so no writer survives teardown.
+  for _ in {1..100}; do
+    if jq -e --arg head "$(git -C "$PR_WT" rev-parse HEAD)" '.head==$head' "$PR_STATE/pr-ready.json" >/dev/null; then break; fi
+    sleep 0.1
+  done
+  wait_pr_ready PUB-1
+  test "$early" = false
 }

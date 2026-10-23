@@ -4,7 +4,7 @@
 exec_setup() {
   repo exec "${2:-}"
   unset DV_MODE DV_CODEX_MODE
-  export DV_HERDR=1 DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/codex-exec" DV_STALL_AFTER=2
+  export DV_HERDR=1 DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/codex-exec"
   export DV_EXEC_SCENARIO=${1:-success}
 }
 exec_wait() {
@@ -84,7 +84,7 @@ exec_failure() {
 case_exec_nonzero() { exec_failure nonzero; test "$(cat "$DV_STATE/EX-1/agent.exit")" = 7; }
 case_exec_capacity() { case_capacity_exec_timeout; }
 case_exec_rate() { case_capacity_exec_timeout rate; }
-case_exec_silence() { exec_failure silence; grep -F stalled "$DV_STATE/EX-1/events.log"; }
+case_exec_silence() { export DV_STALL_AFTER=2; exec_failure silence; grep -F stalled "$DV_STATE/EX-1/events.log"; }
 case_exec_unfinished() { exec_failure unfinished; grep -F failed-to-finish "$DV_STATE/EX-1/events.log"; }
 case_exec_retry() {
   exec_setup retry
@@ -120,6 +120,12 @@ case_exec_working() {
   touch "$DV_STATE/EX-1/release"
   exec_wait
   test "$(cat "$DV_STATE/EX-1/stub-count")" = 1
+}
+case_exec_send_slow_completion() {
+  # Completion does ordinary local work after its last provider event. A
+  # lifecycle fixture must not turn that scheduling delay into a stall retry.
+  export DV_EXEC_COMPLETION_DELAY=3
+  case_exec_send
 }
 case_exec_fresh() {
   exec_setup fresh

@@ -213,7 +213,7 @@ cmd_pr_wait() {
     head=$(jq -r '.head // empty' "$S/meta"); [ -n "$head" ] || head=$(git rev-parse HEAD)
     loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.initial_head //= (.review_head // $head)')
     rc=0
-    gh pr checks "$pr" --watch > "$S/checks.log" 2>&1 || rc=$?
+    gh pr checks "$pr" --watch --interval "${DV_CHECKS_INTERVAL:-60}" > "$S/checks.log" 2>&1 || rc=$?
     tmp=$(mktemp "$S/.pr-snapshot.XXXXXX")
     gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state > "$tmp"
     mv "$tmp" "$S/pr-snapshot.json"
