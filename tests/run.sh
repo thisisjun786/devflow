@@ -281,6 +281,56 @@ case_code_tmux_failed_status() { terminal_failed_status code tmux; }
 case_code_herdr_failed_status() { terminal_failed_status code herdr; }
 case_code_tmux_failed_stall() { terminal_failed_status code tmux stall; }
 case_code_herdr_failed_stall() { terminal_failed_status code herdr stall; }
+task_done_failed_status() {
+  local backend=$1 s="$DV_STATE/TK-1" head wt exit_code file
+  if [ "$backend" = tmux ]; then needs_tmux; else export DV_HERDR=1; fi
+  task_setup
+  export DV_TASK_TEST_WAIT_AFTER_DONE=1 DV_TASK_TEST_EXIT_AFTER_DONE=7
+  task_start
+  wait_file "$s/after-done"
+  head=$(jq -r .head "$s/done.json")
+  wt=$(jq -r .worktree "$s/meta")
+  cp "$s/done.json" "$CASE_DIR/saved-done"
+  cp -R "$s/task-snapshots/$head" "$CASE_DIR/saved-snapshot"
+  # A stale exit marker must not override the still-running terminal.
+  printf '7\n' > "$s/agent.exit"
+  dv status TK-1 --json | jq -e '.[0] | .status=="done" and .alive and .agent_status=="unknown" and (.agent_dead|not) and .agent_exit_code==null'
+  rm "$s/agent.exit"
+  touch "$s/release"
+  task_terminal_wait "$backend"
+  test "$(cat "$s/agent.exit")" = 7
+  for file in meta events.log report.md; do cp "$s/$file" "$CASE_DIR/saved-$file"; done
+  dv status TK-1 --json > "$CASE_DIR/failed-status.json"
+  cat "$CASE_DIR/failed-status.json"
+  jq -e --arg head "$head" '.[0] | .status=="done" and .done_head==$head and .agent_status=="failed" and .agent_dead and .agent_exit_code==7' "$CASE_DIR/failed-status.json"
+  dv status TK-1 | awk -F '\t' '$2=="done" && $8=="agent=failed" && $10=="exit=7" { found=1 } END { exit !found }'
+  if [ "$backend" = herdr ]; then
+    jq -e '.[0].alive' "$CASE_DIR/failed-status.json"
+    touch "$CASE_DIR/herdr/w-TK-1/missing-pane"
+    dv status TK-1 --json | jq -e '.[0] | (.alive|not) and .agent_status=="failed" and .agent_exit_code==7'
+    rm "$CASE_DIR/herdr/w-TK-1/missing-pane"
+    printf 'agent get\n' > "$CASE_DIR/herdr/fail"
+    dv status TK-1 --json | jq -e '.[0] | .status=="done" and .agent_status=="unknown" and (.agent_dead|not) and .agent_exit_code==null'
+    rm "$CASE_DIR/herdr/fail"
+  else
+    jq -e '.[0] | (.alive|not) and (.tmux|not)' "$CASE_DIR/failed-status.json"
+  fi
+  if dv land TK-1 --checked "$head" > "$CASE_DIR/land.log" 2>&1; then return 1; fi
+  grep -F 'task terminal agent did not exit successfully' "$CASE_DIR/land.log"
+  test ! -e "$CASE_DIR/destination/TK-1"
+  cmp "$s/done.json" "$CASE_DIR/saved-done"
+  diff -r "$s/task-snapshots/$head" "$CASE_DIR/saved-snapshot"
+  diff -r "$wt/out" "$CASE_DIR/saved-snapshot/out"
+  for file in meta events.log report.md; do cmp "$s/$file" "$CASE_DIR/saved-$file"; done
+  # Absent, malformed and successful exits are not failed executions.
+  for exit_code in missing '' invalid 0; do
+    if [ "$exit_code" = missing ]; then rm "$s/agent.exit"
+    else printf '%s\n' "$exit_code" > "$s/agent.exit"; fi
+    dv status TK-1 --json | jq -e '.[0] | .status=="done" and .agent_status=="unknown" and (.agent_dead|not) and .agent_exit_code==null'
+  done
+}
+case_task_tmux_done_failed_status() { task_done_failed_status tmux; }
+case_task_herdr_done_failed_status() { task_done_failed_status herdr; }
 tmux_start_failure() {
   local kind=$1 failure=$2 issue=TS-1 socket=$DV_TMUX_SOCKET rc=0 next_rc=0
   needs_tmux; task_setup
@@ -2642,7 +2692,7 @@ registered_cases() {
   capacity_load capacity_memory capacity_award capacity_start capacity_headroom capacity_task capacity_launch_reservation capacity_probe_cleanup \
   autofill_submit autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence autofill_cancel_event autofill_label_event qa_merge_commit_event \
   status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
-  task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
+  task_tmux_done_failed_status task_herdr_done_failed_status task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
   config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
   appserver_sender_close \
   metrics_restart_slow_start \
