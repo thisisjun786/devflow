@@ -8,6 +8,10 @@ process_cleanup_probe() {
   cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/templates" "$ROOT/tests" "$ROOT/config.example.sh" "$lab/root/"
   cat >> "$lab/root/tests/review-loop.sh" <<'PROBE'
 case_cleanup_probe() {
+  if [ "$PROBE_MODE" = nested ] && [ "${PROBE_LEAF:-0}" = 0 ]; then
+    PROBE_LEAF=1 bash "$ROOT/tests/run.sh" --case cleanup_probe
+    return
+  fi
   if { : >&9; } 2>/dev/null; then touch "$PROBE_LAB/inherited-slot"; fi
   appserver_setup
   client=$(cat "$DV_STATE/AS-1/appserver/client.pid")
@@ -70,7 +74,7 @@ PROBE
     fi
     touch "$lab/release"
     case "$mode" in
-      term) kill -TERM "$runner" ;;
+      term|nested) kill -TERM "$runner" ;;
       timeout) kill -TERM "$(cat "$lab/case.pid")" ;;
     esac
   else
@@ -98,12 +102,13 @@ PROBE
   printf 'suite %s exit=%s leaked=%s\n' "$mode" "$rc" "$leaked"
   test -f "$lab/ready"
   test "$leaked" = 0
-  case "$mode" in pass) test "$rc" = 0 ;; term) test "$rc" = 143 ;; *) test "$rc" = 1 ;; esac
+  case "$mode" in pass) test "$rc" = 0 ;; term|nested) test "$rc" = 143 ;; *) test "$rc" = 1 ;; esac
 }
 case_process_cleanup_pass() { process_cleanup_probe pass; }
 case_process_cleanup_fail() { process_cleanup_probe fail; }
 case_process_cleanup_timeout() { process_cleanup_probe timeout; }
 case_process_cleanup_term() { process_cleanup_probe term; }
+case_process_cleanup_nested() { process_cleanup_probe nested; }
 
 case_heavy_descendant_slot() {
   export DV_HEAVY_SLOTS=1

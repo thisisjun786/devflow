@@ -2219,7 +2219,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
-  process_cleanup_pass process_cleanup_fail process_cleanup_timeout process_cleanup_term heavy_descendant_slot \
+  process_cleanup_pass process_cleanup_fail process_cleanup_timeout process_cleanup_term process_cleanup_nested heavy_descendant_slot \
   tmp_reap tmp_guards tmp_agent tmp_appserver tmp_default tmp_quota tmp_reap_bash32 tmp_appserver_killed tmp_usage tmp_cache pr_body_delayed_wait \
   review_source_moved review_source_named review_source_numeric review_source_meta review_source_invalid_meta review_source_unknown review_source_start teardown_wait_host_agent \
   appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \

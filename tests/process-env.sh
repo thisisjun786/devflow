@@ -10,7 +10,8 @@ wait() {
   local dv_test_job dv_test_group
   if [ -d "${DV_TEST_PROCESS_DIR:-}/groups" ]; then
     for dv_test_job in $(jobs -p); do
-      dv_test_group=$(ps -o pgid= -p "$dv_test_job" 2>/dev/null | tr -d ' ') || dv_test_group=''
+      dv_test_group=$("${DV_TEST_PS:-/bin/ps}" -o pgid= -p "$dv_test_job" 2>/dev/null) || dv_test_group=''
+      dv_test_group=${dv_test_group//[[:space:]]/}
       if [ "$dv_test_group" = "$dv_test_job" ] && [ "$dv_test_group" -gt 1 ]; then
         : > "$DV_TEST_PROCESS_DIR/groups/$dv_test_group"
       fi
