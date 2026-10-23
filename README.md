@@ -145,6 +145,10 @@ dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야
 
 GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고 squash → merge commit → rebase 순으로 선택합니다. `DV_LAND_METHOD=squash|merge|rebase`를 환경변수 또는 작업 worktree의 `.devflow`에 지정하면 해당 방식을 사용합니다(비어 있지 않은 환경변수가 우선). 예: `DV_LAND_METHOD=merge dv land APP-42`. 잘못된 값, 저장소가 허용하지 않는 지정값, 허용 방식 없음, 조회 실패 시 병합하지 않고 worktree를 보존합니다. 현재 PR head 고정과 병합 후 MERGED 확인은 그대로 적용됩니다. 로컬 저장소는 기존 `DV_LAND_MODE`를 사용합니다.
 
+다른 PR로 이미 합쳐진 작업은 `dv done ISSUE --already-merged <PR 번호·PR URL·커밋>`으로 끝냅니다. 숫자만 쓰면 PR 번호입니다. PR은 MERGED이고 같은 base에 병합됐는지 확인해 병합 커밋을 씁니다. 그 커밋이 fetch한 `origin/<BASE>`(원격이 없으면 로컬 base)의 조상이고, 이 브랜치를 base에 병합해도 tree가 바뀌지 않아야 합니다. 같은 수정을 다시 만든 커밋은 통과하며 base에 없는 변경이 남으면 거절합니다. 작업 자신의 PR이 열려 있어도 거절합니다. 결과는 done.json의 `merged_via`에 남고 상태는 ready입니다. 관리자의 `dv land`는 병합하지 않고 같은 확인을 반복한 뒤 landed 기록·worktree 정리·`landed` 이벤트를 처리합니다.
+
+열린 선행 이슈 때문에 진행할 수 없는 running 작업은 `dv park ISSUE --on 12,13 [--note TEXT]`로 보류합니다. 깨끗한 worktree와 선행 이슈가 열려 있는지 확인하고, force 없이 브랜치를 push하고, 작업 이슈(meta의 `source_issue`, 없으면 ISSUE 끝 번호)에 head별 마커가 있는 댓글을 한 번 남긴 뒤 상태를 `parked`로 바꾸고 `parked` 이벤트를 보냅니다. parked 작업은 입찰 슬롯을 차지하지 않고 정체 복구 대상도 아니며, 에이전트가 끝나도 failed를 보내지 않습니다. worktree는 보존하고 `dv send`가 상태를 running으로 되돌려 같은 worktree에서 재개합니다.
+
 쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
 
 선행 PR의 landed 이벤트를 받으면 `dv-watch`는 자신과 `DV_HOSTS`의 모든 `waiting-base` 작업을 기존 재시도 큐에 넣습니다. `stack_head`가 없는 과거 기록도 포함합니다. 주기적 상태 안전망도 같은 호스트들을 조회하므로 대기에 들어오기 전에 병합된 기반과 놓친 이벤트를 복구합니다. 선행 PR이 모두 병합되고 병합 결과가 실제 `origin/<BASE>`에 포함되면, 해당 작업자에게 `dv send`로 base 병합·필요한 시험 재실행·일반 push·현재 head의 초록 CI·`dv done`을 요청합니다. 기존 land 승인(`stack_head`)이 있는 작업은 새 done 뒤 자동 병합을 이어가고, 승인 기록이 없으면 완료를 관리자에게 전달합니다. 미병합 기반은 다음 이벤트나 안전망까지 유예하며 `DV_MAX_WORKERS`의 동시 실행 한도를 공유합니다.
@@ -189,7 +193,8 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv bid --json [--repo REPO] [--agent AGENT]` | 수용량·부하·메모리·디스크·clone·로그인 조회, 상태 변경 없음 |
 | `dv queue [ISSUE] [--json]` / `dv cancel ISSUE` | 관리자 배정 상태 조회 / 미배정 제출 취소 |
 | `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin\|omp\|agy\|grok\|cursor] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치·상태 및 선택한 backend 생성 |
-| `dv done ISSUE [--note TEXT]` | head·변경 파일 수·보고서 경로·완료 이벤트 |
+| `dv done ISSUE [--note TEXT] [--already-merged PR\|COMMIT]` | head·변경 파일 수·보고서 경로·완료 이벤트. `--already-merged`는 다른 PR로 이미 base에 들어간 작업을 ready로 기록 |
+| `dv park ISSUE --on N[,N...] [--note TEXT]` | 열린 선행 이슈를 기다리는 running 작업 보류: 브랜치 push·이슈 댓글·슬롯 반환, `dv send`로 재개 |
 | `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작. 제목은 HEAD 커밋 제목. 상태 폴더의 `pr.md`(공개용 본문)를 그대로 쓰고, 없으면 짧은 보고서 요약으로 만든다 |
 | `dv polish ISSUE` | PR 본문 퇴고·코드/URL 보존 검증 후 본문만 갱신 |
 | `dv pr-wait ISSUE [--foreground [--review-handled]]` | foreground는 CI·리뷰·인라인 지적 JSON 반환. 현재 head의 최신 Codex 리뷰에 P0/P1이 없으면 처리 완료. 기본 모드는 조기 종료 작업자 재개 안전망 |
@@ -198,7 +203,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv status [ISSUE] [--json]` | 상태, 에이전트, 호스트, 경과, backend·생존·에이전트 상태, 마지막 로그 |
 | `dv metrics [--since 6h] [--json]` | 작업별 유휴 분, 이벤트 처리 지연, 완료→병합 지연, revive/resume 횟수 |
 | `dv send ISSUE 'text'` | 실행 중이면 입력 전달; 종료가 확인되면 같은 작업을 한 번 자동 재시작 |
-| `dv clean ISSUE` | 깨끗한 worktree·herdr/tmux 정리; 병합된 로컬 브랜치만 삭제 |
+| `dv clean ISSUE` | 깨끗한 worktree·herdr/tmux 정리; 병합된 로컬 브랜치만 삭제. QA 작업은 멈춘 깨끗한 임시 clone을 정리 |
 | `dv kick KIND ISSUE [msg]` | 완료 알림 전송, 실패 로그 보관 |
 | `dv-kick KIND ISSUE [msg [host [head]]]` | 감시 호스트 로컬 큐와 로그에 이벤트 추가 |
 | `dv-watch` | 로컬 큐 소비, 최대 4개 시온 작업자, 느린 상태 점검 |
@@ -227,6 +232,8 @@ Codex의 지적 없는 리뷰가 REST review 대신 summary 댓글로 전달되�
 PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 다시 확인합니다. 실행 중인 체크는 `DV_CHECKS_INTERVAL`(기본 60초) 간격으로 지켜봅니다. GitHub GraphQL 한도는 계정의 모든 작업자가 나눠 쓰므로 짧게 잡지 않습니다. 체크가 초록이 된 뒤 `DV_REVIEW_WAIT`의 Codex 리뷰 제한 시간이 시작됩니다. 리뷰가 없으면 한 번 더 `@codex review`를 요청하고 같은 시간만큼 기다린 뒤 `review-timeout`으로 차단합니다. 시간 초과는 성공이 아닙니다. CI가 아예 없는 PR은 체크 등록을 계속 기다립니다. `dv pr`의 대기자는 Linux에서 `setsid`로 분리하며, `setsid`가 없는 환경에서는 Bash job control로 별도 프로세스 그룹을 만듭니다. `.pr-wait`의 PID 소유자가 죽었으면 다음 대기자가 잠금을 회수합니다. 30분 상태 안전망도 `pr` 상태의 호스트에서 대기자 생존을 확인하고 필요하면 다시 시작합니다.
 
 감시자는 작업자가 성공 종료한 이벤트만 `seen`에 기록합니다. 실패한 이벤트는 `$DV_HOME/pending/`에 보존하고 `DV_WORKER_RETRY`초(기본 15) 후 다시 실행하며, 재시작 후에도 이어집니다. 실행 중인 중복 이벤트는 한 작업자로 묶습니다. 작업자가 외부 작업을 끝내고 성공 기록 전에 죽으면 다시 실행될 수 있으므로 작업은 재실행을 견딜 수 있어야 합니다. 상태 안전망은 `done`과, `done_at`이 있고 완료 head가 현재 head와 같은 `pr/ready`의 완료 이벤트를 복구합니다. `dv status --json`의 `done_head`는 기존 `done.json`에서 읽으며, 완료 기록을 읽을 수 없으면 `null`입니다. 이전 완료 시각은 보존하므로 수정본의 `dv pr`이 작업 중 슬롯 계산을 바꾸지 않습니다.
+
+같은 안전망은 `pr`·`ready`·`waiting-base` 작업의 PR을 작업 호스트에서 `dv _pr-reconcile`로 확인합니다. 살아 있는 pr-wait가 지켜보는 `pr` 작업은 건너뜁니다. GitHub에서 병합된 PR은 `dv land`와 같은 조건(base·head 일치, 체크 전부 성공, 깨끗한 worktree)을 확인한 뒤 landed로 기록하고 worktree를 정리하며 `landed` 이벤트를 한 번 보냅니다. 조건이 맞지 않으면 아무것도 지우지 않고 같은 head·이유마다 한 번 `blocked`로 알립니다. 병합 없이 닫힌 PR은 `closed` 상태와 `closed` 이벤트로 남기며 worktree와 브랜치는 보존합니다. 다시 진행하려면 PR을 다시 열고 `dv pr`을 실행합니다. parked·closed 이벤트도 done·landed처럼 대기 중인 제출의 배정을 다시 시도합니다.
 
 ## 프로젝트 관리자
 
@@ -517,8 +524,10 @@ pending/running QA가 끝나기 전까지 milestone 완료와 다음 milestone �
 `DV_CAPACITY_MAX_WAIT`(기본 6시간)를 넘으면 이유와 함께 blocked로 남습니다.
 다른 실패는 로그와 clone을 보존하여 확인할 수 있고 다음 병합은 새 head를 실행합니다.
 QA prompt는 데이터 격리를 지시하지만 OS sandbox는 아닙니다. 실제 agent/provider
-QA 품질은 stub 시험이 보증하지 않습니다. 독립 QA clone의 `dv clean` 지원은 별도
-후속 과제이며, dirty clone을 자동 삭제하지 않습니다.
+QA 품질은 stub 시험이 보증하지 않습니다. blocked 원인을 확인한 뒤
+`dv clean QA-...`는 QA 실행기가 멈췄고 clone이 깨끗할 때만 기록된 QA 임시
+디렉터리(clone·격리 HOME·상태·out)를 지우고 `cleaned_at`을 남깁니다. repo가 URL이므로
+소유자 checkout과 브랜치는 건드리지 않으며, dirty clone은 지우지 않습니다.
 
 임시 파일은 호스트 설정 `DV_TMP`(기본 `$HOME/.cache/dv/tmp`)에 둡니다. dv와 새 작업·에이전트의 `TMPDIR`에 이 경로를 전달하며, 기존 tmux/herdr 서버와 App Server를 쓰는 새 스레드에도 명시적으로 전달합니다. Go test와 pytest의 기본 임시 파일도 이 환경을 따릅니다. 작업 시작 시 `GOCACHE`(미지정이면 `go env GOCACHE`)가 `/tmp` 또는 macOS의 `/private/tmp` 아래이면 `$DV_TMP/go-build`로 바꿉니다. 다른 캐시 설정과 `GOCACHE=off`는 유지하며, 기존 캐시 파일을 이동하거나 지우지는 않습니다. `DV_TMP`는 디스크에 있는 절대 경로로 지정해야 합니다. 이미 실행 중인 에이전트의 환경이나 도구에 직접 지정한 임시 경로는 변경하지 않습니다.
 

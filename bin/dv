@@ -67,9 +67,12 @@ case "$command" in
     # shellcheck source=lib/host.sh
     source "$DV_ROOT/lib/host.sh"
     cmd_host "$@" ;;
-  start|done|pr|polish|review|land|status|send|clean|kick|submit|bid|queue|cancel|_submit|_award|_receipt) "cmd_$command" "$@" ;;
+  start|done|pr|polish|review|land|status|send|clean|kick|submit|bid|queue|cancel|park|_submit|_award|_receipt) "cmd_$command" "$@" ;;
   pr-wait) cmd_pr_wait "$@" ;;
   _pr-wait-start) cmd_pr_wait_start "$@" ;;
+  _pr-reconcile) cmd_pr_reconcile "$@" ;;
+  _pr-reconcile-start) cmd_pr_reconcile_start "$@" ;;
+  _pr-reconcile-sweep) cmd_pr_reconcile_sweep "$@" ;;
   _stack-land) cmd_stack_land "$@" ;;
   _stack-resume) cmd_stack_resume "$@" ;;
   metrics) cmd_metrics "$@" ;;
@@ -82,6 +85,6 @@ case "$command" in
   _appserver-run) cmd__appserver_run "$@" ;;
   _appserver-watch) cmd__appserver_watch "$@" ;;
   _reconcile-host) cmd__reconcile_host "$@" ;;
-  help|--help|-h) printf '%s\n' 'dv manager start <repo> [--agent hermes] | status [repo] [--json] | stop <repo> | note <repo> <file>' 'dv host check [--json] [--probe-codex] | sync' 'dv submit <repo> <ISSUE> <slug> --brief FILE [--agent codex|claude|devin|omp|agy|grok|cursor] [--base BRANCH] [--mode auto|goal|exec]' 'dv bid --json [--repo REPO] [--agent AGENT]' 'dv queue [ISSUE] [--json]' 'dv cancel <ISSUE>' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin|omp|agy|grok|cursor] [--brief FILE] [--base BRANCH] [--mode auto|goal|exec]' 'dv done <ISSUE> [--note TEXT]' 'dv pr|pr-wait|polish|review|land|clean <ISSUE>' 'dv metrics [--since 6h] [--json]' 'dv status [ISSUE] [--json] [--live]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
+  help|--help|-h) printf '%s\n' 'dv manager start <repo> [--agent hermes] | status [repo] [--json] | stop <repo> | note <repo> <file>' 'dv host check [--json] [--probe-codex] | sync' 'dv submit <repo> <ISSUE> <slug> --brief FILE [--agent codex|claude|devin|omp|agy|grok|cursor] [--base BRANCH] [--mode auto|goal|exec]' 'dv bid --json [--repo REPO] [--agent AGENT]' 'dv queue [ISSUE] [--json]' 'dv cancel <ISSUE>' 'dv start <repo> <ISSUE> <slug> [--agent codex|claude|devin|omp|agy|grok|cursor] [--brief FILE] [--base BRANCH] [--mode auto|goal|exec]' 'dv done <ISSUE> [--note TEXT] [--already-merged PR|COMMIT]' 'dv park <ISSUE> --on N[,N...] [--note TEXT]' 'dv pr|pr-wait|polish|review|land|clean <ISSUE>' 'dv metrics [--since 6h] [--json]' 'dv status [ISSUE] [--json] [--live]' 'dv send <ISSUE> <text>' 'dv kick <kind> <ISSUE> [msg]' ;;
   *) fail "unknown command: $command" ;;
 esac
