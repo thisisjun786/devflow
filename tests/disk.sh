@@ -19,14 +19,28 @@ STUB
 case_disk_bid() {
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=exec DV_AGENT_READY_codex=true DV_MIN_MEMORY_MB=0
   export DF_STUB_KB=14680064 DV_MAX_JOBS=1
-  dv bid --json > "$CASE_DIR/bid.json"
-  jq -e '.disk_available_gb==14 and .reason=="low disk" and .status=="rejected"' "$CASE_DIR/bid.json"
-  DF_STUB_KB=15728640 dv bid --json | jq -e '.disk_available_gb==15 and .status=="submitted"'
-  # The old score terms remain intact; the disk penalty is 20 at the minimum.
-  jq -e '(.score-(100-20*.load5/.cores+([64,.memory_available_mb/1024]|min)-20*(30-14)/15)|fabs)<0.00001' "$CASE_DIR/bid.json"
-  DF_STUB_KB=31457280 dv bid --json | jq -e '(.score-(100-20*.load5/.cores+([64,.memory_available_mb/1024]|min))|fabs)<0.00001'
-  DV_MIN_DISK_GB=20 DF_STUB_KB=19922944 dv bid --json | jq -e '.reason=="low disk"'
-  DV_MIN_DISK_GB=0 DF_STUB_KB=0 dv bid --json | jq -e '.status=="submitted" and (.score-(100-20*.load5/.cores+([64,.memory_available_mb/1024]|min))|fabs)<0.00001'
+  bidding_functions
+  # shellcheck source=lib/disk.sh
+  source "$ROOT/lib/disk.sh"
+  bid_agent() { return 0; } # Auth is independent of disk scoring.
+  # Hold nondisk resources fixed so the disk assertions also work under load.
+  bid_resources() {
+    jq -cn --argjson load "$disk_bid_load" --argjson disk "$(disk_available_gb)" \
+      '{cores:16,load5:$load,memory_available_mb:1024,disk_available_gb:$disk,go_cache_path:null,cache_disk_available_gb:null}'
+  }
+  local disk_bid_load baseline
+  for disk_bid_load in 0 38; do
+    baseline=$(DF_STUB_KB=31457280 cmd_bid --json | jq .score)
+    cmd_bid --json > "$CASE_DIR/bid.json"
+    jq -e '.disk_available_gb==14 and .reason=="low disk" and .status=="rejected"' "$CASE_DIR/bid.json"
+    # Compare only the disk penalty against the same host with ample disk.
+    jq -e --argjson baseline "$baseline" '(.score-($baseline-20*(30-14)/15)|fabs)<0.00001' "$CASE_DIR/bid.json"
+    DF_STUB_KB=15728640 cmd_bid --json | jq -e --argjson baseline "$baseline" \
+      '.disk_available_gb==15 and .status=="submitted" and (.score-($baseline-20)|fabs)<0.00001'
+    DV_MIN_DISK_GB=20 DF_STUB_KB=19922944 cmd_bid --json | jq -e '.reason=="low disk"'
+    DV_MIN_DISK_GB=0 DF_STUB_KB=0 cmd_bid --json | jq -e --argjson baseline "$baseline" \
+      '.status=="submitted" and .score==$baseline'
+  done
 }
 case_disk_probe() {
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=exec DV_AGENT_READY_codex=true DV_MIN_MEMORY_MB=0
@@ -196,7 +210,7 @@ STUB
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=exec DV_AGENT_READY_codex=true DV_MIN_MEMORY_MB=0
   dv bid --json | jq -e '.disk_available_gb==1 and .cache_disk_available_gb==100 and .reason=="low disk"'
   CACHE_FREE_KB=1048576 WORK_FREE_KB=104857600 dv bid --json | jq -e '.disk_available_gb==100 and .cache_disk_available_gb==1 and .reason=="low disk"'
-  CACHE_FREE_KB=15728640 WORK_FREE_KB=104857600 dv bid --json | jq -e '.status=="submitted" and (.score-(100-20*.load5/.cores+([64,.memory_available_mb/1024]|min)-20)|fabs)<0.00001'
+  CACHE_FREE_KB=15728640 WORK_FREE_KB=104857600 dv bid --json | jq -e '.status=="submitted" and (.score-(100-20*.load5/.cores-100*([0,(.load5/.cores-1.5)]|max)+([64,.memory_available_mb/1024]|min)-20)|fabs)<0.00001'
   # A full work disk cannot justify emptying a different, healthy cache disk.
   dv _disk-maintain
   test -f "$GOCACHE/recent"
