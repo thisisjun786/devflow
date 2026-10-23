@@ -99,6 +99,7 @@ reconcile_host() {
        .head!=null and .head!="" and .done_head==.head))')
   fi
   if [ "$recovery_due" = 1 ]; then
+    bid_rpc "$host" _job-watch < /dev/null || true
     bid_rpc "$host" _appserver-watch < /dev/null || true
   fi
 }

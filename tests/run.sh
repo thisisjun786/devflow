@@ -2693,7 +2693,10 @@ case_runner_mapping() {
   jq '.libraries["lib/metrics.sh"]=["no_such_case_*"]' "$ROOT/tests/ci-map.json" > "$CASE_DIR/map.json"
   if runner_check_mapping "$CASE_DIR/map.json"; then return 1; fi
 }
+# shellcheck source=tests/job-limits.sh
+source "$ROOT/tests/job-limits.sh"
 registered_cases() {
+  printf '%s\n' job_nproc job_failure job_failure_reset job_supervisor_retry job_generic_exit job_host job_fallback job_launchd job_tasks job_memory job_agent_retry
   printf '%s\n' review_future_deadline review_future_deadline_retried review_near_deadline
   printf '%s\n' \
   learned_percentile learned_active_floor learned_window learned_readonly learned_idle learned_seeds learned_unknown_resources \

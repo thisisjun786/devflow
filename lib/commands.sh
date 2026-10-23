@@ -136,6 +136,7 @@ cmd_start() {
   printf '%s %s %s\n' "$ISSUE" "$BRANCH" "$WT"
 }
 launch_agent() {
+  job_can_launch || { printf 'dv: resource limit blocked; automatic launch refused\n' >&2; return 1; }
   tmp_agent_environment
   if [ "$BACKEND" = appserver ]; then appserver_start; return; fi
   # Terminal server environments can predate this shell. Pass exported DV_* values explicitly.
@@ -185,7 +186,7 @@ run_agent() {
   export DV_ISSUE="$ISSUE"
   local agent mode override instruction rc=0 sentinel='' helper='' revived=0 original_instruction
   [ "${2:-}" != --revived ] || revived=1
-  [ "$BACKEND" = exec ] || printf '%s\n' "$$" > "$S/agent.pid"
+  # The outer resource supervisor owns agent.pid and survives a scope OOM.
   agent=$(jq -r .agent "$S/meta"); mode=$(jq -r .mode "$S/meta")
   override="DV_AGENT_CMD_$agent"; override=${!override}
   instruction="Read $S/brief.md and complete everything it asks. Finish with dv done $ISSUE."
@@ -749,6 +750,7 @@ revive_blocked() {
   printf 'dv: %s; automatic revival already attempted\n' "$1" >&2
 }
 revive_agent() {
+  job_can_launch || { printf 'dv: resource limit blocked; automatic revival refused\n' >&2; return 1; }
   require_worktree --allow-branch-change
   case "$(jq -r .status "$S/meta")" in landed|cancelled) fail 'cannot revive a finished issue' ;; esac
   if [ -d "$S/revive" ]; then
@@ -799,6 +801,7 @@ revive_agent() {
 cmd_send() {
   [ "$#" -eq 2 ] || fail 'usage: dv send ISSUE text'
   load_issue "$1"; issue_lock; require_worktree --allow-branch-change
+  job_can_launch || fail 'resource limit blocked; automatic continuation refused'
   if [ -n "${DV_PR_RECOVERY_HEAD:-}" ]; then
     # A background waiter may be descheduled before taking this issue lock.
     # Another waiter can meanwhile revive or finish the job. Revalidate here
