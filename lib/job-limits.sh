@@ -92,6 +92,7 @@ job_scope_run() {
       if [ -f "$gate/go" ]; then exec "$@"; fi; sleep 0.1
     done; exit 125' bash "$JOB_ATTEMPT" "$@" <&0 & child=$!
   JOB_CHILD=$child
+  JOB_BODY_PID=$child
   for ((tick=0;tick<100;tick++)); do
     if [ -f "$JOB_ATTEMPT/ready" ]; then ready=1; break; fi
     kill -0 "$child" 2>/dev/null || break
@@ -184,6 +185,7 @@ job_fallback_run() {
     if [ "$os" = Linux ]; then ulimit -S -v "$memory" || exit 125; fi
     exec "$@"
   ) <&0 2> >(tee "$JOB_ATTEMPT/stderr" >&2) & JOB_CHILD=$!
+  JOB_BODY_PID=$JOB_CHILD
   while kill -0 "$JOB_CHILD" 2>/dev/null; do
     if [ "$os" = Darwin ]; then job_launchd_check "$uid" "$JOB_ATTEMPT" || true; fi
     reason=$(job_fallback_reason "$stderr_line")
@@ -211,12 +213,17 @@ job_fallback_reason() {
 job_cleanup() {
   job_scope_stop
   if [ -n "${JOB_CHILD:-}" ]; then bid_stop_tree "$JOB_CHILD"; wait "$JOB_CHILD" 2>/dev/null || true; fi
+  # SIGKILL/OOM prevents the inner exec trap from releasing its own lock.
+  # Release only the lock owned by the exact body we launched and reaped.
+  if [ -n "${JOB_BODY_PID:-}" ] && ! kill -0 "$JOB_BODY_PID" 2>/dev/null; then
+    owned_unlock "$S/.exec-lock" "$JOB_BODY_PID"
+  fi
 }
 job_run_agent() {
   load_issue "$1"
   job_validate
   job_can_launch || { printf 'dv: resource limit blocked; operator intervention required\n' >&2; return 1; }
-  local JOB_CHILD='' JOB_UNIT='' JOB_CGROUP='' JOB_ATTEMPT='' rc=0 os reason attempt retries=0 scoped=0
+  local JOB_CHILD='' JOB_BODY_PID='' JOB_UNIT='' JOB_CGROUP='' JOB_ATTEMPT='' rc=0 os reason attempt retries=0 scoped=0
   os=$(uname -s)
   [ "$BACKEND" = exec ] || printf '%s\n' "$$" > "$S/agent.pid"
   trap job_cleanup EXIT

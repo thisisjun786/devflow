@@ -68,17 +68,21 @@ PANE
 legacy_appserver_fixture() {
   # Model an already-created legacy job without a production bypass switch.
   # Only this disposable checkout restores the former launcher selection.
-  local legacy_root="$CASE_DIR/legacy-appserver"
-  [ ! -d "$legacy_root" ] || return 0
-  mkdir -p "$legacy_root"
-  cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/templates" "$ROOT/config.example.sh" "$legacy_root/"
+  local legacy_root=${CLIENT_ROOT:-$CASE_DIR/legacy-appserver}
+  if [ ! -d "$legacy_root" ]; then
+    mkdir -p "$legacy_root"
+    cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/templates" "$ROOT/config.example.sh" "$legacy_root/"
+  fi
+  if ! grep -Fq '# Synthetic legacy launcher.' "$legacy_root/lib/appserver.sh"; then
   cat >> "$legacy_root/lib/appserver.sh" <<'LEGACY'
+# Synthetic legacy launcher.
 appserver_selected() {
   [ "$1" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ "$2" = auto ] || return 1
   if [ "$DV_CODEX_MODE" = appserver ]; then return 0; fi
   appserver_available
 }
 LEGACY
+  fi
   export PATH="$legacy_root/bin:$PATH"
 }
 appserver_setup() {

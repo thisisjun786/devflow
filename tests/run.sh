@@ -166,7 +166,11 @@ wait_done() {
     # agent.exit precedes the wrapper's final done/kick. Wait for its TTY to exit
     # before assertions or teardown can race the last state-directory writes.
     if [ -s "$DV_STATE/$1/events.log" ] && [ -f "$DV_STATE/$1/agent.exit" ] &&
-      ! tmux -L "$DV_TMUX_SOCKET" has-session -t "=dv-$1" 2>/dev/null; then return; fi
+      ! tmux -L "$DV_TMUX_SOCKET" has-session -t "=dv-$1" 2>/dev/null; then
+      # Exec's resource supervisor can outlive the limited body's exit file.
+      if [ "$(jq -r .backend "$DV_STATE/$1/meta")" != exec ] ||
+        ! kill -0 "$(cat "$DV_STATE/$1/agent.pid")" 2>/dev/null; then return; fi
+    fi
     sleep 0.1
   done
   cat "$DV_STATE/$1/log" >&2
