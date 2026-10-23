@@ -389,6 +389,62 @@ case_appserver_large_reply() {
   dv clean AS-1
   test ! -d "$(jq -r .worktree "$DV_STATE/AS-1/meta")"
 }
+appserver_status_finished() {
+  local finish=$1 s="$DV_STATE/AS-1" view
+  appserver_setup
+  printf 'complete\n' > "$CASE_DIR/server/goal"
+  printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"completed","items":[],"error":null}]}}' > "$CASE_DIR/server/thread.json"
+  if [ "$finish" != clean ]; then
+    dv 'done' AS-1
+    # Completion alone must not hide a client that is still connected.
+    dv status AS-1 --live --json | jq -e '.[0] | .agent_status=="goal-complete" and .alive'
+  fi
+  if [ "$finish" = 'done' ]; then
+    teardown_stop_pidfile "$s/appserver/client.pid"
+    test -d "$(jq -r .worktree "$s/meta")"
+  else
+    dv clean AS-1
+    test ! -d "$(jq -r .worktree "$s/meta")"
+    jq -e '.cleaned_at>0' "$s/meta"
+    teardown_stop_pidfile "$s/appserver/client.pid"
+  fi
+  jq -e '.thread.status.type=="idle" and .goal.status=="complete"' "$s/appserver/status.json"
+  cp "$CASE_DIR/server/requests" "$CASE_DIR/requests-before"
+  cp "$CASE_DIR/server/connections" "$CASE_DIR/connections-before"
+  for view in cached live; do
+    if [ "$view" = cached ]; then
+      dv status AS-1 --json > "$CASE_DIR/status.json"
+      dv status AS-1 > "$CASE_DIR/status.txt"
+    else
+      dv status AS-1 --live --json > "$CASE_DIR/status.json"
+      dv status AS-1 --live > "$CASE_DIR/status.txt"
+    fi
+    cat "$CASE_DIR/status.json"
+    jq -e '.[0] | .agent_status=="gone" and .alive==false and .appserver.agent_status=="gone" and .appserver.alive==false' "$CASE_DIR/status.json"
+    grep 'agent=gone' "$CASE_DIR/status.txt"
+    grep 'alive=false' "$CASE_DIR/status.txt"
+  done
+  cmp "$CASE_DIR/requests-before" "$CASE_DIR/server/requests"
+  cmp "$CASE_DIR/connections-before" "$CASE_DIR/server/connections"
+}
+case_appserver_status_done_clean() { appserver_status_finished done-clean; }
+case_appserver_status_done_stopped() { appserver_status_finished 'done'; }
+case_appserver_status_clean_stopped() { appserver_status_finished clean; }
+case_appserver_status_running_stopped() {
+  appserver_setup
+  teardown_stop_pidfile "$DV_STATE/AS-1/appserver/client.pid"
+  dv status AS-1 --json | jq -e '.[0] | .status=="running" and .agent_status=="unknown" and .alive==false and .appserver.agent_status=="unknown"'
+  touch "$CASE_DIR/server/offline"
+  dv status AS-1 --live --json | jq -e '.[0] | .agent_status=="unknown" and .alive==false and .appserver.agent_status=="unknown"'
+}
+case_appserver_status_done_communication() {
+  DV_APPSERVER_TIMEOUT_CASE=1 appserver_setup
+  printf 'idle\n' > "$CASE_DIR/server/status"
+  dv 'done' AS-1
+  printf 'unknown\n' > "$CASE_DIR/server/status"
+  dv status AS-1 --live --json | jq -e '.[0] | .status=="done" and .agent_status=="unknown" and .appserver.agent_status=="unknown"'
+  kill -0 "$(cat "$DV_STATE/AS-1/appserver/client.pid")"
+}
 case_appserver_status_landed_cheap() {
   # Finished jobs must not cost an App Server round trip on every dv status;
   # the watcher reconciles every host each minute and history only grows.

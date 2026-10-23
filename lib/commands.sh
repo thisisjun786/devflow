@@ -267,6 +267,8 @@ $original_instruction"
   trap - EXIT INT TERM
   printf '%s\n' "$rc" > "$S/agent.exit"
   if jq -e '.status=="blocked" and .capacity!=null' "$S/meta" >/dev/null; then return "$rc"; fi
+  # dv park released the slot on purpose; the exit is not a failure.
+  if jq -e '.status=="parked"' "$S/meta" >/dev/null; then return "$rc"; fi
   if [ "$KIND" = task ] && [ "$mode" = exec ] && [ "$rc" = 0 ]; then
     task_exec_done "$revived"; return
   fi
@@ -416,13 +418,19 @@ accept_folder_trust() {
   done
 }
 cmd_done() {
-  [ "$#" -ge 1 ] || fail 'usage: dv done ISSUE [--note TEXT]'
-  load_issue "$1"; shift; local note='' head files tmp episode own_revive=0 pr_complete=false
+  [ "$#" -ge 1 ] || fail 'usage: dv done ISSUE [--note TEXT] [--already-merged PR|COMMIT]'
+  load_issue "$1"; shift; local note='' head files tmp episode own_revive=0 pr_complete=false merged_ref='' merged=null
   if [ "$(jq -r '.kind // empty' "$S/meta")" = qa ]; then qa_done "$ISSUE"; return; fi
-  if [ "$#" -gt 0 ]; then
-    if [ "$#" -ne 2 ] || [ "$1" != --note ]; then fail 'expected --note TEXT'; fi
-    note=$2
-  fi
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || fail 'expected --note TEXT or --already-merged PR|COMMIT'
+    case "$1" in
+      --note) note=$2 ;;
+      --already-merged) merged_ref=$2 ;;
+      *) fail 'expected --note TEXT or --already-merged PR|COMMIT' ;;
+    esac
+    shift 2
+  done
+  [ -z "$merged_ref" ] || [ "$KIND" != task ] || fail 'task jobs have no base branch to verify'
   require_worktree
   episode=$(jq -r '.done_episode // ""' "$S/meta")
   # Only the replacement's inherited run identity can satisfy its goal wrapper.
@@ -438,7 +446,17 @@ cmd_done() {
     task_completion
   else
     head=$(git -C "$WT" rev-parse HEAD)
-    if is_github; then
+    # A plain repeat (such as the exec wrapper's) keeps the recorded delivery.
+    if [ -z "$merged_ref" ] && jq -e --arg head "$head" '.head==$head and (.merged_via.commit|type=="string")' "$S/done.json" >/dev/null 2>&1; then
+      merged_ref=$(jq -r '.merged_via.pr // .merged_via.commit' "$S/done.json")
+    fi
+    if [ -n "$merged_ref" ]; then
+      # Landed through another PR: verified by ancestry on the base, no PR of its own.
+      require_clean "$WT"
+      already_merged_own_pr
+      merged=$(already_merged_verify "$merged_ref") || exit 1
+      note="already-merged=$(printf '%s\n' "$merged" | jq -r 'if .pr then "#\(.pr) (\(.commit))" else .commit end')${note:+; $note}"
+    elif is_github; then
       pr_done_check "$head"
       pr_complete=true
       note="checks=green review=handled${note:+; $note}"
@@ -450,9 +468,10 @@ cmd_done() {
   fi
   tmp=$(mktemp "$S/.done.XXXXXX")
   jq -n --arg head "$head" --argjson files "$files" --arg report "$S/report.md" --arg note "$note" \
-    --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" \
+    --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" --argjson merged "$merged" \
     '{head:$head,files:$files,report:$report,note:$note,done_at:$done_at} +
     (if $pr_complete then {checks:"green",review:"handled"} else {} end) +
+    (if $merged==null then {} else {merged_via:$merged} end) +
     (if $episode=="" then {} else {episode:$episode} end)' > "$tmp"
   mv "$tmp" "$S/done.json"
   metrics_note 'done' "$head"
@@ -462,9 +481,9 @@ cmd_done() {
     [ -z "$run" ] || touch "$S/exec/$run/done"
   fi
   capacity_clear
-  meta_set --arg head "$head" --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" '.head=$head | .done_at=$done_at |
+  meta_set --arg head "$head" --arg episode "$episode" --argjson done_at "$(now)" --argjson pr_complete "$pr_complete" --argjson merged "$merged" '.head=$head | .done_at=$done_at |
     (if $episode!="" then .done_episode=$episode else . end) |
-    if $pr_complete then .status="ready"
+    if $pr_complete or $merged!=null then .status="ready"
     elif .status=="running" or .status=="start-failed" then .status="done" | del(.failure_reason) else . end'
   cmd_kick 'done' "$ISSUE" "$note"
   if [ "$own_revive" = 1 ]; then
@@ -534,10 +553,10 @@ cmd_status() {
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
       if [ "$backend" = appserver ]; then
-        # A landed or cancelled job with no client is finished. Its thread no
-        # longer matters, and opening an App Server connection per old job made
+        # A done, landed, cancelled or cleaned job with no client is finished.
+        # Its thread no longer matters, and opening a connection per old job made
         # dv status (and the watcher's reconcile) grow with history.
-        if jq -e '.status=="landed" or .status=="cancelled"' "$path" >/dev/null &&
+        if jq -e '.status=="done" or .status=="landed" or .status=="cancelled" or .cleaned_at!=null' "$path" >/dev/null &&
           ! appserver_client_alive_at "$(dirname "$path")" "$(jq -r .issue "$path")"; then
           info='{"agent_status":"gone","alive":false,"question_pending":false}'
         else
@@ -747,6 +766,11 @@ cmd_send() {
     # These are for this one handoff, not the newly launched worker's calls.
     unset DV_PR_RECOVERY_HEAD DV_PR_RECOVERY_EPISODE
   fi
+  # Steering a parked job resumes it; its prerequisites are the sender's call.
+  # A live exec refuses the follow-up below, so it stays parked.
+  if jq -e '.status=="parked"' "$S/meta" >/dev/null && { [ "$BACKEND" != exec ] || ! codex_exec_alive "$S"; }; then
+    meta_set --argjson time "$(now)" '.status="running" | .unparked_at=$time'
+  fi
   if [ "$BACKEND" = appserver ]; then appserver_request send "$2"; return; fi
   if [ "$BACKEND" = exec ]; then codex_exec_send "$2"; return; fi
   # tmux can accept paste/Enter even when remain-on-exit retained a dead pane.
@@ -756,7 +780,8 @@ cmd_send() {
 }
 cmd_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean ISSUE'; load_issue "$1"; issue_lock
-  clean_worktree idle
+  # A QA job's repo is a URL; it owns only a standalone scratch clone.
+  if [ "$KIND" = qa ]; then qa_clean; else clean_worktree idle; fi
   meta_set --argjson time "$(now)" '.cleaned_at=$time'
 }
 clean_worktree() {
