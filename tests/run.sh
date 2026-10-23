@@ -2446,6 +2446,8 @@ source "$ROOT/tests/screen-locale.sh"
 source "$ROOT/tests/pr-wait-caller.sh"
 # shellcheck source=tests/bidding-edge.sh
 source "$ROOT/tests/bidding-edge.sh"
+# shellcheck source=tests/bidding-lock.sh
+source "$ROOT/tests/bidding-lock.sh"
 # shellcheck source=tests/bidding-order.sh
 source "$ROOT/tests/bidding-order.sh"
 # shellcheck source=tests/manager.sh
@@ -2694,6 +2696,7 @@ case_runner_mapping() {
   if runner_check_mapping "$CASE_DIR/map.json"; then return 1; fi
 }
 registered_cases() {
+  printf '%s\n' bid_schedule_lock_dead bid_schedule_lock_legacy bid_schedule_lock_live bid_schedule_lock_cancel bid_schedule_lock_probe
   printf '%s\n' review_future_deadline review_future_deadline_retried review_near_deadline
   printf '%s\n' \
   learned_percentile learned_active_floor learned_window learned_readonly learned_idle learned_seeds learned_unknown_resources \
