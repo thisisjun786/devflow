@@ -83,6 +83,28 @@ case_award_stale_failure() {
   bid_event "$(event_json failed STALE-1 'new failure' real-host h '' new)"
   jq -e '.status=="failed"' "$dir/task.json"
 }
+case_bid_schedule_lock_dead_owner() {
+  repo schedlock; bidding_functions
+  export DV_MANAGER_HOST="$DV_HOST" DV_HOSTS=''
+  dv submit "$REPO" LOCK-1 edge --brief "$CASE_DIR/brief"
+  local lock="$DV_HOME/.schedule-lock" dead
+  # A holder killed mid-event (reboot, SIGTERM) must not block the queue.
+  bash -c 'exit 0' & dead=$!; wait "$dead"
+  mkdir "$lock"; printf '%s\n' "$dead" > "$lock/pid-$dead"; ln "$lock/pid-$dead" "$lock/owner"
+  bid_event "$(event_json 'done' OTHER-1 '' elsewhere h)"
+  test ! -e "$lock"
+  # A legacy ownerless directory is claimable too.
+  mkdir "$lock"
+  bid_event "$(event_json 'done' OTHER-2 '' elsewhere h)"
+  test ! -e "$lock"
+  # A live holder still excludes the event.
+  owned_lock "$lock" "$$"
+  if bid_event "$(event_json 'done' OTHER-3 '' elsewhere h)"; then return 1; fi
+  test "$(cat "$lock/owner")" = "$$"
+  owned_unlock "$lock" "$$"
+  dv cancel LOCK-1
+  test ! -e "$lock"
+}
 case_award_early_absent() {
   repo absent; bidding_functions
   export DV_MANAGER_HOST="$DV_HOST" DV_HOSTS=missing-host
