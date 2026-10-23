@@ -75,6 +75,11 @@ reconcile_host() {
       stall_reconcile "$host" "$rows" "$interval"
     ) || return 1
     stack_queue_host "$host" "$rows" || return 1
+    # PRs merged or closed outside dv land: one quick RPC starts the job
+    # host's detached sweep, which this pass's deadline cannot interrupt.
+    if printf '%s\n' "$rows" | jq -e "any(.[]; $pr_reconcile_filter)" >/dev/null; then
+      bid_rpc "$host" _pr-reconcile-start < /dev/null || true
+    fi
     while IFS= read -r issue; do
       [[ "$issue" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || continue
       bid_rpc "$host" _pr-wait-start "$issue" < /dev/null || true

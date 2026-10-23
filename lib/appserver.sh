@@ -593,7 +593,7 @@ appserver_cached_row() {
     (if $cached.thread_id!=null and $cached.thread_id!=$meta.thread_id then null else $cached end) as $valid |
     ({agent_status:"unknown",alive:false,question_pending:false,recoveries:0,last_recovery_reason:null} + $valid |
       if $client then . else .alive=false | .question_pending=false |
-        .agent_status=(if $meta.status=="landed" or $meta.status=="cancelled" then "gone" else "unknown" end) end |
+        .agent_status=(if $meta.status=="done" or $meta.status=="landed" or $meta.status=="cancelled" or $meta.cleaned_at!=null then "gone" else "unknown" end) end |
       .status_age_seconds=(if $valid.observed_at!=null then [0,($at-$valid.observed_at)]|max else null end)) as $info |
     . + {done_head:(try ($done|fromjson|.head) catch null),transcript:(if $transcript=="" then null else $transcript end),backend:"appserver",alive:$info.alive,
       agent_status:$info.agent_status,agent_dead:false,tmux:false,elapsed:($at-.started),

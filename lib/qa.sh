@@ -520,6 +520,27 @@ qa_load() {
   load_issue "$1"
   [ "$(jq -r '.kind // empty' "$S/meta")" = qa ] || fail 'not a QA job'
 }
+qa_clean() {
+  # Mirror tmp_collect for one named job, including scratch from before owner
+  # markers: only a stopped QA with a clean clone releases its scratch.
+  local scratch owner dirty
+  ! codex_exec_alive "$S" || fail 'QA is still running; scratch retained'
+  scratch=$(jq -r '.scratch // empty' "$S/meta")
+  if [ -z "$scratch" ] || { [ ! -e "$scratch" ] && [ ! -L "$scratch" ]; }; then return 0; fi
+  case "${scratch##*/}" in dv-qa.*) ;; *) fail 'QA scratch is not a dv-qa directory; retained' ;; esac
+  if [ ! -d "$scratch" ] || [ -L "$scratch" ] || [ ! -O "$scratch" ]; then
+    fail 'QA scratch is not a directory owned by this user; retained'
+  fi
+  [ "$WT" = "$scratch/source" ] || fail 'QA worktree is outside its scratch; retained'
+  owner=$(cat "$scratch/owner.pid" 2>/dev/null) || owner=''
+  if [[ "$owner" =~ ^[1-9][0-9]*$ ]] && kill -0 "$owner" 2>/dev/null; then fail 'QA scratch is still in use; retained'; fi
+  if [ -e "$WT" ]; then
+    require_worktree
+    dirty=$(git -C "$WT" status --porcelain --untracked-files=all) || fail "cannot read QA clone: $WT"
+    [ -z "$dirty" ] || fail "uncommitted files: $WT"
+  fi
+  rm -rf -- "$scratch"
+}
 qa_open_issues() {
   local repository page=1 result count issues='[]'
   repository=$(jq -r .repository "$S/meta") || return 1

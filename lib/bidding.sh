@@ -91,7 +91,7 @@ bid_active() {
     # Release on this run's completion before its done event wakes scheduling;
     # historical or manual completions must still leave the revival counted.
     jq -c --arg revived "$revived" 'select(.cleaned_at==null and
-      (.status=="waiting-capacity" or (if $revived!="" then .done_episode!=$revived and .status!="landed" and .status!="cancelled"
+      (.status=="waiting-capacity" or (if $revived!="" then .done_episode!=$revived and .status!="landed" and .status!="cancelled" and .status!="closed" and .status!="parked"
        else .done_at==null and (.status=="running" or .status=="pr" or .status=="ready" or .status=="input-required") end)))' "$path"
   done | jq -s length
 }
@@ -516,7 +516,8 @@ bid_schedule_one() {
 bid_event() (
   local line=$1 kind issue host dir path head receipt token status event_token
   kind=$(printf '%s\n' "$line" | jq -r .kind)
-  case "$kind" in submitted|done|failed|landed|question|blocked) ;; *) exit 0 ;; esac
+  # parked and closed jobs release their slots like completed ones.
+  case "$kind" in submitted|done|failed|landed|question|blocked|parked|closed) ;; *) exit 0 ;; esac
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || exit 0
   mkdir -p "$DV_HOME/submissions"
   bid_lock "$DV_HOME/.schedule-lock" || return 1
@@ -553,7 +554,7 @@ bid_event() (
   fi
   case "$kind" in
     submitted) [ ! -f "$dir/task.json" ] || bid_schedule_one "$dir" ;;
-    done|failed|landed)
+    done|failed|landed|parked|closed)
       while IFS= read -r path; do [ -z "$path" ] || bid_schedule_one "$path"; done < <(
         for path in "$DV_HOME"/submissions/*/task.json; do [ ! -f "$path" ] || jq -r --arg path "$(dirname "$path")" '[.submitted_at,$path]|@tsv' "$path"; done | sort -n | cut -f2-)
       ;;

@@ -268,6 +268,14 @@ case_autofill_repository_events() {
   autofill_event '{"kind":"merged"}'
   test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 3
 }
+case_autofill_slot_release_events() {
+  autofill_fixture; autofill_issues
+  autofill_event '{"kind":"parked"}'
+  test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 2
+  printf '1\n' > "$CASE_DIR/autofill/free"
+  autofill_event '{"kind":"closed"}'
+  test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 3
+}
 case_autofill_cancel_event() {
   autofill_fixture; autofill_issues
   touch "$CASE_DIR/autofill/reject"

@@ -21,11 +21,12 @@ herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISS
 |---|---|
 | `dv status [ISSUE] [--json]` | 상태·에이전트·호스트·경과·backend·생존·에이전트 상태·마지막 로그 |
 | `dv send ISSUE 'text'` | herdr agent prompt(차단 시 대기 후 한 번 재시도) / tmux 붙여넣기 후 Enter |
-| `dv done ISSUE [--note TEXT]` | head·파일 수·보고서 경로(GitHub는 `checks=green review=handled`)를 기록하고 이벤트 |
+| `dv done ISSUE [--note TEXT] [--already-merged PR\|COMMIT]` | head·파일 수·보고서 경로(GitHub는 `checks=green review=handled`)를 기록하고 이벤트; 다른 PR로 base에 들어간 작업은 ancestry 확인 후 ready |
+| `dv park ISSUE --on N[,N...] [--note TEXT]` | 열린 선행 이슈를 기다리는 작업 보류(브랜치 push·이슈 댓글·슬롯 반환), `dv send`로 재개 |
 | `dv pr ISSUE` / `dv pr-wait ISSUE [--foreground [--review-handled]]` | 브랜치 push·PR / foreground CI·리뷰 확인(기본은 조기 종료 작업자 재개 안전망) |
 | `dv review ISSUE` | 로컬 Codex 리뷰, 횟수와 출력 보관 |
 | `dv land ISSUE` | 체크/시험을 통과한 변경 병합·worktree 정리 |
-| `dv clean ISSUE` | 깨끗한 worktree와 herdr/tmux 정리, 머지된 로컬 브랜치만 삭제 |
+| `dv clean ISSUE` | 깨끗한 worktree와 herdr/tmux 정리, 머지된 로컬 브랜치만 삭제; QA는 멈춘 깨끗한 임시 clone 정리 |
 | `dv kick kind ISSUE [msg]` | 이벤트 재전송; 전송 실패는 events.log에 기록 |
 
 확인은 이벤트 host·issue·head와 현재 meta를 대조한 뒤 합니다. 보고서 주소만으로 시험 통과를 추정하지 않습니다. CI가 없거나 건너뜀·대기·실패면 land하지 않습니다. GitHub done과 land는 현재 head의 최신 Codex 리뷰를 다시 검증합니다. pr-loop.json의 회차 기록을 보존하며 --review-handled로 과거 리뷰나 시간 초과를 승인할 수 없습니다. 원격 없는 로컬 저장소는 dv review 한 번 후 P0·P1 수정·시험을 확인해 병합합니다. base 직접 push, force push, 원격 브랜치 삭제를 하지 않습니다.
