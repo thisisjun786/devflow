@@ -6,6 +6,12 @@ if [ "${1:-}" = auth ] || [ "${1:-}" = login ]; then
   [ "$name" != claude ]
   exit
 fi
+if [ "${1:-}" = models ]; then
+  printf '%s\n' 'private auth detail must never be reported'
+  # Cursor can claim a login in status while authenticated requests fail.
+  [ "$name" != cursor-agent ]
+  exit
+fi
 if [ "${1:-}" = exec ]; then
   printf '%s\n' "$*" >> "$HOME/probes"
   printf '%s\n' 'private provider detail'
