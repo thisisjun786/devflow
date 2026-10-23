@@ -607,6 +607,29 @@ case_appserver_disconnect_unknown() {
   jq -se '[.[]|select(.method=="turn/steer" and .params.input[0].text=="once")]|length==1' "$CASE_DIR/server/requests"
   test ! -f "$DV_STATE/AS-1/appserver/recoveries.json"
 }
+case_appserver_proxy_exit() {
+  # A proxy that exits while an RPC is in flight must fail that call within
+  # about two seconds. Retrying EOF until DV_APPSERVER_TIMEOUT leaves send
+  # and status stuck for the whole budget (devflow#159).
+  local sender started elapsed rc=0 proxy budget=8
+  DV_APPSERVER_TIMEOUT_CASE=$budget appserver_setup
+  touch "$CASE_DIR/server/hold-mutation"
+  dv send AS-1 once > "$CASE_DIR/receipt" & sender=$!
+  wait_file "$CASE_DIR/server/mutation-held"
+  proxy=$(cat "$CASE_DIR/server/proxy.pid")
+  kill -0 "$proxy"
+  started=$(date +%s)
+  kill "$proxy"
+  wait "$sender" || rc=$?
+  elapsed=$(( $(date +%s) - started ))
+  printf 'proxy exit RPC: elapsed=%s budget=%s rc=%s\n' "$elapsed" "$budget" "$rc"
+  test "$rc" != 0
+  # One in-flight one-second read, the fixture proxy's exit trap, and the
+  # one-second clock can land on 3. The missed check waits out the budget.
+  test "$elapsed" -le 3
+  test "$elapsed" -lt "$budget"
+  jq -e '.outcome=="unknown"' "$CASE_DIR/receipt"
+}
 case_appserver_reconnect() {
   appserver_setup
   kill "$(cat "$DV_STATE/AS-1/appserver/client.pid")"

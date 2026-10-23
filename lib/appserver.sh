@@ -189,6 +189,8 @@ appserver_read_line() {
       printf '.' >&5
       return 0
     fi
+    # EOF makes this read return immediately. A dead proxy must stop the RPC
+    # here; otherwise the caller retries until DV_APPSERVER_TIMEOUT.
     if { [ -n "${AS_PID:-}" ] && ! appserver_connected; } || [ "$(now)" -ge "$deadline" ]; then
       return 1
     fi

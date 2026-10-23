@@ -2623,7 +2623,7 @@ registered_cases() {
   capacity_appserver_slow_work \
   question_goal_start_ack \
   exec_send_slow_completion \
-  appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
+  appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout appserver_proxy_exit kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
   process_cleanup_pass process_cleanup_fail process_cleanup_timeout process_cleanup_term process_cleanup_nested heavy_descendant_slot \
   host_tmp_guard \
   tmp_reap tmp_guards tmp_agent tmp_appserver tmp_default tmp_quota tmp_reap_bash32 tmp_appserver_killed tmp_usage tmp_cache pr_body_delayed_wait \
