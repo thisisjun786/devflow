@@ -205,13 +205,15 @@ park_fixture() {
 park_refused() {
   if dv park PK-7 "$@" > "$CASE_DIR/park.out" 2>&1; then cat "$CASE_DIR/park.out"; return 1; fi
   cat "$CASE_DIR/park.out"
-  jq -e '.status=="running" and .parked==null' "$DV_STATE/PK-7/meta"
+  jq -e --arg status "${park_status:-running}" '.status==$status and .parked==null' "$DV_STATE/PK-7/meta"
   if git -C "$CASE_DIR/remote.git" show-ref --verify --quiet refs/heads/codex/pk-7; then return 1; fi
   test ! -f "$GH_STUB_DIR/issue-7-comments"
 }
 case_park_prerequisites() {
   park_fixture
-  local head
+  local head park_status=${1:-running}
+  jq --arg status "$park_status" '.status=$status' "$DV_STATE/PK-7/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/PK-7/meta"
   head=$(git -C "$DV_WORK/PK-7" rev-parse HEAD)
   park_refused --on 12,14
   grep -F 'prerequisite #14 is not open' "$CASE_DIR/park.out"
@@ -237,6 +239,7 @@ case_park_prerequisites() {
   if dv park PK-7 --on 12; then return 1; fi
   jq -e 'length==1' "$GH_STUB_DIR/issue-7-comments"
 }
+case_park_pr_prerequisites() { case_park_prerequisites pr; }
 case_park_agent_exit() {
   # The agent parks itself and exits: no failure event, and dv send resumes
   # the same worktree.
@@ -302,4 +305,144 @@ ENV
   jq -e '.status=="landed" and .pr_reconcile_pending==null' "$DV_STATE/C-1/meta"
   test ! -d "$DV_WORK/C-1"
   test "$(event_count C-1 landed)" = 1
+}
+
+park_pr_fixture() {
+  repo parkpr remote
+  stale_job PK-7 pr 1
+  cp "$CASE_DIR/brief" "$DV_STATE/PK-7/brief.md"
+  jq '.mode="goal"' "$DV_STATE/PK-7/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/PK-7/meta"
+  printf '{"number":12,"state":"open"}\n' > "$GH_STUB_DIR/issue-12.json"
+  printf '{"failed_heads":["earlier-ci"],"reviewed_heads":["earlier-review"],"requests":{"earlier-review":{"deadline":1,"retried":true}}}\n' > "$DV_STATE/PK-7/pr-loop.json"
+  cp "$DV_STATE/PK-7/pr-loop.json" "$CASE_DIR/previous-loop"
+  cat > "$CASE_DIR/resume-agent" <<'AGENT'
+#!/usr/bin/env bash
+pwd > "$DV_STATE/$DV_ISSUE/resumed"
+while [ ! -f "$DV_STATE/$DV_ISSUE/resume-release" ]; do sleep 0.05; done
+AGENT
+  chmod +x "$CASE_DIR/resume-agent"
+  export DV_AGENT_CMD_codex="$CASE_DIR/resume-agent"
+}
+case_park_open_pr() {
+  needs_tmux; park_pr_fixture
+  local head state="$DV_STATE/PK-7"
+  head=$(git -C "$DV_WORK/PK-7" rev-parse HEAD)
+  bidding_functions
+  test "$(bid_active)" = 1
+  dv park PK-7 --on 12 --note 'waiting for the API'
+  jq -e --arg head "$head" '.status=="parked" and .head==$head and .parked.on==[12] and .pr=="https://github.com/test/repo/pull/1"' "$state/meta"
+  test "$(git -C "$CASE_DIR/remote.git" rev-parse refs/heads/codex/pk-7)" = "$head"
+  test "$(bid_active)" = 0
+  test "$(event_count PK-7 parked)" = 1
+  dv _pr-wait-start PK-7
+  test ! -f "$state/pr-wait.pid"
+  dv _stall-recover PK-7 stale-episode ''
+  test ! -f "$state/stall-recovery.json"
+  test ! -d "$state/revive"
+  cmp "$CASE_DIR/previous-loop" "$state/pr-loop.json"
+  dv send PK-7 'Prerequisite closed; continue.'
+  wait_file "$state/resumed"
+  jq -e --arg wt "$DV_WORK/PK-7" '.status=="running" and .unparked_at!=null and .worktree==$wt' "$state/meta"
+  test "$(cat "$state/resumed")" = "$DV_WORK/PK-7"
+  cmp "$CASE_DIR/previous-loop" "$state/pr-loop.json"
+  dv pr PK-7
+  wait_pr_ready PK-7
+  jq -e '.status=="pr"' "$state/meta"
+  jq -e --slurpfile previous "$CASE_DIR/previous-loop" '.failed_heads==$previous[0].failed_heads and .requests==$previous[0].requests and (.reviewed_heads|index("earlier-review"))!=null and (.reviewed_heads|length)==2' "$state/pr-loop.json"
+  # Same-head parking after resumption does not repeat the public comment.
+  dv park PK-7 --on 12
+  touch "$state/resume-release"
+  wait_done PK-7
+  jq -e --arg head "$head" 'length==1 and (.[0].body|contains("<!-- devflow-park:PK-7:"+$head+" -->"))' "$GH_STUB_DIR/issue-7-comments"
+}
+case_park_pr_wait() {
+  # An already running waiter must discard its result when the job is parked
+  # during a GitHub request. No review rounds, requests or recovery are added.
+  park_pr_fixture
+  local state="$DV_STATE/PK-7" pid
+  cat > "$CASE_DIR/hold-checks" <<'ENV'
+gh() {
+  if [ "$1 $2" = 'pr checks' ]; then
+    touch "$CASE_DIR/checks-started"
+    while [ ! -f "$CASE_DIR/checks-release" ]; do sleep 0.05; done
+  fi
+  command gh "$@"
+}
+ENV
+  BASH_ENV="$CASE_DIR/hold-checks" dv pr-wait PK-7 > "$CASE_DIR/waiter.log" 2>&1 & pid=$!
+  wait_file "$CASE_DIR/checks-started"
+  jq '.status="parked"' "$state/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$state/meta"
+  touch "$CASE_DIR/checks-release"
+  wait "$pid"
+  cmp "$CASE_DIR/previous-loop" "$state/pr-loop.json"
+  test ! -d "$state/.pr-wait"
+  test ! -f "$state/pr-ready.json"
+  test ! -d "$state/revive"
+  test ! -s "$state/events.log"
+  cp "$GH_STUB_DIR/calls" "$CASE_DIR/previous-calls"
+  dv pr-wait PK-7
+  dv pr-wait PK-7 --foreground
+  dv _pr-wait-start PK-7
+  cmp "$GH_STUB_DIR/calls" "$CASE_DIR/previous-calls"
+  cmp "$CASE_DIR/previous-loop" "$state/pr-loop.json"
+}
+case_park_pr_stale_send() {
+  # The waiter may have already decided to send before park takes the operation
+  # lock. Its automatic handoff must recheck status under the same lock.
+  needs_tmux; park_pr_fixture
+  local state="$DV_STATE/PK-7" head
+  head=$(git -C "$DV_WORK/PK-7" rev-parse HEAD)
+  jq '.status="parked"' "$state/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$state/meta"
+  DV_PR_RECOVERY_HEAD="$head" DV_PR_RECOVERY_EPISODE='' dv send PK-7 'stale PR recovery'
+  jq -e '.status=="parked" and .unparked_at==null' "$state/meta"
+  test ! -d "$state/revive"
+  cmp "$CASE_DIR/previous-loop" "$state/pr-loop.json"
+}
+case_park_pr_wait_resume() {
+  # After send has resumed work, foreground waiting can restore PR ownership
+  # without pushing an unchanged head or resetting the historical counters.
+  park_pr_fixture
+  local state="$DV_STATE/PK-7"
+  jq '.status="running" | .unparked_at=1' "$state/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$state/meta"
+  dv pr-wait PK-7 --foreground > "$CASE_DIR/result"
+  jq -e '.status=="pr"' "$state/meta"
+  jq -e '.ci_rounds==1 and .review_rounds==2 and .review_handled' "$CASE_DIR/result"
+  jq -e --slurpfile previous "$CASE_DIR/previous-loop" '.requests==$previous[0].requests' "$state/pr-loop.json"
+  # The default waiter restores the same ownership without extra rounds too.
+  printf '%s\n' "$$" > "$state/agent.pid"
+  jq '.status="running"' "$state/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$state/meta"
+  dv pr-wait PK-7
+  jq -e '.status=="pr"' "$state/meta"
+  jq -e '.ci_rounds==1 and .review_rounds==2 and .review_handled' "$state/pr-ready.json"
+}
+case_park_pr_reconcile() {
+  repo parked-reconcile remote; watch_fixture
+  stale_job PK-1 parked 31; stale_job PK-2 parked 32; stale_job PK-3 parked 33
+  printf '{"31":"MERGED","32":"CLOSED","33":"OPEN"}\n' > "$GH_STUB_DIR/pr-states"
+  export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=1
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  for _ in {1..100}; do
+    if jq -e '.status=="landed"' "$DV_STATE/PK-1/meta" >/dev/null &&
+      jq -e '.status=="closed"' "$DV_STATE/PK-2/meta" >/dev/null; then break; fi
+    sleep 0.1
+  done
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  pr_sweep_wait
+  dv _pr-reconcile-sweep
+  jq -e '.status=="landed"' "$DV_STATE/PK-1/meta"
+  test ! -d "$DV_WORK/PK-1"
+  test "$(event_count PK-1 landed)" = 1
+  jq -e '.status=="closed"' "$DV_STATE/PK-2/meta"
+  test -d "$DV_WORK/PK-2"
+  test "$(event_count PK-2 closed)" = 1
+  jq -e '.status=="parked"' "$DV_STATE/PK-3/meta"
+  test -d "$DV_WORK/PK-3"
+  test ! -f "$DV_STATE/PK-3/pr-wait.pid"
+  test ! -f "$DV_STATE/PK-3/events.log"
+  test ! -d "$DV_STATE/PK-3/revive"
 }
