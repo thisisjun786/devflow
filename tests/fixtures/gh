@@ -152,7 +152,7 @@ case "$*" in
   'api repos/'*'/issues/'[1-9]*)
     # Prerequisite lookups read one issue fixture each.
     number=${2##*/}
-    [ "$#" = 2 ] && [ -f "$GH_STUB_DIR/issue-$number.json" ] || { echo "Unexpected gh call: $*" >&2; exit 1; }
+    if [ "$#" != 2 ] || [ ! -f "$GH_STUB_DIR/issue-$number.json" ]; then echo "Unexpected gh call: $*" >&2; exit 1; fi
     cat "$GH_STUB_DIR/issue-$number.json" ;;
   'api repos/'*)
     if [ "$#" = 2 ] && [ "$2" = "repos/${GH_STUB_LAND_REPO:-test/repo}" ]; then

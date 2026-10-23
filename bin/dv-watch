@@ -238,7 +238,8 @@ reconcile() {
           remote=$(shell_join dv _pr-reconcile "$issue")
           ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$remote" >> "$DV_HOME/reconcile.log" 2>&1 || true
         fi
-      done < <(printf '%s\n' "$rows" | jq -r '.[] | select((.status=="pr" or .status=="ready" or .status=="waiting-base") and .pr!=null) | .issue')
+      done < <(printf '%s\n' "$rows" | jq -r '.[] | select(((.status=="pr" or .status=="ready" or .status=="waiting-base") and .pr!=null) or
+        .pr_reconcile_pending==true) | .issue')
       # Liveness is checked on the issue's host; a PID from another host is
       # meaningless locally. The helper preserves a healthy waiter's lock/log.
       while IFS= read -r issue; do

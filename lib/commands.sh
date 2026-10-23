@@ -751,7 +751,8 @@ cmd_send() {
     unset DV_PR_RECOVERY_HEAD DV_PR_RECOVERY_EPISODE
   fi
   # Steering a parked job resumes it; its prerequisites are the sender's call.
-  if jq -e '.status=="parked"' "$S/meta" >/dev/null; then
+  # A live exec refuses the follow-up below, so it stays parked.
+  if jq -e '.status=="parked"' "$S/meta" >/dev/null && { [ "$BACKEND" != exec ] || ! codex_exec_alive "$S"; }; then
     meta_set --argjson time "$(now)" '.status="running" | .unparked_at=$time'
   fi
   if [ "$BACKEND" = appserver ]; then appserver_request send "$2"; return; fi

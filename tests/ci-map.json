@@ -6,7 +6,7 @@
     "lib/bidding.sh": ["bid_*", "award_*", "submit_*", "goal_exit_*", "admission_*", "disk_bid", "disk_award", "manager_*", "watch_stuck*", "park_*"],
     "lib/capacity.sh": ["capacity_*", "appserver_*capacity*", "exec_capacity", "exec_rate", "task_capacity", "revive_*capacity*", "qa_recovered_capacity"],
     "lib/claude.sh": ["claude_*", "question_claude*", "symlink_claude*", "capacity_claude", "task_claude", "qa_fresh_claude"],
-    "lib/codex-exec.sh": ["exec_*", "capacity_exec_*", "task_exec_*", "send_branch_exec", "symlink_exec_send", "clean_resume_*exec", "pr_worker_*exec*", "revive_*"],
+    "lib/codex-exec.sh": ["exec_*", "capacity_exec_*", "task_exec_*", "send_branch_exec", "symlink_exec_send", "clean_resume_*exec", "pr_worker_*exec*", "revive_*", "park_*"],
     "lib/codex.sh": ["codex_*", "question_*", "task_codex_goal", "revive_codex_goal", "host_codex", "capacity_*", "appserver_*", "exec_*"],
     "lib/commands.sh": ["*"],
     "lib/common.sh": ["*"],

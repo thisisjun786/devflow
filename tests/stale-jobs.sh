@@ -249,3 +249,43 @@ AGENT
   wait_file "$DV_STATE/PK-8/resumed"
   jq -e '.status=="running" and .unparked_at!=null' "$DV_STATE/PK-8/meta"
 }
+case_park_exec_exit() {
+  # A native exec worker that parks itself is neither retried nor failed.
+  exec_setup park remote
+  printf '{"number":12,"state":"open"}\n' > "$GH_STUB_DIR/issue-12.json"
+  dv start "$REPO" PK-9 park
+  exec_wait PK-9
+  jq -e '.status=="parked" and .exec_status=="parked" and .failure_reason==null' "$DV_STATE/PK-9/meta"
+  test "$(cat "$DV_STATE/PK-9/stub-count")" = 1
+  test ! -f "$DV_STATE/PK-9/exec-retry.used"
+  test "$(event_count PK-9 parked)" = 1
+  test "$(event_count PK-9 failed)" = 0
+  test "$(event_count PK-9 blocked)" = 0
+}
+case_reconcile_merged_cleanup_retry() {
+  # Cleanup can fail after the merged PR is recorded as landed (for example
+  # while the worker still runs). Later passes finish it and send landed once.
+  repo cleanup remote
+  stale_job C-1 ready 31
+  printf '{"31":"MERGED"}\n' > "$GH_STUB_DIR/pr-states"
+  cat > "$CASE_DIR/cleanup-failure" <<'ENV'
+git() {
+  if [ "${1:-} ${2:-}" = 'worktree remove' ]; then return 1; fi
+  command git "$@"
+}
+ENV
+  if BASH_ENV="$CASE_DIR/cleanup-failure" dv _pr-reconcile C-1; then return 1; fi
+  jq -e '.status=="landed" and .pr_reconcile_pending==true' "$DV_STATE/C-1/meta"
+  test -d "$DV_WORK/C-1"
+  test "$(event_count C-1 landed)" = 0
+  test "$(event_count C-1 blocked)" = 1
+  watch_fixture
+  export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=1
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  for _ in {1..100}; do [ -d "$DV_WORK/C-1" ] || break; sleep 0.1; done
+  sleep 1.5
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  jq -e '.status=="landed" and .pr_reconcile_pending==null' "$DV_STATE/C-1/meta"
+  test ! -d "$DV_WORK/C-1"
+  test "$(event_count C-1 landed)" = 1
+}

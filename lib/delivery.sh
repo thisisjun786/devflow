@@ -188,7 +188,12 @@ cmd_pr_reconcile() {
   load_issue "$1"
   local status pr context=$REPO rc=0 reason
   status=$(jq -r .status "$S/meta")
-  case "$status" in pr|ready|waiting-base) ;; *) return 0 ;; esac
+  case "$status" in
+    pr|ready|waiting-base) ;;
+    # Recorded as landed, but cleanup or the landed event did not finish.
+    landed) jq -e '.pr_reconcile_pending==true' "$S/meta" >/dev/null || return 0 ;;
+    *) return 0 ;;
+  esac
   if [ "$KIND" != code ] || [ ! -f "$S/pr.json" ] || ! is_github; then return 0; fi
   # A live waiter already polls this PR and exits once it is no longer open.
   if [ "$status" = pr ] && pr_wait_alive; then return 0; fi
@@ -201,13 +206,24 @@ cmd_pr_reconcile() {
   case "$(jq -r .state "$S/pr-reconcile.json")" in
     MERGED)
       cp "$S/pr-reconcile.json" "$S/land-checks.json"
-      # The same gates as dv land on a PR merged elsewhere (#116).
+      # The same gates as dv land on a PR merged elsewhere (#116). Keep errexit
+      # in the subshell (an || list would disable it): any failed step counts.
+      set +e
       (
+        set -e
         head=''
         if [ -d "$WT" ]; then require_worktree; require_clean "$WT"; head=$(git -C "$WT" rev-parse HEAD); fi
         github_land_reconcile "$head"
-      ) 2> "$S/pr-reconcile.log" || rc=$?
-      [ "$rc" != 0 ] || return 0
+      ) 2> "$S/pr-reconcile.log"
+      rc=$?
+      set -e
+      if [ "$rc" = 0 ]; then
+        if jq -e '.pr_reconcile_pending' "$S/meta" >/dev/null; then meta_set 'del(.pr_reconcile_pending)'; fi
+        return 0
+      fi
+      # Status can already be landed (cleanup refused, such as a live worker);
+      # keep the job on later passes until cleanup and the landed event finish.
+      if jq -e '.status=="landed"' "$S/meta" >/dev/null; then meta_set '.pr_reconcile_pending=true'; fi
       reason=$(sed -n 's/^dv: //p' "$S/pr-reconcile.log" | tail -n 1)
       pr_reconcile_blocked "MERGED:$(jq -r .headRefOid "$S/pr-reconcile.json"):$reason" \
         "PR merged outside dv land but not recorded as landed: ${reason:-see pr-reconcile.log}"
@@ -272,7 +288,7 @@ already_merged_land() {
       appserver) appserver_require_idle ;;
       exec) ! codex_exec_alive "$S" || fail 'exec is still running; cannot land' ;;
     esac
-    already_merged_verify "$(jq -r .merged_via.commit "$S/done.json")" > /dev/null || exit 1
+    already_merged_verify "$(jq -r .merged_via.commit "$S/done.json")" > /dev/null
     metrics_note merged "$head"
     meta_set --slurpfile completion "$S/done.json" --argjson time "$(now)" \
       '.status="landed" | .landed_at=$time | .merged_via=$completion[0].merged_via'

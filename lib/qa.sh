@@ -294,7 +294,7 @@ qa_load() {
 qa_clean() {
   # Mirror tmp_collect for one named job, including scratch from before owner
   # markers: only a stopped QA with a clean clone releases its scratch.
-  local scratch owner
+  local scratch owner dirty
   ! codex_exec_alive "$S" || fail 'QA is still running; scratch retained'
   scratch=$(jq -r '.scratch // empty' "$S/meta")
   if [ -z "$scratch" ] || { [ ! -e "$scratch" ] && [ ! -L "$scratch" ]; }; then return 0; fi
@@ -307,7 +307,8 @@ qa_clean() {
   if [[ "$owner" =~ ^[1-9][0-9]*$ ]] && kill -0 "$owner" 2>/dev/null; then fail 'QA scratch is still in use; retained'; fi
   if [ -e "$WT" ]; then
     require_worktree
-    [ -z "$(git -C "$WT" status --porcelain --untracked-files=all)" ] || fail "uncommitted files: $WT"
+    dirty=$(git -C "$WT" status --porcelain --untracked-files=all) || fail "cannot read QA clone: $WT"
+    [ -z "$dirty" ] || fail "uncommitted files: $WT"
   fi
   rm -rf -- "$scratch"
 }
