@@ -309,7 +309,8 @@ brief override 변수는 소문자로 바꾼 `owner/repo`의 `/`, `.`, `-`를 `_
 읽습니다. template은 shell로 실행하지 않습니다. 이슈 URL, 댓글 조회 명령,
 stacked 의존 PR, `Closes`와 `dv done` 지시를 덧붙여 기존 submit 경로로 전달합니다.
 template에는 저장소별 검증·승인·전달 규칙을 적으세요. 자동 ID는
-`AF-<owner>-<repo>-<repo checksum>-<issue number>`입니다.
+`AF-<owner>-<repo>-<repo checksum>-<issue number>`입니다. slug는 이슈 제목의 앞 다섯 단어(최대 40자)이며
+`bug` label이면 `fix-`, `documentation`·`docs` label이면 `docs-`를 앞에 붙여 브랜치가 `fix/12-login-crash-after-restart`처럼 됩니다.
 
 준비된 이슈는 열려 있고, 열린 sub-issue가 없고, 모든 `Depends on #N`이
 닫혔거나 열린 closing PR이 있으며, `needs-owner` label과 기존 제출·열린 PR이

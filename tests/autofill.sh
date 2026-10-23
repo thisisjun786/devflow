@@ -61,6 +61,22 @@ case_autofill_submit() {
   test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 2
   autofill_summary --json | jq -e '.free_slots==0 and .ready_not_started==3 and (.hosts|length)==2 and (.reason|length)>0'
 }
+case_autofill_branch_slug() {
+  # Autofilled jobs get <type>/<n>-<slug> branches from the issue title and
+  # label, never the issue number twice.
+  autofill_fixture; autofill_issues
+  jq '.[0].title="Fix login crash after restart" | .[0].labels=[{name:"bug"}] |
+      .[1].title="Explain: the PR format!" | .[1].labels=[{name:"Documentation"}]' \
+    "$CASE_DIR/autofill/issues" > "$CASE_DIR/autofill/next"
+  mv "$CASE_DIR/autofill/next" "$CASE_DIR/autofill/issues"
+  autofill_tick
+  jq -se 'map({(.github_issue|tostring):.slug}) | add == {"1":"fix-login-crash-after-restart","2":"docs-explain-the-pr-format"}' \
+    "$DV_HOME"/submissions/*/task.json
+  # shellcheck source=lib/commands.sh
+  source "$ROOT/lib/commands.sh"
+  test "$(issue_branch "$(autofill_id test/repo 1)" fix-login-crash-after-restart)" = fix/1-login-crash-after-restart
+  test "$(issue_branch "$(autofill_id test/repo 2)" docs-explain-the-pr-format)" = docs/2-explain-the-pr-format
+}
 case_autofill_dependencies() {
   autofill_fixture; autofill_issues
   jq '.[0].body="Depends on #90" | .[1].body="Depends on #91" | .[2].body="Depends on #92" |

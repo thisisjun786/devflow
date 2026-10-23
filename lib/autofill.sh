@@ -105,8 +105,14 @@ autofill_repo() {
       stack=$(jq -c --argjson pr "$item" --arg repo "$dep_repo" '.+[$pr+{repo:$repo}]' <<< "$stack") || return 1
     done < <(jq -c '.[]' <<< "$deps")
     [ -z "$reason" ] || continue
+    # The slug names the branch <type>/<n>-<slug>: title words, typed by label.
     jq -cn --arg repo "$repo" --argjson row "$row" --argjson queued "$queued" --argjson stack "$stack" \
-      '{repo:$repo,number:$row.number,title:$row.title,url:$row.html_url,
+      '([$row.labels[]?.name | ascii_downcase] |
+        if any(.[]; .=="bug") then "fix" elif any(.[]; .=="documentation" or .=="docs") then "docs" else "" end) as $type |
+      ([($row.title // "") | ascii_downcase | scan("[a-z0-9]+")][:5] | join("-") | .[:40] | rtrimstr("-") |
+        if .=="" then "issue" else . end) as $words |
+      {repo:$repo,number:$row.number,title:$row.title,url:$row.html_url,
+        slug:(if $type=="" or $words==$type or ($words|startswith($type+"-")) then $words else $type+"-"+$words end),
         milestone:(if $row.milestone.state=="open" then $row.milestone.number else null end),
         qa:any($row.labels[]?; (.name|ascii_downcase)=="qa"),queued:($queued.issue // null),stack:$stack,
         reason:($queued.reason // "awaiting submission")}'
@@ -246,7 +252,7 @@ autofill_tick() (
       issue=$(autofill_id "$repo" "$number")
       if ! autofill_brief "$row" "$work/brief"; then reason='brief unavailable'
       elif [ -d "$DV_HOME/submissions/$issue" ]; then reason='submission already exists'
-      elif cmd_submit "https://github.com/$repo.git" "$issue" "issue-$number" --brief "$work/brief" >&2; then
+      elif cmd_submit "https://github.com/$repo.git" "$issue" "$(jq -r '.slug // "issue"' <<< "$row")" --brief "$work/brief" >&2; then
         bid_task_set "$DV_HOME/submissions/$issue" --arg repo "$repo" --argjson number "$number" '.github_repo=$repo | .github_issue=$number'
       else reason='submission failed'; fi
     fi
