@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # ~/.config/devflow/config.sh. Shell code: use only trusted configuration.
 # ${VAR:=default} keeps environment overrides, including test agent commands.
-if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOME/dv/wt}"; fi
+if { [ -d /scratch ] && [ -w /scratch ] && [ -x /scratch ]; } ||
+   { [ -d /scratch/dv-wt ] && [ -w /scratch/dv-wt ] && [ -x /scratch/dv-wt ]; }; then
+  : "${DV_WORK:=/scratch/dv-wt}"
+else
+  : "${DV_WORK:=$HOME/dv/wt}"
+fi
 : "${DV_STATE:=$HOME/.local/state/devflow}"
 : "${DV_TMP:=$HOME/.cache/dv/tmp}" # host-local disk scratch for dv and its agents
 : "${DV_TMP_QUOTA_KB:=12582912}" # fallback per-user /tmp quota estimate (12 GiB); 0 = unknown
