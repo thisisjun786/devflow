@@ -18,6 +18,9 @@ start_fixture_work() {
   ) > "$CASE_DIR/server/work.log" 2>&1 & pid=$!
   printf '%s\n' "$pid" > "$CASE_DIR/server/work-$pid.pid"
 }
+# Also register when a case supplies its own BASH_ENV (no-setsid coverage).
+# shellcheck source=tests/process-group.sh
+source "$ROOT/tests/process-group.sh"
 if [ "${1:-}" = --peer ]; then
   # shellcheck source=lib/appserver-transport.sh
   source "$ROOT/lib/appserver-transport.sh"

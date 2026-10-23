@@ -6,6 +6,9 @@ export ROOT
 setup() {
   CASE_DIR=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-test.XXXXXX")
   export CASE_DIR
+  if [ -n "${DV_TEST_PROCESS_DIR:-}" ]; then
+    printf '%s\n' "$CASE_DIR" > "$DV_TEST_PROCESS_DIR/case-dir"
+  fi
   export DV_TEST_TMP=${DV_TEST_TMP:-${TMPDIR:-/tmp}}
   export TMPDIR="$CASE_DIR/temporary-root"
   mkdir -p "$TMPDIR"
@@ -18,6 +21,9 @@ setup() {
   export DV_CONFIG="$CASE_DIR/config.sh" DV_STATE="$CASE_DIR/state" DV_WORK="$CASE_DIR/work" DV_HOME="$CASE_DIR/home"
   export DV_KICK="$ROOT/bin/dv-kick" DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"
   export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1
+  if [ -n "${DV_TEST_PROCESS_DIR:-}" ]; then
+    printf '%s\n' "$DV_TMUX_SOCKET" > "$DV_TEST_PROCESS_DIR/tmux-socket"
+  fi
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
   export DV_AUTO_UPDATE=0
@@ -47,6 +53,9 @@ setup() {
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
   trap 'teardown "$?"' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  trap 'exit 129' HUP
 }
 teardown_stop_pidfile() {
   local pidfile=$1 pid attempt state
@@ -73,7 +82,7 @@ teardown_stop_pidfile() {
 # shellcheck disable=SC2120
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
-  local pidfile pane_pid rc=0 case_result=${1:-0} diagnostic
+  local pidfile pane_pid rc=0 scan_rc=0 case_result=${1:-0} diagnostic
   for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$CASE_DIR"/server/work-*.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
     teardown_stop_pidfile "$pidfile" || rc=1
   done
@@ -105,9 +114,21 @@ teardown() {
       printf '\n' >&2
     done
     printf 'Retained failed fixture: %s\n' "$CASE_DIR" >&2
-    return 0
+    touch "$CASE_DIR/.test-failed"
   fi
+  # Probe errors can be swallowed by host reporting; a rejected scan still fails.
+  if [ -s "$CASE_DIR/host-tmp-scans" ]; then
+    printf 'Forbidden live tmp scan:\n' >&2
+    cat "$CASE_DIR/host-tmp-scans" >&2
+    scan_rc=1
+  fi
+  # The supervisor first stops all registered groups, including orphans whose
+  # client.pid has disappeared. Only then may it remove this case's files.
+  if [ -n "${DV_TEST_PROCESS_DIR:-}" ] &&
+    [ "$(cat "$DV_TEST_PROCESS_DIR/case-dir" 2>/dev/null)" = "$CASE_DIR" ]; then return "$scan_rc"; fi
+  if [ -f "$CASE_DIR/.test-failed" ]; then return "$scan_rc"; fi
   if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$CASE_DIR"; else rm -rf "$CASE_DIR"; fi
+  return "$scan_rc"
 }
 repo() {
   REPO="$CASE_DIR/repo $1"
@@ -318,6 +339,7 @@ case_pr_public_body() {
   needs_tmux; repo remote remote; start T-41; wait_done T-41
   printf 'Adds the thing.\n\nCloses #41\n' > "$DV_STATE/T-41/pr.md"
   DV_POLISH=0 dv pr T-41
+  wait_pr_ready T-41
   cmp "$DV_STATE/T-41/pr.md" "$GH_STUB_DIR/live-body"
   if grep -q -- "$DV_STATE" "$GH_STUB_DIR/live-body"; then return 1; fi
 }
@@ -2223,6 +2245,10 @@ case_task_mixed_files() {
 source "$ROOT/tests/capacity.sh"
 # shellcheck source=tests/heavy.sh
 source "$ROOT/tests/heavy.sh"
+# shellcheck source=tests/process-cleanup.sh
+source "$ROOT/tests/process-cleanup.sh"
+# shellcheck source=tests/process-supervisor.sh
+source "$ROOT/tests/process-supervisor.sh"
 runner_stub() {
   mkdir -p "$CASE_DIR/runner-bin"
   cat > "$CASE_DIR/runner-bin/bash" <<'STUB'
@@ -2326,6 +2352,8 @@ registered_cases() {
   question_goal_start_ack \
   exec_send_slow_completion \
   appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
+  process_cleanup_pass process_cleanup_fail process_cleanup_timeout process_cleanup_term process_cleanup_nested heavy_descendant_slot \
+  host_tmp_guard \
   tmp_reap tmp_guards tmp_agent tmp_appserver tmp_default tmp_quota tmp_reap_bash32 tmp_appserver_killed tmp_usage tmp_cache pr_body_delayed_wait \
   review_source_moved review_source_named review_source_numeric review_source_meta review_source_invalid_meta review_source_unknown review_source_start teardown_wait_host_agent \
   appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \
@@ -2418,12 +2446,16 @@ runner_select() {
 }
 main() {
   local list=false changes='' shard=1 total=1 value names name index=0 result
-  local pass=0 skip=0 fail=0
+  local pass=0 skip=0 fail=0 runner_case=''
   if [ "${1:-}" = --case ]; then
     if [ "$#" != 2 ] || ! declare -F "case_$2" >/dev/null; then
       runner_error 'expected --case NAME with a known case'; return 2
     fi
-    setup; "case_$2"; return
+    if [ "${DV_TEST_EXECUTE_CASE:-0}" = 1 ]; then
+      unset DV_TEST_EXECUTE_CASE
+      setup; "case_$2"; return
+    fi
+    runner_supervise_case "$2"
   fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -2445,19 +2477,26 @@ main() {
     esac
   done
   names=$(runner_select "$changes") || return
+  trap 'runner_suite_stop 143' TERM
+  trap 'runner_suite_stop 130' INT
+  trap 'runner_suite_stop 129' HUP
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     index=$((index + 1))
     [ "$(((index - 1) % total + 1))" = "$shard" ] || continue
     declare -F "case_$name" >/dev/null || { runner_error "unregistered case function: $name"; return 2; }
     if [ "$list" = true ]; then printf '%s\n' "$name"; continue; fi
-    if bash "$0" --case "$name"; then
+    bash "$0" --case "$name" 9>&- <&0 &
+    # shellcheck disable=SC2031
+    runner_case=$!
+    if wait "$runner_case"; then
       pass=$((pass + 1)); printf 'PASS %s\n' "$name"
     else
       result=$?
       if [ "$result" = 77 ]; then skip=$((skip + 1)); printf 'SKIP %s (tmux unavailable)\n' "$name"
       else fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n' "$name" "$result"; fi
     fi
+    runner_case=''
   done <<< "$names"
   [ "$list" = false ] || return 0
   printf 'pass=%s skip=%s fail=%s\n' "$pass" "$skip" "$fail"

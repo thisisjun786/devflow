@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Detached PR waiters can inherit a case-specific BASH_ENV as well.
+# shellcheck source=tests/process-group.sh
+source "$ROOT/tests/process-group.sh"
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
 if [ -f "$GH_STUB_DIR/qa-pr" ]; then
