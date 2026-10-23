@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-contained QA jobs until the general task-job backend is available.
+# Merge discovery on the scheduler and isolated QA runners awarded to hosts.
 # Job metadata globals are deliberately scoped to each runner/CLI subshell.
 # shellcheck disable=SC2016,SC2030,SC2031
 qa_alive() {
@@ -12,45 +12,192 @@ qa_job_id() {
   key=$(printf '%s' "$repository" | cksum | awk '{print $1}')
   printf 'QA-%s-%s-%s\n' "$slug" "$key" "${head:0:12}"
 }
-qa_enqueue() {
-  local event=$1 repo key dir remote base='' issue host tmp head token record=''
-  issue=$(jq -er '.issue | select(test("^[A-Za-z0-9][A-Za-z0-9_-]*$"))' <<< "$event") || return 0
-  host=$(jq -r .host <<< "$event"); head=$(jq -r .head <<< "$event"); token=$(jq -r '.token // ""' <<< "$event")
-  # Operator-owned job records are the repository allowlist. A remote queue
-  # or status response cannot nominate a repository or grant QA authority.
-  if [ "$host" = "$DV_HOST" ] && [ -f "$DV_STATE/$issue/meta" ]; then
-    record=$(jq -ce --arg host "$host" --arg head "$head" --arg token "$token" \
-      'select(.host==$host and .status=="landed" and .head==$head and (.award_token // "")==$token)' \
-      "$DV_STATE/$issue/meta") || record=''
-  elif [ -f "$DV_HOME/submissions/$issue/task.json" ] && [ -n "$token" ]; then
-    record=$(jq -ce --arg host "$host" --arg head "$head" --arg token "$token" \
-      'select(.host==$host and .status=="completed" and .head==$head and .token==$token)' \
-      "$DV_HOME/submissions/$issue/task.json") || record=''
+# Discovery runs only on the scheduler. A landed event merely asks it to poll
+# operator-enabled repositories; event fields never authorize a repository.
+qa_enabled_repos() {
+  local meta repo identity settings base remote
+  for meta in "$DV_HOME"/managers/*/meta.json; do
+    [ -f "$meta" ] || continue
+    jq -e '.enabled==true' "$meta" >/dev/null || continue
+    repo=$(jq -er .repo "$meta") || continue
+    identity=$(manager_identity "$repo") || continue
+    case "$identity" in github.com/*/*) ;; *) continue ;; esac
+    jq -e --arg identity "$identity" '.identity==$identity' "$meta" >/dev/null || continue
+    settings=$(qa_settings "$repo") || continue
+    jq -e .enabled <<< "$settings" >/dev/null || continue
+    base=$(jq -r .base <<< "$settings")
+    if [ -z "$base" ]; then base=$(jq -r '.base // empty' "$meta"); fi
+    if [ -z "$base" ] && [ "${1:-}" != events ]; then
+      base=$(bid_limit "$DV_BID_TIMEOUT" git -C "$repo" ls-remote --symref origin HEAD |
+        sed -n 's@^ref: refs/heads/\([^[:space:]]*\).*@\1@p') || continue
+    fi
+    if [ -n "$base" ] || [ "${1:-}" != events ]; then
+      git check-ref-format "refs/heads/$base" >/dev/null || continue
+    fi
+    remote=$(git -C "$repo" config --get remote.origin.url) || continue
+    jq -cn --arg repo "$repo" --arg repository "${identity#github.com/}" --arg base "$base" \
+      --arg remote "$remote" --argjson settings "$settings" \
+      '{repo:$repo,repository:$repository,base:$base,remote:$remote,agent:$settings.agent}'
+  done
+}
+# GitHub is another input to the existing watcher loop, not a separate check
+# timer. Authenticated conditional requests avoid re-reading unchanged feeds.
+qa_github_events() {
+  local record
+  [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
+  while IFS= read -r record; do
+    if ! qa_github_events_repo "$record"; then
+      printf 'QA event input unavailable; retaining cursor: %s\n' "$(jq -r .repository <<< "$record")" >&2
+    fi
+  done < <(qa_enabled_repos events)
+}
+qa_github_events_repo() (
+  local record=$1 repository base key dir response body code etag='' previous='' newest eligible tmp rc=0
+  local headers=()
+  repository=$(jq -r .repository <<< "$record"); base=$(jq -r .base <<< "$record")
+  key=$(printf '%s' "$repository" | cksum | awk '{print $1 "-" $2}')
+  dir="$DV_HOME/qa-events/$key"
+  mkdir -p "$dir" || return 1
+  if [ -f "$dir/cursor.json" ]; then
+    jq -e --arg repository "$repository" '.repository==$repository' "$dir/cursor.json" >/dev/null || return 1
+    etag=$(jq -r '.etag // empty' "$dir/cursor.json")
+    previous=$(jq -r '.id // empty' "$dir/cursor.json")
   fi
-  if [ -z "$record" ]; then
-    printf 'Ignoring QA event without an authorized landed job: %s\n' "$issue"
+  [ -z "$etag" ] || headers=(-H "If-None-Match: $etag")
+  response=$(mktemp "$dir/.response.XXXXXX") || return 1
+  body=$(mktemp "$dir/.body.XXXXXX") || { rm "$response"; return 1; }
+  trap 'rm "$response" "$body"' EXIT
+  bid_limit "$DV_BID_TIMEOUT" gh api --include "repos/$repository/events?per_page=100" \
+    ${headers[@]+"${headers[@]}"} > "$response" || rc=$?
+  code=$(awk '/^HTTP\// {code=$2} END {print code}' "$response")
+  [ "$code" != 304 ] || return 0
+  [ "$rc" = 0 ] && [ "$code" = 200 ] || return 1
+  # gh --include puts one response header block before the JSON body.
+  awk 'body {print; next} /^\r?$/ {body=1}' "$response" > "$body"
+  jq -e 'type=="array" and all(.[]; (.id|type)=="string")' "$body" >/dev/null || return 1
+  etag=$(awk 'tolower($1)=="etag:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$response")
+  newest=$(jq -r 'first.id // empty' "$body")
+  eligible=$(jq -r --arg previous "$previous" --arg base "$base" '
+    (map(.id)|index($previous)) as $index | (if $index==null then . else .[:$index] end) |
+    map(select((.type=="PullRequestEvent" and .payload.action=="closed" and .payload.pull_request.merged==true and
+      ($base=="" or .payload.pull_request.base.ref==$base)) or
+      (.type=="PushEvent" and ($base=="" or .payload.ref==("refs/heads/"+$base))) or
+      (.type=="IssuesEvent" and (.payload.action=="opened" or .payload.action=="closed")))) | first.id // empty' "$body") || return 1
+  if [ -n "$eligible" ]; then
+    # Only a repository already enabled by the operator reaches this point.
+    # Public event content never supplies commands, paths or QA authorization.
+    "$DV_ROOT/bin/dv-kick" qa-repository "QA-EVENTS-$key" 'GitHub repository event; verify merged base' \
+      "$DV_HOST" '' "github:$repository:$eligible" || return 1
+  fi
+  # The queue write comes first: a crash replays a stable event ID, so the
+  # watcher's existing deduplication preserves at-least-once delivery.
+  tmp=$(mktemp "$dir/.cursor.XXXXXX") || return 1
+  jq -n --arg repository "$repository" --arg id "$newest" --arg etag "$etag" \
+    '{repository:$repository,id:$id,etag:$etag}' > "$tmp" || return 1
+  mv "$tmp" "$dir/cursor.json"
+)
+qa_scan() {
+  local record
+  [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
+  while IFS= read -r record; do
+    if ! qa_poll_repo "$(jq -r .repo <<< "$record")" "$(jq -r .repository <<< "$record")" \
+      "$(jq -r .base <<< "$record")" "$(jq -r .agent <<< "$record")" "$(jq -r .remote <<< "$record")"; then
+      printf 'QA merge scan failed; will retry: %s\n' "$(jq -r .repository <<< "$record")" >&2
+    fi
+  done < <(qa_enabled_repos)
+}
+qa_enqueue() { qa_scan; }
+qa_dir() {
+  local identity=$1 base=$2
+  printf '%s/qa/%s\n' "$DV_HOME" "$(printf '%s\n%s' "$identity" "$base" | cksum | awk '{print $1 "-" $2}')"
+}
+qa_poll_repo() (
+  local repo=$1 repository=$2 base=$3 agent=$4 remote=$5 dir encoded head page rows merges='[]'
+  local cursor='{"merged_at":"","numbers":[]}' since result pr sha comparison tmp request old='{}' time
+  dir=$(qa_dir "$repository" "$base")
+  if [ -f "$dir/identity.json" ]; then
+    jq -e --arg repository "$repository" --arg base "$base" \
+      '.repository==$repository and .base==$base' "$dir/identity.json" >/dev/null || return 1
+  fi
+  encoded=$(jq -rn --arg base "$base" '$base|@uri')
+  head=$(bid_limit "$DV_BID_TIMEOUT" gh api "repos/$repository/commits/$encoded" --jq .sha) || return 1
+  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+  if [ -f "$dir/observed.json" ]; then cursor=$(cat "$dir/observed.json"); fi
+  since=$(jq -r .merged_at <<< "$cursor")
+  # First startup also honors QA completed by the pre-polling runner. Its
+  # merged PR supplies the timestamp, independently of local wall clocks.
+  if [ ! -f "$dir/observed.json" ]; then
+    for result in "$DV_STATE"/QA-*/meta; do
+      [ -f "$result" ] || continue
+      if jq -e --arg repository "$repository" --arg base "$base" \
+        '.repository==$repository and .base==$base and .done_at!=null' "$result" >/dev/null; then
+        pr=$(qa_merged_pr "$repository" "$(jq -r .head "$result")" "$base") || return 1
+        cursor=$(jq -cn --argjson cursor "$cursor" --argjson pr "$pr" \
+          'if $pr.merged_at>$cursor.merged_at then {merged_at:$pr.merged_at,numbers:[$pr.number]}
+           elif $pr.merged_at==$cursor.merged_at then $cursor | .numbers+=[$pr.number] else $cursor end')
+      fi
+    done
+    since=$(jq -r .merged_at <<< "$cursor")
+  fi
+  # Closed PRs are sorted by update time, so stop only after crossing the
+  # durable merge watermark. Late comments on old PRs cannot hide new merges.
+  page=1
+  while :; do
+    rows=$(bid_limit "$DV_BID_TIMEOUT" gh api "repos/$repository/pulls?state=closed&base=$encoded&sort=updated&direction=desc&per_page=100&page=$page") || return 1
+    jq -e 'type=="array"' <<< "$rows" >/dev/null || return 1
+    result=$(jq -c --arg base "$base" --argjson cursor "$cursor" '[.[] |
+      select(.merged_at!=null and .base.ref==$base and
+        (.merged_at>$cursor.merged_at or (.merged_at==$cursor.merged_at and
+          (.number as $n | $cursor.numbers|index($n)|not)))) |
+      {number,title,merged_at,merge_commit_sha,base:{ref:.base.ref},milestone:(if .milestone==null then null else (.milestone|{number,title}) end)}]' <<< "$rows") || return 1
+    merges=$(jq -cn --argjson old "$merges" --argjson new "$result" '$old+$new|unique_by(.number)|sort_by(.merged_at,.number)')
+    [ "$(jq length <<< "$rows")" = 100 ] || break
+    if [ -n "$since" ] && jq -e --arg since "$since" 'last.updated_at < $since' <<< "$rows" >/dev/null; then break; fi
+    page=$((page + 1))
+  done
+  if [ "$merges" = '[]' ]; then
+    if [ ! -f "$dir/observed.json" ]; then
+      mkdir -p "$dir"
+      tmp=$(mktemp "$dir/.observed.XXXXXX") || return 1
+      printf '%s\n' "$cursor" > "$tmp"; mv "$tmp" "$dir/observed.json"
+    fi
     return 0
   fi
-  repo=$(jq -er .repo <<< "$record") || return 1
-  base=$(jq -r '.base // ""' <<< "$record")
-  key=$(manager_identity "$repo") || return 1
-  case "$key" in github.com/*/*) ;; *) return 0 ;; esac
-  remote="https://$key.git"
-  if [ -d "$repo" ]; then
-    remote=$(git -C "$repo" ls-remote --get-url origin) || return 1
+  # Verify every merge is in the configured base snapshot, even if a branch
+  # was reset or a PR payload names a different base. Failed reads retry later.
+  while IFS= read -r pr; do
+    sha=$(jq -r .merge_commit_sha <<< "$pr")
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+    comparison=$(bid_limit "$DV_BID_TIMEOUT" gh api "repos/$repository/compare/$sha...$head") || return 1
+    jq -e '.status=="ahead" or .status=="identical"' <<< "$comparison" >/dev/null || return 1
+  done < <(jq -c '.[]' <<< "$merges")
+  mkdir -p "$dir" || return 1
+  if [ ! -f "$dir/identity.json" ]; then
+    tmp=$(mktemp "$dir/.identity.XXXXXX") || return 1
+    jq -n --arg repository "$repository" --arg base "$base" '{repository:$repository,base:$base}' > "$tmp" || return 1
+    mv "$tmp" "$dir/identity.json" || return 1
   fi
-  dir="$DV_HOME/qa/$(printf '%s' "$key" | cksum | awk '{print $1 "-" $2}')"
-  mkdir -p "$dir"
-  if [ -f "$dir/identity" ]; then [ "$(cat "$dir/identity")" = "$key" ] || return 1
-  else printf '%s\n' "$key" > "$dir/identity"; fi
-  # The watcher is the sole writer. Arrivals replace only the pending request,
-  # never the immutable request owned by a running QA process.
+  [ ! -f "$dir/pending.json" ] || old=$(cat "$dir/pending.json")
+  time=$(now)
+  request=$(jq -cn --arg repository "$repository" --arg repo "$repo" --arg remote "$remote" --arg base "$base" \
+    --arg head "$head" --arg agent "$agent" --argjson prs "$merges" --argjson old "$old" \
+    --argjson time "$time" --argjson delay "$DV_QA_COALESCE" \
+    '{repository:$repository,repo:$repo,remote:$remote,base:$base,head:$head,agent:$agent,
+      prs:(($old.prs // [])+$prs|unique_by(.number)|sort_by(.merged_at,.number)),due_at:($time+$delay)}')
   tmp=$(mktemp "$dir/.pending.XXXXXX") || return 1
-  jq -cn --argjson event "$event" --arg repo "${key#github.com/}" --arg remote "$remote" --arg base "$base" \
-    '{event:$event,repository:$repo,remote:$remote,base:$base}' > "$tmp"
-  mv "$tmp" "$dir/pending.json"
-}
+  printf '%s\n' "$request" > "$tmp" && mv "$tmp" "$dir/pending.json" || return 1
+  # Persist the pending request before acknowledging observations. A crash
+  # between these writes replays into the same union instead of losing merges.
+  tmp=$(mktemp "$dir/.observed.XXXXXX") || return 1
+  jq -n --argjson cursor "$cursor" --argjson prs "$merges" \
+    '($prs|last.merged_at) as $time | {merged_at:$time,
+     numbers:((if $time==$cursor.merged_at then $cursor.numbers else [] end)+
+       [$prs[]|select(.merged_at==$time)|.number]|unique)}' > "$tmp"
+  mv "$tmp" "$dir/observed.json" || return 1
+)
 qa_recover() {
+  # Legacy local runners remain reserved until exit during upgrades. Awarded
+  # QA is accounted for by bid_active on its host, just like development jobs.
   local marker dir runner child
   for marker in "$DV_HOME"/qa/*/pid; do
     [ -f "$marker" ] || continue
@@ -58,30 +205,90 @@ qa_recover() {
     runner=$(cat "$dir/runner.pid" 2>/dev/null) || runner=$(cat "$marker")
     child=$(cat "$dir/child.pid" 2>/dev/null || true)
     if qa_alive "$runner" || qa_alive "$child"; then
-      case " $pids " in *" $runner "*) ;; *) active=$((active + 1)) ;; esac
+      case " ${pids:-} " in *" $runner "*) ;; *) active=$((${active:-0} + 1)) ;; esac
     fi
   done
 }
+qa_request_enabled() {
+  local request=$1 meta repo settings base repository
+  repository=$(jq -r .repository "$request")
+  for meta in "$DV_HOME"/managers/*/meta.json; do
+    [ -f "$meta" ] || continue
+    jq -e --arg identity "github.com/$repository" '.enabled==true and .identity==$identity' "$meta" >/dev/null || continue
+    repo=$(jq -r .repo "$meta")
+    [ "$(manager_identity "$repo")" = "github.com/$repository" ] || continue
+    settings=$(qa_settings "$repo") || continue
+    jq -e .enabled <<< "$settings" >/dev/null || continue
+    base=$(jq -r .base <<< "$settings")
+    [ -n "$base" ] || base=$(jq -r '.base // empty' "$meta")
+    # An implicit base is the remote default observed by the last event/sweep;
+    # dispatch must not add a network poll to every local debounce tick.
+    [ -z "$base" ] || [ "$base" = "$(jq -r .base "$request")" ] || continue
+    return 0
+  done
+  return 1
+}
 qa_dispatch() {
-  local request dir pid child
+  local request dir job task payload tmp pid child receipt
+  [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
   for request in "$DV_HOME"/qa/*/pending.json; do
-    [ "$active" -lt "$DV_MAX_WORKERS" ] || break
     [ -f "$request" ] || continue
     dir=$(dirname "$request")
-    if [ -f "$dir/pid" ]; then
-      pid=$(cat "$dir/pid"); child=$(cat "$dir/child.pid" 2>/dev/null || true)
+    [ "$(now)" -ge "$(jq -r '.due_at // 0' "$request")" ] || continue
+    qa_request_enabled "$request" || continue
+    if [ -f "$dir/running.json" ]; then
+      job=$(jq -r '.issue // empty' "$dir/running.json")
+      task="$DV_HOME/submissions/$job/task.json"
+      if [ -n "$job" ] && [ -f "$task" ] && jq -e '.status=="submitted" or .status=="working" or .status=="input-required"' "$task" >/dev/null; then continue; fi
+      if [ -n "$job" ] && [ -f "$task" ]; then
+        receipt=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$(jq -r .host "$task")" _receipt "$job" "$(jq -r .token "$task")" </dev/null) || continue
+        jq -e '.exited==true' <<< "$receipt" >/dev/null || continue
+      fi
+      pid=$(cat "$dir/pid" 2>/dev/null || true); child=$(cat "$dir/child.pid" 2>/dev/null || true)
       if qa_alive "$pid" || qa_alive "$child"; then continue; fi
-      # An interrupted job is retained for inspection, never restarted with
-      # uncertain external effects. A later landing may start the latest head.
-      rm -f "$dir/pid" "$dir/child.pid" "$dir/claim" "$dir/runner.pid"
     fi
-    mv "$request" "$dir/running.json"
-    printf '%s\n' "$$" > "$dir/pid"
-    "$DV_ROOT/bin/dv" _qa-run "$dir" >> "$dir/log" 2>&1 &
-    pid=$!
-    printf '%s\n' "$pid" > "$dir/runner.pid"
-    pids="$pids $pid"; active=$((active + 1))
+    job=$(qa_job_id "$(jq -r .repository "$request")" "$(jq -r .head "$request")")
+    task="$DV_HOME/submissions/$job/task.json"
+    if [ ! -f "$task" ]; then
+      payload=$(jq --arg issue "$job" --rawfile brief "$DV_ROOT/templates/qa-prompt.md" \
+        '{kind:"qa",issue:$issue,repo:.remote,slug:"qa",agent:.agent,
+          mode:(if .agent=="codex" then "exec" else "goal" end),base,brief:$brief,qa:.}' "$request")
+      printf '%s\n' "$payload" | "$DV_ROOT/bin/dv" _submit || return 1
+    fi
+    "$DV_ROOT/bin/dv-kick" submitted "$job" 'Awaiting QA bids' "$DV_HOST" || return 1
+    tmp=$(mktemp "$dir/.running.XXXXXX") || return 1
+    jq --arg issue "$job" '.+{issue:$issue}' "$request" > "$tmp"; mv "$tmp" "$dir/running.json"
+    rm "$request"
   done
+}
+# Called under the ordinary host admission lock after a successful fresh bid.
+qa_award() {
+  local request=$1 receipt_dir=$2 issue token deadline dir pid status=input-required head owner tmp
+  issue=$(jq -r .issue <<< "$request"); token=$(jq -r .token <<< "$request")
+  deadline=$(jq -r .deadline <<< "$request")
+  dir="$DV_STATE/.qa/$issue"
+  mkdir -p "$dir"
+  jq --arg token "$token" '.qa+{award_token:$token,agent:.agent}' <<< "$request" > "$dir/running.json"
+  owner=$(sh -c 'echo "$PPID"')
+  printf '%s\n' "$owner" > "$dir/pid"
+  "$DV_ROOT/bin/dv" _qa-run "$dir" </dev/null >> "$dir/log" 2>&1 & pid=$!
+  printf '%s\n' "$pid" > "$dir/runner.pid"
+  while [ "$(now)" -lt "$deadline" ]; do
+    if [ -f "$DV_STATE/$issue/agent.started" ]; then status=working; break; fi
+    if ! qa_alive "$pid"; then
+      wait "$pid" 2>/dev/null || true
+      # Setup failures retain their diagnostics and scratch checkout. They
+      # require inspection, never an unsafe second award on another host.
+      break
+    fi
+    sleep 0.1
+  done
+  head=$(jq -r .qa.head <<< "$request")
+  tmp=$(mktemp "$receipt_dir/.receipt.XXXXXX") || return 1
+  jq -n --arg status "$status" --arg token "$token" --arg head "$head" \
+    '{status:$status,token:$token,head:$head}' > "$tmp"
+  mv "$tmp" "$receipt_dir/receipt.json"
+  cat "$receipt_dir/receipt.json"
 }
 qa_settings() (
   local line key value
@@ -90,17 +297,18 @@ qa_settings() (
     # Opt-in discovery is data, not permission to execute repository code on
     # the watcher. Read only literal QA assignments; never source .devflow.
     while IFS= read -r line || [ -n "$line" ]; do
-      if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(DV_QA|DV_QA_AGENT)= ]]; then
+      if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(DV_QA|DV_QA_AGENT|DV_QA_BASE)= ]]; then
         key=${BASH_REMATCH[2]}
         value=$(printf '%s' "${line#*=}" | sed 's/[[:space:]]*#.*$//;s/^[[:space:]]*//;s/[[:space:]]*$//')
         case "$value" in \"*\") value=${value#\"}; value=${value%\"} ;; \'*\') value=${value#\'}; value=${value%\'} ;; esac
-        if [ "$key" = DV_QA ]; then DV_QA=$value; else DV_QA_AGENT=$value; fi
+        case "$key" in DV_QA) DV_QA=$value ;; DV_QA_AGENT) DV_QA_AGENT=$value ;; DV_QA_BASE) DV_QA_BASE=$value ;; esac
       fi
     done < .devflow
   fi
   case "$DV_QA" in 0|1) ;; *) fail 'DV_QA must be 0 or 1' ;; esac
   case "$DV_QA_AGENT" in codex|claude) ;; *) fail 'DV_QA_AGENT must be codex or claude' ;; esac
-  jq -cn --arg enabled "$DV_QA" --arg agent "$DV_QA_AGENT" '{enabled:($enabled=="1"),agent:$agent}'
+  jq -cn --arg enabled "$DV_QA" --arg agent "${agent:-$DV_QA_AGENT}" --arg base "$DV_QA_BASE" \
+    '{enabled:($enabled=="1"),agent:$agent,base:$base}'
 )
 qa_merged_pr() {
   local repository=$1 head=$2 base=${3:-} result attempt reason
@@ -178,13 +386,35 @@ qa_run_cleanup() {
   # liveness, so a restart cannot overlap a finishing child.
   exit "$rc"
 }
+qa_reserve_job() {
+  ISSUE=$(qa_job_id "$repository" "$head"); valid_issue "$ISSUE"
+  S="$DV_STATE/$ISSUE"
+  if [ -e "$S" ]; then
+    printf 'QA head already reserved: %s\n' "$ISSUE"
+    # No agent has touched this newly allocated scratch directory.
+    rm -r "$scratch"; S=''; exit 0
+  fi
+  mkdir -p "$DV_STATE"
+  mkdir "$S"
+  WT="$scratch/source"
+  jq -n --arg issue "$ISSUE" --arg repo "https://github.com/$repository.git" --arg repository "$repository" \
+    --arg wt "$WT" --arg base "$base" --arg head "$head" --arg host "$DV_HOST" --arg agent "${agent:-$DV_QA_AGENT}" \
+    --arg scratch "$scratch" --argjson started "$(now)" --slurpfile request "$qa_dir/running.json" \
+    '{issue:$issue,kind:"qa",repo:$repo,repository:$repository,worktree:$wt,branch:$issue,base:$base,
+      head:$head,start_head:$head,host:$host,agent:($request[0].agent // $agent),backend:"qa",status:"running",
+      started:$started,scratch:$scratch,award_token:($request[0].award_token // ""),prs:($request[0].prs // [])}' > "$S/meta"
+  printf '%s\n' "$$" > "$S/agent.pid"
+}
 cmd__qa_run() (
   [ "$#" = 1 ] || fail 'usage: dv _qa-run <qa-directory>'
   local qa_dir=$1 qa_child='' scratch repository remote base head settings agent pr milestone prompt
   local S='' ISSUE='' WT='' qa_step='request'
   local qa_failure_reason='' rc session='' new_session instruction attempt=0 output
   local args=()
-  [ "$(dirname "$qa_dir")" = "$DV_HOME/qa" ] || fail 'invalid QA directory'
+  case "$(dirname "$qa_dir")" in
+    "$DV_HOME/qa"|"$DV_STATE/.qa") ;;
+    *) fail 'invalid QA directory' ;;
+  esac
   [ "$(cat "$qa_dir/pid")" = "$PPID" ] || fail 'QA runner has no parent reservation'
   (set -C; printf '%s\n' "$$" > "$qa_dir/claim") 2>/dev/null || fail 'QA reservation already claimed'
   printf '%s\n' "$$" > "$qa_dir/pid"
@@ -204,37 +434,34 @@ cmd__qa_run() (
   qa_step='checkout'
   tmp_make scratch dv-qa
   printf '%s\n' "$scratch" > "$qa_dir/scratch"
+  head=$(jq -r '.head // empty' "$qa_dir/running.json")
+  [ -z "$head" ] || qa_reserve_job
   git clone --quiet --no-hardlinks --no-checkout "$remote" "$scratch/source"
   git -C "$scratch/source" checkout --quiet --detach "refs/remotes/origin/$base"
-  head=$(git -C "$scratch/source" rev-parse HEAD)
+  head=$(jq -r '.head // empty' "$qa_dir/running.json")
+  if [ -n "$head" ]; then
+    [[ "$head" =~ ^[0-9a-f]{40}$ ]] || fail 'invalid QA head'
+    git -C "$scratch/source" merge-base --is-ancestor "$head" "refs/remotes/origin/$base" || fail 'QA head is not on configured base'
+    git -C "$scratch/source" checkout --quiet --detach "$head"
+  else head=$(git -C "$scratch/source" rev-parse HEAD); fi
   qa_step='settings'
   settings=$(qa_settings "$scratch/source")
-  if ! jq -e .enabled <<< "$settings" >/dev/null; then
+  agent=$(jq -r .agent <<< "$settings")
+  if ! jq -e .enabled <<< "$settings" >/dev/null && [ "$(jq -r '.award_token // ""' "$qa_dir/running.json")" = '' ]; then
     printf 'QA disabled: %s\n' "$repository"
     # This pristine clone is ours; no agent has run and no user work exists.
     rm -rf "$scratch"
     exit 0
   fi
   qa_step='job setup'
-  ISSUE=$(qa_job_id "$repository" "$head"); valid_issue "$ISSUE"
-  S="$DV_STATE/$ISSUE"
-  if [ -e "$S" ]; then
-    printf 'QA head already reserved: %s\n' "$ISSUE"
-    rm -rf "$scratch"; S=''; exit 0
-  fi
-  mkdir "$S"
-  WT="$scratch/source"
+  [ -n "$S" ] || qa_reserve_job
   git -C "$WT" checkout --quiet -b "$ISSUE"
-  agent=$(jq -r .agent <<< "$settings")
-  jq -n --arg issue "$ISSUE" --arg repo "https://github.com/$repository.git" --arg repository "$repository" --arg wt "$WT" --arg base "$base" \
-    --arg head "$head" --arg host "$DV_HOST" --arg agent "$agent" --arg scratch "$scratch" --argjson started "$(now)" \
-    '{issue:$issue,kind:"qa",repo:$repo,repository:$repository,worktree:$wt,branch:$issue,base:$base,head:$head,start_head:$head,
-      host:$host,agent:$agent,backend:"qa",status:"running",started:$started,scratch:$scratch}' > "$S/meta"
-  printf '%s\n' "$$" > "$S/agent.pid"
-  # Select the most recent merged PR for this base, including a newer merge
-  # coalesced while a prior QA run held the repository reservation.
   qa_step='pr lookup'
-  pr=$(qa_merged_pr "$repository" "$head" "$base")
+  agent=$(jq -r .agent "$S/meta")
+  pr=$(jq -c '.prs // [] | last // empty' "$qa_dir/running.json")
+  if [ -z "$pr" ]; then
+    pr=$(qa_merged_pr "$repository" "$head" "$base")
+  fi
   meta_set --argjson pr "$pr" '.pr=$pr.number'
   qa_step='milestone'
   milestone=$(qa_milestone "$repository" "$pr")
@@ -246,6 +473,8 @@ cmd__qa_run() (
   printf '\nJob: %s\nRepository: %s\nHead: %s\nMilestone: %s\nIsolated product home/state/output: %s/{home,state,out}\nReport: %s/report.md\n' \
     "$ISSUE" "$repository" "$head" "$(jq -r '.title // "none"' <<< "$milestone")" "$scratch" "$S" >> "$prompt"
   export DV_ISSUE="$ISSUE" DV_QA_SCRATCH="$scratch"
+  jq -r ' .prs[]? | "Merged PR: #\(.number) — \(.title // "")"' "$S/meta" >> "$prompt"
+  touch "$S/agent.started"
   instruction=$(cat "$prompt")
   while :; do
   attempt=$((attempt + 1)); output="$S/agent-$attempt.log"
@@ -395,6 +624,7 @@ qa_done() (
   marker="<!-- devflow-qa-summary:$ISSUE -->"
   body="$S/summary.md"
   { printf '%s\n\n' "$marker"; cat "$S/report.md"; printf '\nTested head: `%s`\n\n' "$head"
+    jq -r --arg repository "$repository" '.prs[]? | "- Merged PR: https://github.com/\($repository)/pull/\(.number)"' "$S/meta"
     [ ! -f "$S/findings.jsonl" ] || jq -r '"- "+.action+": "+.url' "$S/findings.jsonl"
   } > "$body"
   comments=$(gh api --paginate "repos/$repository/issues/$pr/comments?per_page=100" | jq -sc --arg marker "$marker" 'add | any(.[]; (.body // "")|contains($marker))')
@@ -408,19 +638,24 @@ cmd_qa() {
   case "$action" in
     finding) qa_finding "$@" ;;
     status)
-      local request dir pending running pid child
+      local request dir pending running pid child job task
       [ "$#" = 0 ] || [ "$*" = --json ] || fail 'usage: dv qa status [--json]'
       {
         for request in "$DV_HOME"/qa/*/running.json "$DV_HOME"/qa/*/pending.json; do
           [ -f "$request" ] || continue
           dir=$(dirname "$request"); pending=false; running=false
-          # Emit one row per repository; pending contains the latest identity.
           if [ -f "$dir/pending.json" ]; then
             [ "$request" = "$dir/pending.json" ] || continue
             pending=true
           fi
           pid=$(cat "$dir/pid" 2>/dev/null || true); child=$(cat "$dir/child.pid" 2>/dev/null || true)
           if qa_alive "$pid" || qa_alive "$child"; then running=true; fi
+          job=$(jq -r '.issue // empty' "$dir/running.json" 2>/dev/null) || job=''
+          task="$DV_HOME/submissions/$job/task.json"
+          if [ -n "$job" ] && [ -f "$task" ]; then
+            running=false
+            if jq -e '.status=="submitted" or .status=="working" or .status=="input-required"' "$task" >/dev/null; then running=true; fi
+          fi
           jq --argjson pending "$pending" --argjson running "$running" '{repository,base,pending:$pending,running:$running}' "$request"
         done
       } | jq -s . ;;
