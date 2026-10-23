@@ -102,7 +102,10 @@ job_scope_run() {
     group=$("${JOB_SYSTEMCTL:-systemctl}" --user show "$JOB_UNIT" -p ControlGroup --value) || group=''
     JOB_CGROUP="/sys/fs/cgroup$group"
     memory=''; tasks=''
-    [ -n "$group" ] && read -r memory < "$JOB_CGROUP/memory.max" && read -r tasks < "$JOB_CGROUP/pids.max" || true
+    if [ -n "$group" ]; then
+      read -r memory < "$JOB_CGROUP/memory.max" || memory=''
+      read -r tasks < "$JOB_CGROUP/pids.max" || tasks=''
+    fi
     if [[ "$memory" =~ ^[0-9]+$ && "$tasks" =~ ^[0-9]+$ ]] &&
       [ "$memory" -le "$(job_memory_bytes "$DV_JOB_MEMORY_MAX")" ] && [ "$tasks" -le "$DV_JOB_TASKS_MAX" ]; then
       printf 'MemoryMax=%s TasksMax=%s\n' "$memory" "$tasks" > "$JOB_ATTEMPT/verified"
