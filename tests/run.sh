@@ -162,6 +162,114 @@ wait_done() {
   return 1
 }
 needs_tmux() { command -v tmux >/dev/null || exit 77; }
+terminal_failed_status() {
+  local kind=$1 backend=$2 recovery=${3:-send} mode=exec wt state status exit_code
+  [ "$backend" != tmux ] || needs_tmux
+  [ "$backend" != herdr ] || herdr_setup
+  # The regression is exercised with isolated HOME/XDG/state and a caller's
+  # non-/tmp scratch root, including the provider's own temporary files.
+  export TMPDIR="$CASE_DIR/tmp" XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
+  export XDG_CACHE_HOME="$HOME/.cache" XDG_RUNTIME_DIR="$CASE_DIR/runtime"
+  mkdir -p "$TMPDIR" "$XDG_RUNTIME_DIR"
+  if [ "$kind" = task ]; then task_setup; else repo failed-status; fi
+  [ "$recovery" != stall ] || mode=goal
+  cat > "$CASE_DIR/failing-agent" <<'AGENT'
+#!/usr/bin/env bash
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+mkdir -p out
+printf 'unfinished deliverable\n' > out/partial.txt
+: > "$state/report.md"
+touch "$state/status-ready"
+while [ ! -f "$state/status-release" ]; do sleep 0.05; done
+if [ "$(jq -r '.kind // "code"' "$state/meta")" = task ]; then
+  dv done "$DV_ISSUE"
+else
+  exit 1
+fi
+AGENT
+  chmod +x "$CASE_DIR/failing-agent"
+  export DV_AGENT_CMD_codex="$CASE_DIR/failing-agent"
+  if [ "$kind" = task ]; then
+    dv submit --kind task "$CASE_DIR/Desk project" FS-1 failure --brief "$CASE_DIR/task-brief"
+  else
+    dv start "$REPO" FS-1 failure --brief "$CASE_DIR/brief" --mode "$mode"
+  fi
+  state="$DV_STATE/FS-1"
+  wt=$(jq -r .worktree "$state/meta")
+  wait_file "$state/status-ready"
+  # An exit record alone must not override a terminal that is still running.
+  printf '1\n' > "$state/agent.exit"
+  dv status FS-1 --json | jq -e '.[0] | .status=="running" and .agent_status=="unknown" and .alive and (.agent_dead|not)'
+  rm "$state/agent.exit"
+  touch "$state/status-release"
+  if [ "$backend" = tmux ]; then wait_done FS-1
+  else wait_file "$CASE_DIR/herdr/w-FS-1/exit"; fi
+  test "$(cat "$state/agent.exit")" = 1
+  jq -se 'any(.[]; .kind=="failed" and .delivered==true)' "$state/events.log"
+  cp "$state/meta" "$CASE_DIR/saved-meta"
+  cp "$state/events.log" "$CASE_DIR/saved-events"
+  cp "$state/report.md" "$CASE_DIR/saved-report"
+  cp "$wt/out/partial.txt" "$CASE_DIR/saved-output"
+  dv status FS-1
+  dv status FS-1 --json > "$CASE_DIR/failed-status.json"
+  cat "$CASE_DIR/failed-status.json"
+  jq -e '.[0] | .status=="failed" and .agent_status=="failed" and .agent_dead and (.goal_stalled|not)' "$CASE_DIR/failed-status.json"
+  dv status FS-1 | awk -F '\t' '$2=="failed" && $8=="agent=failed" { found=1 } END { exit !found }'
+  if [ "$backend" = herdr ]; then
+    # A retained shell and a removed pane both expose the confirmed failure.
+    jq -e '.[0].alive==true' "$CASE_DIR/failed-status.json"
+    touch "$CASE_DIR/herdr/w-FS-1/missing-pane"
+    dv status FS-1 --json | jq -e '.[0] | .status=="failed" and .agent_status=="failed" and (.alive|not) and .agent_dead'
+    rm "$CASE_DIR/herdr/w-FS-1/missing-pane"
+    printf 'agent get\n' > "$CASE_DIR/herdr/fail"
+    dv status FS-1 --json | jq -e '.[0] | .status=="running" and .agent_status=="unknown" and (.agent_dead|not)'
+    rm "$CASE_DIR/herdr/fail"
+  else
+    jq -e '.[0] | (.alive|not) and (.tmux|not)' "$CASE_DIR/failed-status.json"
+  fi
+  cmp "$state/meta" "$CASE_DIR/saved-meta"
+  cmp "$state/events.log" "$CASE_DIR/saved-events"
+  cmp "$state/report.md" "$CASE_DIR/saved-report"
+  cmp "$wt/out/partial.txt" "$CASE_DIR/saved-output"
+  test ! -e "$state/done.json"
+  # Missing, malformed or successful exits are not confirmed failures.
+  for exit_code in missing '' invalid 0; do
+    if [ "$exit_code" = missing ]; then rm "$state/agent.exit"
+    else printf '%s\n' "$exit_code" > "$state/agent.exit"; fi
+    dv status FS-1 --json | jq -e '.[0] | .status=="running" and .agent_status=="unknown"'
+  done
+  printf '1\n' > "$state/agent.exit"
+  # A later exit must not replace an explicit lifecycle state.
+  for status in 'done' ready pr landed cancelled blocked start-failed waiting-capacity; do
+    jq --arg status "$status" '.status=$status' "$CASE_DIR/saved-meta" > "$state/meta"
+    dv status FS-1 --json | jq -e --arg status "$status" '.[0].status==$status'
+  done
+  cp "$CASE_DIR/saved-meta" "$state/meta"
+  if [ "$kind" = task ]; then export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/task-agent"
+  else export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"; fi
+  if [ "$recovery" = stall ]; then
+    stall_functions
+    STALL_ROW=$(dv status FS-1 --json | jq -c '.[0]')
+    stall_scan; stall_tick; stall_count 1
+    dv _stall-recover FS-1 "$(jq -r '.[].id' "$DV_HOME/stalls.json")" ''
+  else
+    dv send FS-1 'Finish the saved deliverable and report'
+  fi
+  if [ "$backend" = tmux ]; then wait_done FS-1; else wait_native FS-1; fi
+  test "$(cat "$state/revive/previous-agent.exit")" = 1
+  cmp "$state/revive/id" "$state/revive/done"
+  cmp "$wt/out/partial.txt" "$CASE_DIR/saved-output"
+  test -s "$state/report.md"
+  jq -e --arg wt "$wt" '.worktree==$wt and .status=="done"' "$state/meta"
+  dv status FS-1 --json | jq -e '.[0].status=="done"'
+}
+case_task_tmux_failed_status() { terminal_failed_status task tmux; }
+case_task_herdr_failed_status() { terminal_failed_status task herdr; }
+case_code_tmux_failed_status() { terminal_failed_status code tmux; }
+case_code_herdr_failed_status() { terminal_failed_status code herdr; }
+case_code_tmux_failed_stall() { terminal_failed_status code tmux stall; }
+case_code_herdr_failed_stall() { terminal_failed_status code herdr stall; }
 tmux_start_failure() {
   local kind=$1 failure=$2 issue=TS-1 socket=$DV_TMUX_SOCKET rc=0 next_rc=0
   needs_tmux; task_setup
@@ -2510,6 +2618,7 @@ case_runner_mapping() {
 registered_cases() {
   printf '%s\n' \
   qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter \
+  task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
   config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
   appserver_sender_close \
   metrics_restart_slow_start \
