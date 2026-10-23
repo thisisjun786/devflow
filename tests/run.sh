@@ -3,6 +3,13 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export ROOT
 
+seed_host_capacity() {
+  local cores=$1 cap=${2:-8}
+  mkdir -p "$DV_STATE/.host-capacity"
+  jq -cn --arg host "$DV_HOST" --argjson cores "$cores" --argjson cap "$cap" \
+    '{version:1,host:$host,cores:$cores,learned_cap:$cap,computed_at:0,sample_count:0,curve:[]}' > "$DV_STATE/.host-capacity/cap.json"
+}
+
 setup() {
   CASE_DIR=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-test.XXXXXX")
   export CASE_DIR
@@ -52,9 +59,7 @@ setup() {
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
   mkdir -p "$GH_STUB_DIR" "$DV_STATE" "$DV_WORK" "$DV_HOME"
   # Unrelated cases use a premeasured synthetic cap; learner cases replace it.
-  mkdir -p "$DV_STATE/.host-capacity"
-  jq -cn --arg host "$DV_HOST" --argjson cores "$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)" \
-    '{version:1,host:$host,cores:$cores,learned_cap:8,computed_at:0,sample_count:0,curve:[]}' > "$DV_STATE/.host-capacity/cap.json"
+  seed_host_capacity "$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)"
   printf '"auto"\n' > "$GH_STUB_DIR/reviews"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
