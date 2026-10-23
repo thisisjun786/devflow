@@ -71,10 +71,16 @@ capacity_wait() {
     sleep "$delay"
   done
 }
+# Codex and Claude classify any visible line. Other CLIs print tool output that
+# can name limits (DF-231: a test called appserver_rate_limit), so for them a
+# line counts only when it is itself an error message.
+capacity_error_lines() {
+  LC_ALL=C grep -E '^([[:space:]]|[^[:alnum:][:space:]])*(API[[:space:]]+)?(Error|ERROR|error)([[:space:]]*[:(]|[[:space:]]+[0-9]{3}([^0-9]|$))' | capacity_error
+}
 # For CLI runners, extract only structured errors when the output is JSONL.
 # Plain stderr is considered only after an unsuccessful process exit.
 capacity_output_error() {
-  local file=$1 rc=$2 errors
+  local file=$1 rc=$2 classify=${3:-capacity_error} errors
   errors=$(jq -Rr 'fromjson? | select(type=="object") |
     if .type=="error" or .type=="turn.failed" then .
     elif .item.type=="error" then .item
@@ -82,16 +88,56 @@ capacity_output_error() {
     else empty end | tojson' "$file")
   if printf '%s\n' "$errors" | capacity_error; then return 0; fi
   [ "$rc" != 0 ] || return 1
-  jq -Rr 'select((try fromjson catch null | type) != "object")' "$file" | capacity_error
+  jq -Rr 'select((try fromjson catch null | type) != "object")' "$file" | "$classify"
 }
 # Visible terminal state only: a later activity banner supersedes an old error.
 capacity_screen_error() {
-  local line limited=1
+  local line limited=1 classify=${1:-capacity_error}
   while IFS= read -r line; do
-    if printf '%s\n' "$line" | capacity_error; then limited=0
+    if printf '%s\n' "$line" | "$classify"; then limited=0
     elif printf '%s\n' "$line" | LC_ALL=C grep -Eq '(^|[[:space:]])(Pursuing goal|Working|Thinking)([[:space:].:]|$)'; then limited=1; fi
   done
   return "$limited"
+}
+# omp writes a provider failure to its session JSONL as an assistant message
+# with stopReason "error" (and errorStatus). The newest message entry of the
+# newest session written since this launch decides: a later prompt or reply
+# supersedes it. 0: capacity error, 1: no such error, 2: no session record.
+capacity_omp_error() {
+  local state=$1 physical dir file newest='' last
+  [ -f "$state/agent.launched" ] || return 2
+  physical=$(cd "$2" 2>/dev/null && pwd -P) || return 2
+  dir=$(agent_transcript_dir omp "$physical") || return 2
+  [ -d "$dir" ] || return 2
+  while IFS= read -r file; do
+    if [ -z "$newest" ] || [ "$file" -nt "$newest" ]; then newest=$file; fi
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.jsonl' -newer "$state/agent.launched" 2>/dev/null)
+  [ -n "$newest" ] || return 2
+  # A bounded tail is enough; a partially written last line is skipped.
+  last=$(tail -n 50 "$newest" | jq -Rnc 'reduce (inputs | fromjson? | select(type=="object" and .type=="message")) as $entry (null; $entry) |
+    .message // empty | select(.role=="assistant" and .stopReason=="error")') || return 1
+  [ -n "$last" ] || return 1
+  if printf '%s\n' "$last" | jq -e '.errorStatus==429' >/dev/null; then return 0; fi
+  printf '%s\n' "$last" | jq -r '.errorMessage // empty | tostring' | capacity_error
+}
+# Current capacity evidence for a running terminal agent: PROVIDER SCREEN STATE WORKTREE.
+capacity_agent_error() {
+  local rc=0
+  case "$1" in
+    codex|claude) printf '%s\n' "$2" | capacity_screen_error; return ;;
+    omp) capacity_omp_error "$3" "$4" || rc=$?; [ "$rc" = 2 ] || return "$rc" ;;
+  esac
+  printf '%s\n' "$2" | capacity_screen_error capacity_error_lines
+}
+# After an exit: PROVIDER OUTPUT EXIT SCREEN, with the same per-agent evidence.
+capacity_exit_error() {
+  local provider=$1 file=$2 rc=$3 screen=$4 record=0 classify=capacity_error_lines
+  case "$provider" in
+    codex|claude) classify=capacity_error ;;
+    omp) capacity_omp_error "$S" "$WT" || record=$?; [ "$record" = 2 ] || return "$record" ;;
+  esac
+  if capacity_output_error "$file" "$rc" "$classify"; then return 0; fi
+  [ ! -f "$S/done.json" ] && printf '%s\n' "$screen" | capacity_screen_error "$classify"
 }
 capacity_terminal_stop() {
   if [ -n "${capacity_child:-}" ]; then
@@ -120,6 +166,8 @@ capacity_terminal_run() {
   provider=$(jq -r .agent "$S/meta"); provider_mode=$(jq -r .mode "$S/meta")
   touch "$S/log"
   line=$(wc -l < "$S/log")
+  # Session records older than this launch cannot describe its provider state.
+  touch "$S/agent.launched"
   # Explicit stdin keeps the existing TTY for interactive CLIs in this
   # non-job-control shell while the wrapper supervises provider waits.
   "$@" <&0 & capacity_child=$!
@@ -132,7 +180,7 @@ capacity_terminal_run() {
   while kill -0 "$capacity_child" 2>/dev/null; do
     if jq -e '.status=="done" or .status=="ready" or .status=="landed" or .status=="cancelled"' "$S/meta" >/dev/null; then capacity_terminal_pause; continue; fi
     screen=$(capacity_terminal_screen) || screen=''
-    if printf '%s\n' "$screen" | capacity_screen_error; then
+    if capacity_agent_error "$provider" "$screen" "$S" "$WT"; then
       poll_rc=0; capacity_poll || poll_rc=$?
       case "$poll_rc" in
         0)
@@ -151,7 +199,7 @@ capacity_terminal_run() {
   output=$(mktemp "$S/.capacity-output.XXXXXX")
   tail -n "+$((line + 1))" "$S/log" > "$output"
   screen=$(capacity_terminal_screen) || screen=''
-  if capacity_output_error "$output" "$rc" || { [ ! -f "$S/done.json" ] && printf '%s\n' "$screen" | capacity_screen_error; }; then
+  if capacity_exit_error "$provider" "$output" "$rc" "$screen"; then
     rm "$output"
     [ "$mark_started" != 1 ] || [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
     capacity_wait || return 1

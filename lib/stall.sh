@@ -3,24 +3,28 @@
 # ISSUE is assigned by load_issue in common.sh; jq dollars are literal.
 # shellcheck disable=SC2016,SC2153
 stall_reconcile() {
-  local host=$1 rows=$2 interval=$3 time state tmp row issue event_host head token id
+  local host=$1 rows=$2 interval=$3 time state tmp row issue event_host head token id message
   time=$(now)
   state="$DV_HOME/stalls.json"
   tmp=$(mktemp "$DV_HOME/.stalls.XXXXXX") || return 1
   if [ -f "$state" ]; then
     cat "$state" > "$tmp" || { rm -f "$tmp"; return 1; }
   else printf '{}\n' > "$tmp"; fi
+  # A host's status rows can exceed one argument's limit (128 KiB on Linux):
+  # pass them as a file, or every reconcile round fails before recovery.
+  if ! printf '%s\n' "$rows" > "$tmp.rows"; then rm -f "$tmp" "$tmp.rows"; return 1; fi
   # Unknown/unreachable agents interrupt timing but retain an emitted episode.
   # A sequence change catches activity between two otherwise idle samples.
-  if ! jq --argjson rows "$rows" --arg host "$host" --arg source "$host" --argjson time "$time" \
+  if ! jq --slurpfile rows "$tmp.rows" --arg host "$host" --arg source "$host" --argjson time "$time" \
     --arg nonce "$time:$$:$RANDOM" --argjson gap "$((interval * 2 + 5))" '
-    reduce $rows[] as $row (.;
+    reduce $rows[0][] as $row (.;
       ($row.host // $host) as $host |
       ([$host,$row.issue]|tojson) as $key |
       ([$row.started,$row.award_token,$row.herdr_pane]|tojson) as $generation |
       if ($row.issue|type)!="string" or ($row.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")|not) then .
-      elif (($row.status=="running" or ($row.status=="failed" and $row.agent_dead==true and
-             ($row.backend=="tmux" or $row.backend=="herdr")))|not) or
+      elif (($row.status=="running" or
+             (($row.status=="failed" or $row.status=="waiting-capacity") and $row.agent_dead==true and
+              ($row.backend=="tmux" or $row.backend=="herdr")))|not) or
            $row.capacity_detected==true or $row.done_at!=null or $row.cleaned_at!=null or $row.goal_active==true or
            ($row.agent_status=="working" and $row.goal_stalled!=true) or
            ($row.agent_status=="blocked" or $row.agent_status=="done") then del(.[$key])
@@ -39,19 +43,22 @@ stall_reconcile() {
         .[$key].seq=($row.agent_state_seq // .[$key].seq) |
         .[$key].session=($row.agent_session // .[$key].session) |
         .[$key].observed=$time | .[$key].expires=($time+$gap) |
-        .[$key].row=($row|{issue,head,start_head,award_token,goal_stalled,agent_dead}) |
+        .[$key].row=($row|{issue,head,start_head,award_token,goal_stalled,agent_dead,agent_launched}) |
         .[$key].host=$host | .[$key].source=$source
       end)' "$tmp" > "$tmp.next"; then
-    rm -f "$tmp" "$tmp.next"; return 1
+    rm -f "$tmp" "$tmp.next" "$tmp.rows"; return 1
   fi
-  if ! mv "$tmp.next" "$state"; then rm -f "$tmp" "$tmp.next"; return 1; fi
-  rm "$tmp"
+  if ! mv "$tmp.next" "$state"; then rm -f "$tmp" "$tmp.next" "$tmp.rows"; return 1; fi
+  rm "$tmp" "$tmp.rows"
   # Existing terminal sessions launched before capacity supervision was added
   # use the same nonblocking wait through the already-running watcher.
   while IFS= read -r row; do
     stall_recover "$host" "$row" || true
   done < <(printf '%s\n' "$rows" | jq -c '.[] | select((.backend=="tmux" or .backend=="herdr") and
     (.capacity_detected==true or .capacity!=null)) | {row:.,id:"capacity"}')
+  # A recorded wrapper that is gone needs no idle threshold: report and relaunch
+  # it on the first scan (revive still allows one). Without that record the
+  # pane may still be starting, so the threshold applies as before.
   # Persist IDs before delivery. If interrupted after append, the queue itself
   # is the acknowledgement and the next scan cannot append the event twice.
   while IFS= read -r row; do
@@ -60,13 +67,17 @@ stall_reconcile() {
     head=$(printf '%s\n' "$row" | jq -r '.row.head // .row.start_head // ""')
     token=$(printf '%s\n' "$row" | jq -r '.row.award_token // ""')
     id=$(printf '%s\n' "$row" | jq -r .id)
-    metrics_stall_notify stalled "$issue" "Agent idle, absent, Goal stalled for at least $DV_STALL_AFTER seconds; inspect the current pane and log" \
-      "$event_host" "$head" "$id" "$token" || continue
+    message="Agent idle, absent, Goal stalled for at least $DV_STALL_AFTER seconds; inspect the current pane and log"
+    if printf '%s\n' "$row" | jq -e '.row.agent_dead==true' >/dev/null; then
+      message='Agent exited without dv done; dv relaunches it once in the same worktree (see revive/)'
+    fi
+    metrics_stall_notify stalled "$issue" "$message" "$event_host" "$head" "$id" "$token" || continue
     tmp=$(mktemp "$DV_HOME/.stalls.XXXXXX") || return 1
     if ! jq --arg id "$id" 'with_entries(if .value.id==$id then .value.emitted=true else . end)' "$state" > "$tmp" ||
       ! mv "$tmp" "$state"; then rm -f "$tmp"; return 1; fi
   done < <(jq -c --argjson time "$time" --argjson after "$DV_STALL_AFTER" \
-    '.[] | select(.emitted==false and .since!=null and .observed==$time and $time - .since >= $after)' "$state")
+    '.[] | select(.emitted==false and .since!=null and .observed==$time and
+      ($time - .since >= $after or (.row.agent_dead==true and .row.agent_launched==true)))' "$state")
   # Revisit the same episode on the existing scan. The issue host serializes
   # recovery and persists its five-minute retry budget across watcher restarts.
   while IFS= read -r row; do
@@ -90,11 +101,13 @@ stall_recover() {
 cmd__stall_recover() (
   [ "$#" -eq 3 ] || fail 'usage: dv _stall-recover ISSUE EPISODE TOKEN'
   load_issue "$1"; issue_lock; require_worktree
-  local episode=$2 token=$3 row attempts=0 last=0 time tmp supervisor capacity_rc
+  local episode=$2 token=$3 row attempts=0 last=0 time tmp supervisor capacity_rc next
   row=$(cmd_status "$ISSUE" --json | jq -c '.[0]') || return 1
+  # A dead wrapper no longer owns its wait (capacity_detected is false): the
+  # episode is cleared and the exited agent is revived below.
   if printf '%s\n' "$row" | jq -e --arg token "$token" '
     (.status=="running" or .status=="waiting-capacity") and .done_at==null and .cleaned_at==null and
-    (.award_token // "")==$token and .question_pending!=true and .alive==true and
+    (.award_token // "")==$token and .question_pending!=true and (.alive==true or (.agent_dead==true and .agent_launched==true)) and
     (.capacity_detected==true or .capacity!=null)' >/dev/null; then
     supervisor=$(cat "$S/capacity-supervisor.pid" 2>/dev/null) || supervisor=''
     if [[ "$supervisor" =~ ^[1-9][0-9]*$ ]] && kill -0 "$supervisor" 2>/dev/null; then return 0; fi
@@ -126,7 +139,10 @@ cmd__stall_recover() (
     (.agent_status!="blocked" and .agent_status!="done")' >/dev/null || return 0
   if printf '%s\n' "$row" | jq -e '.agent_dead==true' >/dev/null; then
     agent_gone || return 0
-    revive_agent "Continue the existing goal after the agent exited. Preserve unfinished work and complete the brief."
+    if [ "$KIND" = task ]; then next='complete the brief'
+    elif is_github; then next="complete the brief, commit, open or update the PR with dv pr $ISSUE"
+    else next='complete the brief and commit'; fi
+    revive_agent "The previous agent exited without dv done. Continue the existing goal and preserve unfinished work: $next, then finish with dv done $ISSUE."
     return
   fi
   printf '%s\n' "$row" | jq -e '.agent=="codex" and .mode=="goal" and .goal_stalled==true and .alive==true' >/dev/null || return 0

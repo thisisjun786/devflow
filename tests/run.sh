@@ -248,7 +248,7 @@ AGENT
   for exit_code in missing '' invalid 0; do
     if [ "$exit_code" = missing ]; then rm "$state/agent.exit"
     else printf '%s\n' "$exit_code" > "$state/agent.exit"; fi
-    dv status FS-1 --json | jq -e '.[0] | .status=="running" and .agent_status=="unknown"'
+    dv status FS-1 --json | jq -e '.[0] | .status=="running" and .agent_status=="exited"'
   done
   printf '1\n' > "$state/agent.exit"
   # A later exit must not replace an explicit lifecycle state.
@@ -1450,7 +1450,8 @@ case_herdr_undetected() {
   wait_file "$CASE_DIR/herdr/w-HU-1/exit"
   test "$(cat "$CASE_DIR/herdr/w-HU-1/exit")" = 0
   dv status HU-1 --json > "$CASE_DIR/undetected-status.json"
-  if ! jq -e '.[0] | .alive and .agent_status=="unknown" and .last_log=="plain text: ❯"' "$CASE_DIR/undetected-status.json"; then
+  # The command exited without dv done: the shell-only pane reports it as exited.
+  if ! jq -e '.[0] | .alive and .agent_dead and .agent_status=="exited" and .last_log=="plain text: ❯"' "$CASE_DIR/undetected-status.json"; then
     cat "$CASE_DIR/undetected-status.json" "$CASE_DIR/herdr/w-HU-1/output"
     return 1
   fi
@@ -2712,10 +2713,10 @@ registered_cases() {
   appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \
   send_branch_appserver send_branch_appserver_reconnect send_branch_exec send_branch_tmux send_branch_herdr send_branch_revive send_branch_guards send_branch_missing send_branch_replaced_repo send_branch_replaced_path \
   heavy_serial heavy_kill heavy_slots heavy_status heavy_command heavy_priority heavy_config heavy_waiter_probe \
-  capacity_classifier capacity_backoff capacity_exec_once capacity_exec_timeout capacity_appserver_once capacity_appserver_timeout capacity_appserver_rpc capacity_appserver_unknown capacity_qa_once capacity_qa_native capacity_qa_timeout capacity_claude capacity_devin capacity_omp capacity_agy capacity_grok capacity_cursor capacity_terminal_exit capacity_terminal_timeout capacity_legacy_terminal \
+  capacity_classifier capacity_backoff capacity_exec_once capacity_exec_timeout capacity_appserver_once capacity_appserver_timeout capacity_appserver_rpc capacity_appserver_unknown capacity_qa_once capacity_qa_native capacity_qa_timeout capacity_claude capacity_devin capacity_omp capacity_omp_screen_text capacity_omp_session capacity_agent_lines capacity_agy capacity_grok capacity_cursor capacity_terminal_exit capacity_terminal_timeout capacity_legacy_terminal \
   land_merged land_merged_recorded_pr land_merged_recorded_done land_merged_mismatch land_merged_base_mismatch land_merged_cleanup_retry land_merged_dirty land_merged_checks land_worker_rule appserver_land_merged_active appserver_land_merged_timeout appserver_land_merged_failed appserver_land_merged_system_error \
   screen_locale_c screen_locale_utf8 \
-  appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race \
+  appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_dead_launched stall_dead_relaunch stall_dead_capacity_relaunch stall_large_rows stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race \
   task_empty_files_done task_empty_files_land task_mixed_files task_tmux_fast_completion code_tmux_fast_completion code_tmux_fast_revival task_tmux_stale_completion code_tmux_stale_completion task_tmux_socket_failed code_tmux_socket_failed task_tmux_session_missing code_tmux_session_missing task_tmux_new_session_failed code_tmux_new_session_failed task_snapshot task_snapshot_done_race task_snapshot_land_race task_appserver task_appserver_guards task_appserver_fallback task_codex_goal task_shellcheck task_tmux_live task_herdr_live task_tmux_failed task_herdr_failed task_tmux_changed task_herdr_changed task_recursive_destination task_start_done task_land task_guards task_revive task_claude task_invalid task_native task_exec_launch_race task_exec_stall task_capacity task_missing_output task_watcher task_land_workspace \
   update_stall_cadence update_cli update_dirty update_landed update_safety update_guard update_offline update_watch_dirty update_host update_managed update_parallel update_timeout update_unrelated update_receipt \
   disk_bid disk_probe disk_trim disk_pressure disk_recovered disk_cache_guard disk_cache_alias_guard disk_cache_canonical disk_cache_newline disk_env_cache_newline disk_home_newline disk_custom_cache disk_go_env_cache disk_separate_filesystems disk_unknown disk_award disk_bsd_stat disk_worktrees disk_host disk_watch disk_start_interval disk_watch_due teardown_wait_client teardown_preserve_live_client \
