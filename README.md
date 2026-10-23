@@ -81,7 +81,7 @@ ionice가 없으면 nice만 적용합니다. `dv status`와 `dv bid`는 `heavy=�
 
 ## 개발 호스트 도구 맞추기
 
-새 Linux 호스트에서는 다음 순서로 준비합니다. `sync`는 x86_64/aarch64 Linux를 지원하고, 셸 코드는 macOS 기본 bash 3.2에서도 읽을 수 있습니다.
+새 Linux 호스트에서는 다음 순서로 준비합니다. `sync`는 x86_64/aarch64 Linux와 macOS([macOS 개발 호스트](#macos-개발-호스트))를 지원하고, 셸 코드는 macOS 기본 bash 3.2에서도 실행됩니다.
 
 ```bash
 ./install.sh --host
@@ -92,7 +92,7 @@ ionice가 없으면 nice만 적용합니다. `dv status`와 `dv bid`는 `heavy=�
 # 준비가 끝나면 관리자 config.sh의 DV_HOSTS, 감시 호스트의 DV_PULL_HOSTS에 추가
 ```
 
-[`hosts/tools.tsv`](hosts/tools.tsv)의 열은 이름, 버전, 설치 방식, 적용 호스트(`all` 또는 `DV_HOST` 값)입니다. `system`은 배포판 버전을 허용하고 `bundled`는 고정된 Node 배포본의 npm을 뜻합니다. `agy`는 lina-os에서만 조회합니다. Go는 `~/.local/go/go`(GOROOT), GOPATH는 `~/.local/go`, Node와 npm global은 `~/node`, 나머지 설치 대상은 `~/.local/bin`입니다. Codex와 Devin은 조회만 합니다. apt 도구도 설치하지 않고 없으면 운영자가 실행할 `sudo apt-get install ...`을 출력합니다.
+[`hosts/tools.tsv`](hosts/tools.tsv)의 열은 이름, 버전, 설치 방식, 적용 호스트(`all` 또는 `DV_HOST` 값)입니다. `system`은 배포판 버전을 허용하고 `bundled`는 고정된 Node 배포본의 npm을 뜻합니다. `agy`는 lina-os에서만 조회합니다. Go는 `~/.local/go/go`(GOROOT), GOPATH는 `~/.local/go`, Node와 npm global은 `~/node`, 나머지 설치 대상은 `~/.local/bin`입니다. Codex와 Devin은 조회만 합니다. apt 도구도 설치하지 않고 없으면 운영자가 실행할 `sudo apt-get install ...`을, macOS에서는 `brew install ...`을 출력합니다.
 
 `check`는 각 도구의 `ok` / `missing` / `wrong-version`, 실제 버전과 실행 경로, gh·codex·claude·devin 로그인 상태를 보여 줍니다. `--json`은 `tools[].login/ssh`, `auth`, `codex` 객체로 같은 결과를 냅니다. `watcher`에는 살아 있는 로컬 감시자가 시작할 때 읽은 `commit`, 그 체크아웃의 `origin_main`, `current` / `outdated` / `unknown` / `not-running` 상태가 나옵니다. Git 비교는 마지막 fetch 기준입니다. 조회는 사용자 설정을 바꾸지 않으며 drift가 있어도 종료 코드 0입니다. 모든 `dv` 호출에 적용되는 아래 자동 갱신은 실행될 수 있습니다. 조회 자체 실패나 요청한 probe 실패는 1입니다. 오래된 체크아웃을 가리킬 수 있는 gitleaks 심볼릭 링크는 버전이 같아도 `wrong-version`과 `reason=symlink`로 표시합니다.
 
@@ -109,6 +109,35 @@ Claude 온보딩은 `check`의 텍스트 출력과 JSON의 `claude.onboarding`�
 `codex` 항목은 PATH상의 도구 검사와 별도로 **실제 `DV_CODEX_BIN`**의 두 모드 실행 경로를 보여 줍니다. `~/.opencodex` 디렉터리, OpenCodex 토큰 환경 변수 또는 Codex 설정의 OpenCodex 표기가 있으면 프록시 호스트로 판단하고 `~/.opencodex/bin/codex`로 연결되지 않는 실행기를 `wrong-launcher`로 표시합니다. 설정은 바꾸지 않으므로 운영자가 `DV_CODEX_BIN="$HOME/.opencodex/bin/codex"`를 지정해야 합니다. 로그인 성공만으로 공급자 준비를 보장하지 않습니다.
 
 `--probe-codex`는 SSH 모드에서 선택된 실행기로 기존 공급자에 `OK` 응답을 요청합니다. 기본 조회에는 이 요청이 없습니다. 임시 작업 폴더·읽기 전용 sandbox·승인 거절·ephemeral 실행을 사용하고 hooks와 shell tool을 끕니다. 프록시 자동 시작도 요청하지 않습니다. 최대 60초 후 실패로 보고하며 공급자 출력·토큰은 결과에 담지 않습니다. **실제 모델 요청이므로 사용량이 발생하며 비용 0을 보장하지 않습니다.** `sync`는 로그인, 토큰, SSH 키, 네트워크 설정을 다루지 않습니다.
+
+## macOS 개발 호스트
+
+Mac(Apple Silicon·Intel)도 Linux 호스트와 같은 dv로 작업을 받습니다. 책상 Mac은 tailnet 이름 `juns-desk-mac`을 씁니다. MagicDNS로 모든 호스트가 같은 이름에 접속하므로 별도 SSH 별칭이나 IP 설정이 필요 없습니다. Mac에서 한 번 준비합니다.
+
+```bash
+# Homebrew(https://brew.sh)를 먼저 설치합니다. git·zsh·sqlite3는 macOS에 있습니다.
+brew install jq tmux shellcheck flock
+git clone https://github.com/thisisjun786/devflow.git ~/code/devflow
+cd ~/code/devflow && ./install.sh --host
+# ~/.config/devflow/config.sh: hostname -s는 tailnet 이름과 다를 수 있으니 직접 지정
+#   : "${DV_HOST:=juns-desk-mac}"
+#   : "${DV_KICK_HOST:=juns-desk-mac}" # 로컬 큐, 감시 호스트가 dv-kick-pull로 가져감
+~/.local/bin/dv host sync
+# 새 셸에서
+~/.local/bin/dv host check
+```
+
+`sync`는 Linux와 같은 고정 버전을 각 배포자의 macOS 자산(`go…darwin-arm64.tar.gz`, `node-v…-darwin-arm64.tar.gz`, `uv-aarch64-apple-darwin.tar.gz`, `gh_…_macOS_arm64.zip`, `gitleaks_…_darwin_arm64.tar.gz`, `herdr-macos-aarch64`)에서 받고 같은 SHA-256 검증을 거칩니다. Homebrew 버전으로 바뀌지 않으므로 `check`의 기대 버전도 Linux와 같습니다. tmux·shellcheck·flock 같은 시스템 도구는 설치하지 않고, 없으면 `Operator action (not executed): brew install ...`을 출력합니다. macOS의 PATH 블록은 devflow 디렉터리 뒤에 Homebrew의 `bin`·`sbin`(Apple Silicon 기본 `/opt/homebrew`)을 넣어, `.zshenv`만 읽는 비대화형 SSH 셸에서도 tmux·flock을 찾습니다. 로그인 zsh는 `/etc/zprofile`의 `path_helper`가 시스템 경로를 앞에 둡니다.
+
+dv는 macOS 기본 bash 3.2에서 실행되며 Homebrew bash가 PATH 앞에 있으면 그것을 씁니다. macOS에 없는 도구는 `lib/portable.sh`가 맡습니다. `dv heavy`와 슬롯 조회는 `flock`이 없으면 perl의 flock(2)로 같은 잠금 파일을 잡습니다. 두 방식은 서로를 배제하므로 PATH가 다른 셸이 섞여도 슬롯 수가 지켜집니다. 입찰의 load5·남은 메모리는 `/proc` 대신 `sysctl -n vm.loadavg`와 `vm_stat`(free·inactive·speculative 페이지)로 읽습니다. App Server 클라이언트와 PR 대기자는 `setsid`가 없으면 job control로 분리합니다. `timeout` 명령은 사용하지 않습니다. 작업 중 잠들지 않도록 `sudo pmset -a sleep 0` 같은 전원 설정을 운영자가 정합니다.
+
+macOS의 `gh`와 Claude Code는 로그인 정보를 login 키체인에 둡니다. 데스크에서 로그인되어 있어도 SSH 세션은 잠긴 키체인을 읽지 못하므로, 입찰(`dv bid`)과 SSH로 시작한 tmux·herdr의 에이전트가 로그아웃 상태로 보일 수 있습니다. 로컬 `check`의 `ssh` 열은 PATH만 재현하므로 실제 세션은 감시 호스트에서 `ssh juns-desk-mac dv host check`로 확인합니다. dv는 토큰을 읽거나 출력하지 않으며, 운영자가 Mac에서 한 번 키체인 밖의 저장소를 준비합니다.
+
+- gh: `gh auth login --insecure-storage`. 토큰은 사용자만 읽을 수 있는 `~/.config/gh/hosts.yml`에 저장되어 SSH 세션에서도 읽힙니다.
+- Claude Code: `claude setup-token`이 출력한 토큰을 운영자가 권한 600 파일에 두고 `~/.zshenv`에서 `CLAUDE_CODE_OAUTH_TOKEN`으로 읽게 합니다. 준비 전에는 Claude 입찰이 로그아웃으로 거절됩니다. Codex도 같은 `ssh juns-desk-mac dv host check`의 `auth codex`로 확인합니다.
+- 확인만 할 때는 그 SSH 세션에서 `security unlock-keychain ~/Library/Keychains/login.keychain-db`로 잠금을 풀 수 있지만(비밀번호 입력) 이후 세션에 이어진다고 가정하지 않습니다.
+
+`check`에 누락이 없고 SSH 로그인 상태가 확인되면 감시 호스트(lina-os)에서 `ssh juns-desk-mac true`로 호스트 키를 한 번 받아 두고, 관리자 config.sh의 `DV_HOSTS`와 감시 호스트의 `DV_PULL_HOSTS`에 `juns-desk-mac`을 추가합니다. 배정 순서에서는 작업 호스트 그룹에 속하고, 같은 점수일 때 이름이 정해진 Linux 호스트 다음입니다.
 
 ## 하루 흐름
 
