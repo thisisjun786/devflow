@@ -418,6 +418,53 @@ checks_finished() {
     elif .__typename=="StatusContext" then (.state=="SUCCESS" or .state=="FAILURE" or .state=="ERROR")
     else false end)' "$1" >/dev/null
 }
+pr_conflicting() {
+  # True only when GitHub has computed the merge and reports a conflict for
+  # this head. UNKNOWN (still computing) keeps the ordinary checks wait.
+  local pr=$1 head=$2 tmp
+  tmp=$(mktemp "$S/.pr-snapshot.XXXXXX")
+  if ! gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state,mergeable > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"; return 1
+  fi
+  if jq -e --arg head "$head" '.state=="OPEN" and .headRefOid==$head and .mergeable=="CONFLICTING"' "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$S/pr-snapshot.json"; return 0
+  fi
+  rm -f "$tmp"; return 1
+}
+pr_wait_conflict_ready() {
+  # A conflict is not a CI or review round and needs no manager: the worker
+  # merges the base and pushes, which starts CI on the new head.
+  local head=$1 loop=$2 tmp
+  tmp=$(mktemp "$S/.pr-loop.XXXXXX"); printf '%s\n' "$loop" | jq '.review_handled=false' > "$tmp"; mv "$tmp" "$S/pr-loop.json"
+  tmp=$(mktemp "$S/.pr-ready.XXXXXX")
+  jq -n --arg head "$head" --argjson loop "$loop" --slurpfile snapshot "$S/pr-snapshot.json" \
+    '{head:$head,checks_exit:null,green:false,merge_conflict:true,bot_review:false,review:null,review_handled:false,review_timed_out:false,
+      review_rounds:($loop.reviewed_heads|length),ci_rounds:($loop.failed_heads|length),blocked:false,reason:"merge-conflict",snapshot:$snapshot[0]}' > "$tmp"
+  mv "$tmp" "$S/pr-ready.json"
+}
+pr_wait_recover() {
+  # Recovery uses the existing one-shot revival, only with positive exit
+  # evidence. The caller released ownership BEFORE this observes the worker: a
+  # later exit can then start a successor. If its wrapper already observed our
+  # lock, agent.exit was published first; wait for that wrapper to finish its
+  # handoff instead.
+  local head=$1 recovery_episode=$2 message=$3 pid
+  case "$BACKEND" in exec|appserver) return 0 ;; esac
+  pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+    [ -f "$S/agent.exit" ] || return 0
+    while kill -0 "$pid" 2>/dev/null; do
+      [ "$(jq -r .status "$S/meta")" != parked ] || return 0
+      sleep "$DV_POLL_INTERVAL"
+    done
+  fi
+  [ "$(jq -r '.head // empty' "$S/meta")" = "$head" ] || return 0
+  [ "$(jq -r .status "$S/meta")" != parked ] || return 0
+  if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
+  if agent_gone; then
+    DV_PR_RECOVERY_HEAD="$head" DV_PR_RECOVERY_EPISODE="$recovery_episode" "$DV_ROOT/bin/dv" send "$ISSUE" "$message"
+  fi
+}
 cmd_pr_wait() {
   [ "$#" -ge 1 ] || fail 'usage: dv pr-wait ISSUE [--foreground [--review-handled]]'
   load_issue "$1"; shift; require_worktree; cd "$WT" || exit
@@ -427,7 +474,8 @@ cmd_pr_wait() {
   done
   [ "$handled:$foreground" != true:false ] || fail '--review-handled requires --foreground'
   [[ "$DV_REVIEW_ROUNDS" =~ ^[1-9][0-9]*$ ]] || fail 'DV_REVIEW_ROUNDS must be a positive integer'
-  local pr head rc=0 tmp current green=false loop review deadline max_deadline retry reason='' reviewed=false rounds=0
+  local pr head rc=0 tmp current green=false loop review deadline max_deadline retry reason='' reviewed=false rounds=0 conflict=false
+  local recovery_episode
   # Park is an explicit pause, including for a waiter already in flight. Do
   # not reset its review counters or let it submit automatic recovery input.
   [ "$(jq -r .status "$S/meta")" != parked ] || return 0
@@ -453,10 +501,13 @@ cmd_pr_wait() {
     head=$(jq -r '.head // empty' "$S/meta"); [ -n "$head" ] || head=$(git rev-parse HEAD)
     loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.initial_head //= (.review_head // $head)')
     rc=0
+    # GitHub runs no CI on a PR that conflicts with its base, so a checks
+    # watch would wait forever. Hand the conflict back to the worker instead.
+    if pr_conflicting "$pr" "$head"; then conflict=true; break; fi
     gh pr checks "$pr" --watch --interval "${DV_CHECKS_INTERVAL:-60}" > "$S/checks.log" 2>&1 || rc=$?
     [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
     tmp=$(mktemp "$S/.pr-snapshot.XXXXXX")
-    gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state > "$tmp"
+    gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state,mergeable > "$tmp"
     mv "$tmp" "$S/pr-snapshot.json"
     [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
     if [ "$(jq -r .state "$S/pr-snapshot.json")" != OPEN ]; then
@@ -470,6 +521,9 @@ cmd_pr_wait() {
     current=$(jq -r '.head // empty' "$S/meta")
     if [ -n "$current" ] && [ "$current" != "$head" ]; then continue; fi
     if [ "$(jq -r .headRefOid "$S/pr-snapshot.json")" != "$head" ] || ! checks_finished "$S/pr-snapshot.json"; then
+      if jq -e --arg head "$head" '.headRefOid==$head and .mergeable=="CONFLICTING"' "$S/pr-snapshot.json" >/dev/null; then
+        conflict=true; break
+      fi
       sleep "$DV_POLL_INTERVAL"; continue
     fi
     review_snapshot "$pr" "$S/pr-snapshot.json" || { rm "$review"; return 1; }
@@ -516,6 +570,15 @@ cmd_pr_wait() {
     sleep "$DV_POLL_INTERVAL"
   done
   [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
+  if [ "$conflict" = true ]; then
+    pr_wait_conflict_ready "$head" "$loop"
+    rm "$review"
+    [ "$foreground" != true ] || { cat "$S/pr-ready.json"; return 1; }
+    recovery_episode=$(cat "$S/revive/id" 2>/dev/null) || recovery_episode=''
+    pr_wait_unlock; trap - EXIT
+    pr_wait_recover "$head" "$recovery_episode" "Your PR conflicts with origin/$BASE, so GitHub runs no CI on it. In the same worktree: git fetch origin && git merge origin/$BASE, resolve every conflict keeping both sides' intent (the base is newer; adapt this branch to it), run the related tests, commit, dv pr $ISSUE, then dv pr-wait $ISSUE --foreground. If the base already contains this change, finish with dv done $ISSUE --already-merged <PR> instead. Never force push. Preserve pr-loop.json round counts. Only run dv done $ISSUE after green CI and a clean current-head review."
+    return 0
+  fi
   rounds=$(printf '%s\n' "$loop" | jq '.reviewed_heads|length')
   if [ "$green" = false ] && [ "$(printf '%s\n' "$loop" | jq '.failed_heads|length')" -ge 3 ]; then reason=ci-rounds; fi
   if [ "$green" = true ] && [ "$rounds" -ge "$DV_REVIEW_ROUNDS" ] && jq -e '.high|length>0' "$review" >/dev/null; then reason='review-rounds'; fi
@@ -547,30 +610,9 @@ cmd_pr_wait() {
     return
   fi
   rm "$review"
-  local recovery_episode
   recovery_episode=$(cat "$S/revive/id" 2>/dev/null) || recovery_episode=''
-  # Recovery uses the existing one-shot revival, only with positive exit
-  # evidence. Release ownership BEFORE observing the worker: a later exit can
-  # then start a successor. If its wrapper already observed our lock, agent.exit
-  # was published first; wait for that wrapper to finish its handoff instead.
   pr_wait_unlock; trap - EXIT
-  case "$BACKEND" in exec|appserver) return 0 ;; esac
-  local pid
-  pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
-  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
-    [ -f "$S/agent.exit" ] || return 0
-    while kill -0 "$pid" 2>/dev/null; do
-      [ "$(jq -r .status "$S/meta")" != parked ] || return 0
-      sleep "$DV_POLL_INTERVAL"
-    done
-  fi
-  [ "$(jq -r '.head // empty' "$S/meta")" = "$head" ] || return 0
-  [ "$(jq -r .status "$S/meta")" != parked ] || return 0
-  if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
-  if agent_gone; then
-    DV_PR_RECOVERY_HEAD="$head" DV_PR_RECOVERY_EPISODE="$recovery_episode" \
-      "$DV_ROOT/bin/dv" send "$ISSUE" "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI and the current-head Codex findings. Fix P0/P1, test, commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground. Each new head needs a fresh Codex review; devflow requests it after green CI. Preserve pr-loop.json round counts. Only run dv done $ISSUE after green CI and a clean current-head review."
-  fi
+  pr_wait_recover "$head" "$recovery_episode" "Continue owning this PR in the same worktree. Read $S/pr-ready.json and $S/pr-snapshot.json for CI and the current-head Codex findings. Fix P0/P1, test, commit, dv pr $ISSUE, and dv pr-wait $ISSUE --foreground. Each new head needs a fresh Codex review; devflow requests it after green CI. Preserve pr-loop.json round counts. Only run dv done $ISSUE after green CI and a clean current-head review."
 }
 pr_done_check() {
   local head=$1 pr tmp

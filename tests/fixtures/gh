@@ -208,10 +208,11 @@ case "$*" in
       value=$(jq -r --arg n "$number" '.[$n] // empty' "$GH_STUB_DIR/pr-bases"); [ -z "$value" ] || base=$value
     fi
     [ ! -f "$GH_STUB_DIR/merge-commits" ] || merge_commit=$(jq -r --arg n "$number" '.[$n] // empty' "$GH_STUB_DIR/merge-commits")
-    jq -n --arg body "$body" --arg head "$head" --arg state "$state" --arg merged_at "$merged_at" --arg base "$base" --arg merge_commit "$merge_commit" \
+    mergeable=MERGEABLE; [ ! -f "$GH_STUB_DIR/mergeable" ] || mergeable=$(cat "$GH_STUB_DIR/mergeable")
+    jq -n --arg body "$body" --arg head "$head" --arg state "$state" --arg merged_at "$merged_at" --arg base "$base" --arg merge_commit "$merge_commit" --arg mergeable "$mergeable" \
       --slurpfile checks "$GH_STUB_DIR/checks" --slurpfile reviews "$GH_STUB_DIR/reviews" \
       '{body:$body,number:1,url:"https://github.com/test/repo/pull/1",state:$state,headRefOid:$head,mergedAt:(if $merged_at=="" then null else $merged_at end),baseRefName:$base,
-        mergeCommit:(if $merge_commit=="" then null else {oid:$merge_commit} end),statusCheckRollup:$checks[0],reviews:$reviews[0]}' ;;
+        mergeCommit:(if $merge_commit=="" then null else {oid:$merge_commit} end),mergeable:$mergeable,statusCheckRollup:$checks[0],reviews:$reviews[0]}' ;;
   'pr merge '*) touch "$GH_STUB_DIR/merged" ;;
   *) echo "Unexpected gh call: $*" >&2; exit 1 ;;
 esac

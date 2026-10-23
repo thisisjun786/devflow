@@ -184,6 +184,23 @@ case_pr_wait_failed_checks() {
   jq -e '(.green|not) and (.review_timed_out|not) and .ci_rounds==1' "$DV_STATE/P-1/pr-ready.json"
   jq -e '.status=="pr"' "$DV_STATE/P-1/meta"
 }
+case_pr_wait_conflict() {
+  # GitHub runs no CI on a PR that conflicts with its base. The waiter must
+  # hand the conflict back instead of waiting forever for checks.
+  pr_fixture
+  printf '[]\n' > "$GH_STUB_DIR/checks"
+  printf 'CONFLICTING\n' > "$GH_STUB_DIR/mergeable"
+  if timeout 30 dv pr-wait P-1 --foreground > "$CASE_DIR/result"; then return 1; fi
+  jq -e '.merge_conflict and (.green|not) and (.blocked|not) and .ci_rounds==0' "$CASE_DIR/result"
+  jq -e '.failed_heads==[]' "$DV_STATE/P-1/pr-loop.json"
+  test ! -s "$DV_HOME/kick.q"
+  # Resolved: the next wait sees the merged head's checks as usual.
+  printf 'MERGEABLE\n' > "$GH_STUB_DIR/mergeable"
+  printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
+  printf '"auto"\n' > "$GH_STUB_DIR/reviews"
+  timeout 30 dv pr-wait P-1 --foreground > "$CASE_DIR/result"
+  jq -e '.green and (.merge_conflict|not)' "$CASE_DIR/result"
+}
 case_watch_retry() {
   watch_fixture
   export DV_WORKER_FAIL_ONCE=1
