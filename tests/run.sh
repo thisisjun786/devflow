@@ -45,6 +45,8 @@ setup() {
   export DV_TRUSTED_REPOS='' DV_CODEX_ENV_FILE="$HOME/.opencodex/codex-auth-env.sh"
   unset DV_AGENT_QUESTIONS DV_AWARD_TOKEN CLAUDE_CONFIG_DIR
   export DV_CODEX_SESSIONS="$CASE_DIR/codex sessions" DV_CLAUDE_SESSIONS="$CASE_DIR/claude projects"
+  export DV_OMP_SESSIONS="$CASE_DIR/omp sessions" DV_AGY_SESSIONS="$CASE_DIR/agy conversations"
+  export DV_GROK_SESSIONS="$CASE_DIR/grok sessions" DV_CURSOR_SESSIONS="$CASE_DIR/cursor projects"
   export DV_POLISH=0 DV_POLISH_TIMEOUT=3 DV_POLISH_CMD="$ROOT/tests/fixtures/polish"
   export GH_STUB_DIR="$CASE_DIR/gh" PATH="$ROOT/tests/fixtures:$ROOT/bin:$PATH"
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
@@ -160,6 +162,114 @@ wait_done() {
   return 1
 }
 needs_tmux() { command -v tmux >/dev/null || exit 77; }
+terminal_failed_status() {
+  local kind=$1 backend=$2 recovery=${3:-send} mode=exec wt state status exit_code
+  [ "$backend" != tmux ] || needs_tmux
+  [ "$backend" != herdr ] || herdr_setup
+  # The regression is exercised with isolated HOME/XDG/state and a caller's
+  # non-/tmp scratch root, including the provider's own temporary files.
+  export TMPDIR="$CASE_DIR/tmp" XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
+  export XDG_CACHE_HOME="$HOME/.cache" XDG_RUNTIME_DIR="$CASE_DIR/runtime"
+  mkdir -p "$TMPDIR" "$XDG_RUNTIME_DIR"
+  if [ "$kind" = task ]; then task_setup; else repo failed-status; fi
+  [ "$recovery" != stall ] || mode=goal
+  cat > "$CASE_DIR/failing-agent" <<'AGENT'
+#!/usr/bin/env bash
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+mkdir -p out
+printf 'unfinished deliverable\n' > out/partial.txt
+: > "$state/report.md"
+touch "$state/status-ready"
+while [ ! -f "$state/status-release" ]; do sleep 0.05; done
+if [ "$(jq -r '.kind // "code"' "$state/meta")" = task ]; then
+  dv done "$DV_ISSUE"
+else
+  exit 1
+fi
+AGENT
+  chmod +x "$CASE_DIR/failing-agent"
+  export DV_AGENT_CMD_codex="$CASE_DIR/failing-agent"
+  if [ "$kind" = task ]; then
+    dv submit --kind task "$CASE_DIR/Desk project" FS-1 failure --brief "$CASE_DIR/task-brief"
+  else
+    dv start "$REPO" FS-1 failure --brief "$CASE_DIR/brief" --mode "$mode"
+  fi
+  state="$DV_STATE/FS-1"
+  wt=$(jq -r .worktree "$state/meta")
+  wait_file "$state/status-ready"
+  # An exit record alone must not override a terminal that is still running.
+  printf '1\n' > "$state/agent.exit"
+  dv status FS-1 --json | jq -e '.[0] | .status=="running" and .agent_status=="unknown" and .alive and (.agent_dead|not)'
+  rm "$state/agent.exit"
+  touch "$state/status-release"
+  if [ "$backend" = tmux ]; then wait_done FS-1
+  else wait_file "$CASE_DIR/herdr/w-FS-1/exit"; fi
+  test "$(cat "$state/agent.exit")" = 1
+  jq -se 'any(.[]; .kind=="failed" and .delivered==true)' "$state/events.log"
+  cp "$state/meta" "$CASE_DIR/saved-meta"
+  cp "$state/events.log" "$CASE_DIR/saved-events"
+  cp "$state/report.md" "$CASE_DIR/saved-report"
+  cp "$wt/out/partial.txt" "$CASE_DIR/saved-output"
+  dv status FS-1
+  dv status FS-1 --json > "$CASE_DIR/failed-status.json"
+  cat "$CASE_DIR/failed-status.json"
+  jq -e '.[0] | .status=="failed" and .agent_status=="failed" and .agent_dead and (.goal_stalled|not)' "$CASE_DIR/failed-status.json"
+  dv status FS-1 | awk -F '\t' '$2=="failed" && $8=="agent=failed" { found=1 } END { exit !found }'
+  if [ "$backend" = herdr ]; then
+    # A retained shell and a removed pane both expose the confirmed failure.
+    jq -e '.[0].alive==true' "$CASE_DIR/failed-status.json"
+    touch "$CASE_DIR/herdr/w-FS-1/missing-pane"
+    dv status FS-1 --json | jq -e '.[0] | .status=="failed" and .agent_status=="failed" and (.alive|not) and .agent_dead'
+    rm "$CASE_DIR/herdr/w-FS-1/missing-pane"
+    printf 'agent get\n' > "$CASE_DIR/herdr/fail"
+    dv status FS-1 --json | jq -e '.[0] | .status=="running" and .agent_status=="unknown" and (.agent_dead|not)'
+    rm "$CASE_DIR/herdr/fail"
+  else
+    jq -e '.[0] | (.alive|not) and (.tmux|not)' "$CASE_DIR/failed-status.json"
+  fi
+  cmp "$state/meta" "$CASE_DIR/saved-meta"
+  cmp "$state/events.log" "$CASE_DIR/saved-events"
+  cmp "$state/report.md" "$CASE_DIR/saved-report"
+  cmp "$wt/out/partial.txt" "$CASE_DIR/saved-output"
+  test ! -e "$state/done.json"
+  # Missing, malformed or successful exits are not confirmed failures.
+  for exit_code in missing '' invalid 0; do
+    if [ "$exit_code" = missing ]; then rm "$state/agent.exit"
+    else printf '%s\n' "$exit_code" > "$state/agent.exit"; fi
+    dv status FS-1 --json | jq -e '.[0] | .status=="running" and .agent_status=="unknown"'
+  done
+  printf '1\n' > "$state/agent.exit"
+  # A later exit must not replace an explicit lifecycle state.
+  for status in 'done' ready pr landed cancelled blocked start-failed waiting-capacity; do
+    jq --arg status "$status" '.status=$status' "$CASE_DIR/saved-meta" > "$state/meta"
+    dv status FS-1 --json | jq -e --arg status "$status" '.[0].status==$status'
+  done
+  cp "$CASE_DIR/saved-meta" "$state/meta"
+  if [ "$kind" = task ]; then export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/task-agent"
+  else export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"; fi
+  if [ "$recovery" = stall ]; then
+    stall_functions
+    STALL_ROW=$(dv status FS-1 --json | jq -c '.[0]')
+    stall_scan; stall_tick; stall_count 1
+    dv _stall-recover FS-1 "$(jq -r '.[].id' "$DV_HOME/stalls.json")" ''
+  else
+    dv send FS-1 'Finish the saved deliverable and report'
+  fi
+  if [ "$backend" = tmux ]; then wait_done FS-1; else wait_native FS-1; fi
+  test "$(cat "$state/revive/previous-agent.exit")" = 1
+  cmp "$state/revive/id" "$state/revive/done"
+  cmp "$wt/out/partial.txt" "$CASE_DIR/saved-output"
+  test -s "$state/report.md"
+  jq -e --arg wt "$wt" '.worktree==$wt and .status=="done"' "$state/meta"
+  dv status FS-1 --json | jq -e '.[0].status=="done"'
+}
+case_task_tmux_failed_status() { terminal_failed_status task tmux; }
+case_task_herdr_failed_status() { terminal_failed_status task herdr; }
+case_code_tmux_failed_status() { terminal_failed_status code tmux; }
+case_code_herdr_failed_status() { terminal_failed_status code herdr; }
+case_code_tmux_failed_stall() { terminal_failed_status code tmux stall; }
+case_code_herdr_failed_stall() { terminal_failed_status code herdr stall; }
 tmux_start_failure() {
   local kind=$1 failure=$2 issue=TS-1 socket=$DV_TMUX_SOCKET rc=0 next_rc=0
   needs_tmux; task_setup
@@ -828,6 +938,28 @@ case_agent_cli() {
   jq -e 'index("fusion-gpt-6-astra-xhigh-sidekick-swe-2-high")!=null and index("dangerous")!=null and index("--")!=null' "$DV_STATE/C-4/args.json"
 }
 case_agent_cli_off() { case_agent_cli off; }
+case_agent_cli_more() {
+  needs_tmux; repo cli-more
+  local agent
+  export DV_OMP_BIN="$ROOT/tests/fixtures/interactive" DV_AGY_BIN="$ROOT/tests/fixtures/interactive"
+  export DV_GROK_BIN="$ROOT/tests/fixtures/interactive" DV_CURSOR_BIN="$ROOT/tests/fixtures/interactive"
+  export DV_CURSOR_MODEL=fixture-model
+  for agent in omp agy grok cursor; do
+    dv start "$REPO" "M-$agent" "$agent" --agent "$agent"
+    wait_file "$DV_STATE/M-$agent/events.log"
+    jq -se 'all(.[]; .kind=="done")' "$DV_STATE/M-$agent/events.log"
+    # The instruction is always the last argument, after an option terminator.
+    jq -e --arg s "$DV_STATE/M-$agent" '.[-1]|startswith("Read "+$s+"/brief.md")' "$DV_STATE/M-$agent/args.json"
+  done
+  jq -e 'index("--model") as $i | $i!=null and .[$i+1]=="inferhub/deepseek-v4.1-flash" and index("--approval-mode=yolo")!=null and .[-2]=="--"' "$DV_STATE/M-omp/args.json"
+  # The interactive first-run wizard would otherwise hide the initial prompt.
+  test "$(cat "$DV_STATE/M-omp/omp-skip-setup")" = 1
+  jq -e 'index("--model") as $i | $i!=null and .[$i+1]=="gemini-4-argon" and index("--dangerously-skip-permissions")!=null and .[-2]=="-i"' "$DV_STATE/M-agy/args.json"
+  jq -e 'index("--always-approve")!=null and index("-m")==null and .[-2]=="--"' "$DV_STATE/M-grok/args.json"
+  jq -e 'index("--yolo")!=null and index("--trust")!=null and (index("--model") as $i | $i!=null and .[$i+1]=="fixture-model") and .[-2]=="--"' "$DV_STATE/M-cursor/args.json"
+  test -f "$DV_STATE/M-agy/trust-enter"; test -f "$DV_STATE/M-grok/trust-enter"
+  test ! -f "$DV_STATE/M-omp/trust-enter"; test ! -f "$DV_STATE/M-cursor/trust-enter"
+}
 case_pr_ready() {
   needs_tmux; repo ready remote; start P-1; wait_done P-1
   head=$(git -C "$(jq -r .worktree "$DV_STATE/P-1/meta")" rev-parse HEAD)
@@ -909,6 +1041,8 @@ case_land_checkout_race() {
 herdr_setup() {
   export DV_HERDR=1 DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/herdr-agent"
   export DV_CLAUDE_BIN="$ROOT/tests/fixtures/herdr-agent" DV_DEVIN_BIN="$ROOT/tests/fixtures/herdr-agent"
+  export DV_OMP_BIN="$ROOT/tests/fixtures/herdr-agent" DV_AGY_BIN="$ROOT/tests/fixtures/herdr-agent"
+  export DV_GROK_BIN="$ROOT/tests/fixtures/herdr-agent" DV_CURSOR_BIN="$ROOT/tests/fixtures/herdr-agent"
 }
 wait_native() {
   if [ "$(jq -r .backend "$DV_STATE/$1/meta")" = exec ]; then
@@ -1171,6 +1305,21 @@ question_other_agent() {
 }
 case_question_claude() { question_other_agent claude; }
 case_question_devin() { question_other_agent devin; }
+case_question_omp() { question_other_agent omp; }
+case_question_agy() { question_other_agent agy; }
+case_question_grok() { question_other_agent grok; }
+case_question_cursor() { question_other_agent cursor; }
+case_question_banner_agents() {
+  bidding_functions
+  local line pattern=${HERDR_AGENT_BANNER#'(?m)'}
+  # Startup screens measured on the real CLIs; the sentinel waits for one once.
+  for line in '│ OpenAI Codex (v0.163.0)' ' ▐▛███▜▌   Claude Code v2.1.304' 'Devin CLI' \
+    '      ▄▀▀▄        Antigravity CLI 1.4.6' '  │  ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄   Grok Build  1.0.67' \
+    '                     Cursor Agent' ' π > ◒ DeepSeek V4.1 Flash (InferHub) > ⑂ main'; do
+    printf '%s\n' "$line" | grep -Eq "$pattern" || { printf 'banner not matched: %s\n' "$line" >&2; return 1; }
+  done
+  if printf '%s\n' '$ omp --model inferhub/deepseek-v4.1-flash' | grep -Eq "$pattern"; then return 1; fi
+}
 case_herdr_start_clean() {
   repo herdr; herdr_setup; unset DV_HERDR
   dv start "$REPO" H-1 native --brief "$CASE_DIR/brief"
@@ -1348,6 +1497,55 @@ case_herdr_agents_land() {
   test ! -f "$CASE_DIR/herdr/w-H-5/workspace"
   test -f "$CASE_DIR/herdr/w-H-3/workspace"; test -f "$CASE_DIR/herdr/w-H-4/workspace"
   dv clean H-3; dv clean H-4
+}
+case_herdr_more_agents() {
+  repo herdr-more; herdr_setup
+  local agent
+  for agent in omp agy grok cursor; do
+    dv start "$REPO" "HM-$agent" native --agent "$agent"; wait_native "HM-$agent"
+    jq -e --arg agent "$agent" '.backend=="herdr" and .agent==$agent and .status=="done"' "$DV_STATE/HM-$agent/meta"
+  done
+  # Only agy and grok show a folder trust dialog; cursor trusts by flag.
+  for agent in agy grok; do
+    jq -se --arg pane "w-HM-$agent:p1" 'any(.[]; .==["pane","send-keys",$pane,"Enter"])' "$CASE_DIR/herdr/calls"
+  done
+  for agent in omp cursor; do
+    jq -se --arg pane "w-HM-$agent:p1" 'all(.[]; .[0:3]!=["pane","send-keys",$pane])' "$CASE_DIR/herdr/calls"
+  done
+  for agent in omp agy grok cursor; do dv clean "HM-$agent"; done
+}
+case_agent_transcripts() {
+  bidding_functions
+  local wt='/scratch/dv-wt/my repo.v2-T_1'
+  test "$(agent_transcript_dir omp "$wt")" = "$DV_OMP_SESSIONS/--scratch-dv-wt-my repo.v2-T_1--"
+  test "$(agent_transcript_dir claude "$wt")" = "$DV_CLAUDE_SESSIONS/-scratch-dv-wt-my-repo-v2-T-1"
+  test "$(agent_transcript_dir grok "$wt")" = "$DV_GROK_SESSIONS/%2Fscratch%2Fdv-wt%2Fmy%20repo.v2-T_1"
+  test "$(agent_transcript_dir cursor "$wt")" = "$DV_CURSOR_SESSIONS/scratch-dv-wt-my-repo-v2-T-1/agent-transcripts"
+  for agent in codex agy devin; do
+    if agent_transcript_dir "$agent" "$wt"; then return 1; fi
+  done
+  test "$(agent_transcript_root codex)" = "$DV_CODEX_SESSIONS"
+  test "$(agent_transcript_root agy)" = "$DV_AGY_SESSIONS"
+  if agent_transcript_root devin; then return 1; fi
+}
+case_revive_transcript() {
+  repo revive-transcript; herdr_setup
+  local state="$DV_STATE/RT-1" wt dir
+  dv start "$REPO" RT-1 transcript --agent omp
+  wait_native RT-1
+  wt=$(cd "$(jq -r .worktree "$state/meta")" && pwd -P)
+  dir="$DV_OMP_SESSIONS/--$(printf '%s' "${wt#/}" | tr '/' '-')--"
+  # Before the agent writes a session, status falls back to the store root.
+  dv status RT-1 --json | jq -e --arg root "$DV_OMP_SESSIONS" '.[0].transcript==$root'
+  mkdir -p "$dir"
+  dv status RT-1 --json | jq -e --arg dir "$dir" '.[0].transcript==$dir'
+  rm "$CASE_DIR/herdr/w-RT-1/detected" "$CASE_DIR/herdr/w-RT-1/exit"
+  export DV_OMP_BIN="$ROOT/tests/fixtures/revived-agent"
+  dv send RT-1 'continue after the lost pane'
+  wait_file "$state/revived-input.json"
+  wait_file "$state/revive/done"
+  grep -F "$dir" "$state/revive/prompt.md"
+  jq -e --arg dir "$dir" '.args[-1]|contains($dir)' "$state/revived-input.json"
 }
 case_herdr_disabled_legacy() {
   needs_tmux; repo herdr-disabled; start H-6; wait_done H-6
@@ -1875,11 +2073,80 @@ case_bid_rejections() {
   DV_MIN_MEMORY_MB=999999999 dv bid --json --repo "$REPO" | jq -e '.status=="rejected" and .reason=="low memory"'
   DV_CLAUDE_BIN=false dv bid --json --repo "$REPO" --agent claude | jq -e '.status=="rejected" and (.agent_ready|not)'
   DV_DEVIN_BIN=false dv bid --json --repo "$REPO" --agent devin | jq -e '.status=="rejected" and (.agent_ready|not)'
+  if dv bid --json --repo "$REPO" --agent gemini; then return 1; fi
   if DV_MAX_JOBS=0 dv bid --json; then return 1; fi
   if DV_BID_TIMEOUT=garbage dv bid --json; then return 1; fi
   mkdir -p "$DV_STATE/UNCERTAIN"
   printf '{"status":"input-required"}\n' > "$DV_STATE/UNCERTAIN/meta"
   DV_MAX_JOBS=1 dv bid --json --repo "$REPO" | jq -e '.status=="rejected" and .active==1'
+}
+bid_ready() { dv bid --json --repo "$REPO" --agent "$1" | jq -e '.agent_ready'; }
+bid_unready() { dv bid --json --repo "$REPO" --agent "$1" | jq -e '.status=="rejected" and (.agent_ready|not)'; }
+case_bid_more_agents() {
+  needs_tmux; repo more-agents
+  # agy, grok and cursor list models only with working authentication.
+  DV_AGY_BIN=true bid_ready agy; DV_AGY_BIN=false bid_unready agy
+  DV_GROK_BIN=true bid_ready grok; DV_GROK_BIN=false bid_unready grok
+  DV_CURSOR_BIN=true bid_ready cursor; DV_CURSOR_BIN=false bid_unready cursor
+  # cursor-agent status can report a login while every request fails.
+  cat > "$CASE_DIR/cursor-status-only" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" != models ]
+STUB
+  chmod +x "$CASE_DIR/cursor-status-only"
+  DV_CURSOR_BIN="$CASE_DIR/cursor-status-only" bid_unready cursor
+  # omp has no auth command: its custom provider and key must be configured.
+  unset INFERHUB_API_KEY
+  export DV_OMP_BIN=true
+  bid_unready omp
+  mkdir -p "$HOME/.omp/agent"
+  printf 'providers:\n  other:\n    apiKey: OTHER_KEY\n  inferhub:\n    baseUrl: https://example.invalid\n    apiKey: INFERHUB_API_KEY\n    models:\n      - id: deepseek-v4.1-flash\n' > "$HOME/.omp/agent/models.yml"
+  bid_unready omp
+  INFERHUB_API_KEY=fixture bid_ready omp
+  printf 'INFERHUB_API_KEY=fixture\n' > "$HOME/.omp/agent/.env"
+  bid_ready omp
+  DV_OMP_MODEL=missing/model bid_unready omp
+  DV_OMP_BIN="$CASE_DIR/no-omp" bid_unready omp
+  # The operator probe replaces the default in both directions.
+  DV_GROK_BIN=true DV_AGENT_READY_grok=false bid_unready grok
+  DV_GROK_BIN=false DV_AGENT_READY_grok=true bid_ready grok
+  DV_AGENT_CMD_cursor='exec true' DV_CURSOR_BIN=false bid_ready cursor
+}
+case_submit_route() {
+  repo route
+  export DV_MANAGER_HOST=test-host
+  submit_agent() { jq -r '.agent+":"+.mode' "$DV_HOME/submissions/$1/task.json"; }
+  printf '# Docs\nRoute: writing\nRewrite the README intro.\n' > "$CASE_DIR/writing"
+  printf '# Fix\nRoute: small\nFix one function.\n' > "$CASE_DIR/small"
+  printf '# Plain\nRoute: default\nAnything.\n' > "$CASE_DIR/default"
+  printf '# Typo\nRoute: smal\n' > "$CASE_DIR/typo"
+  printf '# Prose\nRoute: small code\n' > "$CASE_DIR/prose"
+  printf '# Windows\r\nRoute: writing\r\nRoute: small\r\n' > "$CASE_DIR/crlf"
+  dv submit "$REPO" RO-1 docs --brief "$CASE_DIR/writing" 2> "$CASE_DIR/route.err"
+  test "$(submit_agent RO-1)" = agy:goal
+  grep -F 'Route: writing' "$CASE_DIR/route.err"
+  dv submit "$REPO" RO-2 fix --brief "$CASE_DIR/small"
+  test "$(submit_agent RO-2)" = omp:goal
+  dv submit "$REPO" RO-3 plain --brief "$CASE_DIR/brief"
+  test "$(submit_agent RO-3)" = codex:goal
+  dv submit "$REPO" RO-4 plain --brief "$CASE_DIR/default"
+  test "$(submit_agent RO-4)" = codex:goal
+  # An explicit agent or a Codex-only mode always wins over the brief.
+  dv submit "$REPO" RO-5 explicit --brief "$CASE_DIR/writing" --agent claude
+  test "$(submit_agent RO-5)" = claude:goal
+  dv submit "$REPO" RO-6 exec --brief "$CASE_DIR/small" --mode exec
+  test "$(submit_agent RO-6)" = codex:exec
+  DV_ROUTE_WRITING='' dv submit "$REPO" RO-7 off --brief "$CASE_DIR/writing"
+  test "$(submit_agent RO-7)" = codex:goal
+  DV_ROUTE_SMALL=grok dv submit "$REPO" RO-8 grok --brief "$CASE_DIR/small"
+  test "$(submit_agent RO-8)" = grok:goal
+  if dv submit "$REPO" RO-9 typo --brief "$CASE_DIR/typo"; then return 1; fi
+  if dv submit "$REPO" RO-9 prose --brief "$CASE_DIR/prose"; then return 1; fi
+  # The first Route line decides; carriage returns are ignored.
+  dv submit "$REPO" RO-11 crlf --brief "$CASE_DIR/crlf"
+  test "$(submit_agent RO-11)" = agy:goal
+  test ! -e "$DV_HOME/submissions/RO-9"
+  if DV_ROUTE_SMALL=gemini dv submit "$REPO" RO-10 bad --brief "$CASE_DIR/small"; then return 1; fi
 }
 case_bid_rpc_timeout() {
   # A nested RPC shell inherits command-substitution stdout. Killing only its
@@ -1993,10 +2260,12 @@ case_goal_exit_agents() {
   # No terminal is needed: isolate the exit wrapper from interactive injection.
   tmux_dv() { :; }
   inject_goal() { :; }
-  accept_devin_trust() { :; }
+  accept_folder_trust() { :; }
   export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/goal-exit"
   export DV_CLAUDE_BIN="$ROOT/tests/fixtures/goal-exit" DV_DEVIN_BIN="$ROOT/tests/fixtures/goal-exit"
-  for selected in codex claude devin custom; do
+  export DV_OMP_BIN="$ROOT/tests/fixtures/goal-exit" DV_AGY_BIN="$ROOT/tests/fixtures/goal-exit"
+  export DV_GROK_BIN="$ROOT/tests/fixtures/goal-exit" DV_CURSOR_BIN="$ROOT/tests/fixtures/goal-exit"
+  for selected in codex claude devin omp agy grok cursor custom; do
     for exit_code in 0 9; do
       for completed in no yes; do
         issue="EXIT-$selected-$exit_code-$completed"
@@ -2349,6 +2618,7 @@ case_runner_mapping() {
 registered_cases() {
   printf '%s\n' \
    status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
+  task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
   config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
   appserver_sender_close \
   metrics_restart_slow_start \
@@ -2364,7 +2634,7 @@ registered_cases() {
   appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \
   send_branch_appserver send_branch_appserver_reconnect send_branch_exec send_branch_tmux send_branch_herdr send_branch_revive send_branch_guards send_branch_missing send_branch_replaced_repo send_branch_replaced_path \
   heavy_serial heavy_kill heavy_slots heavy_status heavy_command heavy_priority heavy_config heavy_waiter_probe \
-  capacity_classifier capacity_backoff capacity_exec_once capacity_exec_timeout capacity_appserver_once capacity_appserver_timeout capacity_appserver_rpc capacity_appserver_unknown capacity_qa_once capacity_qa_native capacity_qa_timeout capacity_claude capacity_devin capacity_terminal_exit capacity_terminal_timeout capacity_legacy_terminal \
+  capacity_classifier capacity_backoff capacity_exec_once capacity_exec_timeout capacity_appserver_once capacity_appserver_timeout capacity_appserver_rpc capacity_appserver_unknown capacity_qa_once capacity_qa_native capacity_qa_timeout capacity_claude capacity_devin capacity_omp capacity_agy capacity_grok capacity_cursor capacity_terminal_exit capacity_terminal_timeout capacity_legacy_terminal \
   land_merged land_merged_recorded_pr land_merged_recorded_done land_merged_mismatch land_merged_base_mismatch land_merged_cleanup_retry land_merged_dirty land_merged_checks land_worker_rule appserver_land_merged_active appserver_land_merged_timeout appserver_land_merged_failed appserver_land_merged_system_error \
   screen_locale_c screen_locale_utf8 \
   appserver_sender_idle appserver_sender_partial appserver_sender_legacy_idle appserver_sender_legacy_partial symlink_task_land symlink_exec_send clean_resume_task_exec clean_resume_code_exec clean_resume_task_tmux clean_resume_code_tmux clean_resume_appserver clean_resume_appserver_unknown stall_working_banner_detection stall_working_banner_resume stall_latest_activity stall_dead stall_capacity stall_resume stall_resume_reset stall_resume_guards stall_resume_transport stall_banner_sequence stall_watch_resume stall_watch_revive stall_remote_resume stall_dead_old_banner stall_recovery_host stall_watch stall_status stall_episodes stall_inactive stall_observation stall_remote stall_tmux stall_failed_race failed_stall_race \
@@ -2385,8 +2655,8 @@ registered_cases() {
   pr_wait_caller_killed pr_wait_caller_fallback pr_wait_caller_delayed pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote \
   codex_allowlist codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid \
   question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure award_early_absent bid_clean_capacity submit_local_origin \
-  claude_stale_server claude_stale_server_empty claude_profile_onboarding claude_profile_trust claude_profile_create claude_profile_invalid claude_trust_mode claude_trust_acl claude_trust_copy_failure claude_profile_start claude_profile_host bid_order_ties bid_order_fallback bid_order_probes bid_order_reject_input bid_order_early_reject bid_order_early_errors claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity admission_owner submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux \
-  stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status \
+  claude_stale_server claude_stale_server_empty claude_profile_onboarding claude_profile_trust claude_profile_create claude_profile_invalid claude_trust_mode claude_trust_acl claude_trust_copy_failure claude_profile_start claude_profile_host bid_order_ties bid_order_fallback bid_order_probes bid_order_reject_input bid_order_early_reject bid_order_early_errors claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_agents host_sync host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity admission_owner submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux bid_more_agents submit_route \
+  stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_omp question_agy question_grok question_cursor question_banner_agents question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off agent_cli_more agent_transcripts revive_transcript pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_more_agents herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status \
   land_squash_only land_merge_only land_rebase_only land_prefer_squash land_prefer_merge land_override_env land_override_repo land_config_stdout land_policy_gh_repo land_policy_pr_url land_override_precedence land_no_methods land_invalid_method land_disallowed_method land_repo_failure land_config_failure land_head_mismatch land_unconfirmed \
   pr_fallback_body pr_fallback_summary pr_fallback_private_paths pr_fallback_private_hosts pr_fallback_public_tokens pr_fallback_missing pr_fallback_bounded pr_fallback_private_only pr_head_title pr_prepared_body pr_legacy_body pr_patch_title pr_patch_body polish_unreachable polish_unreachable_timeout \
   runner_contract runner_selection runner_mapping

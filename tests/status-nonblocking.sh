@@ -103,13 +103,14 @@ case_status_cache_missing() {
 }
 
 case_status_cache_live() {
+  export DV_CODEX_SESSIONS="$CASE_DIR/codex-sessions"
   appserver_setup
   local client
   client=$(cat "$DV_STATE/AS-1/appserver/client.pid")
   kill -STOP "$client"
-  trap 'kill -CONT "$client" 2>/dev/null || true; teardown' EXIT
+  trap "kill -CONT $client 2>/dev/null || true; teardown" EXIT
   cp "$CASE_DIR/server/requests" "$CASE_DIR/before"
-  dv status AS-1 --json | jq -e '.[0] | .agent_status=="working" and (.status_age_seconds|type)=="number"'
+  dv status AS-1 --json | jq -e --arg transcript "$DV_CODEX_SESSIONS" '.[0] | .agent_status=="working" and (.status_age_seconds|type)=="number" and .transcript==$transcript'
   cmp "$CASE_DIR/before" "$CASE_DIR/server/requests"
   test "$(find "$DV_STATE/AS-1/appserver/outbox" -name 'request.*.json' | wc -l | tr -d ' ')" = 0
   printf 'idle\n' > "$CASE_DIR/server/status"

@@ -13,7 +13,7 @@
     "lib/delivery.sh": ["pr_*", "review_*", "reconcile_*", "status_done_head", "watch_*", "land_*", "stack_*", "start_done", "local_land", "polish_*"],
     "lib/disk.sh": ["disk_*", "teardown_*", "bid_*", "award_*", "start_done"],
     "lib/heavy.sh": ["heavy_*", "bid_*", "watch_capacity*", "manager_*"],
-    "lib/herdr.sh": ["herdr_*", "task_herdr_*", "send_branch_herdr", "capacity_terminal*", "capacity_legacy_terminal"],
+    "lib/herdr.sh": ["herdr_*", "task_herdr_*", "code_herdr_failed_*", "send_branch_herdr", "capacity_terminal*", "capacity_legacy_terminal"],
     "lib/host.sh": ["host_*", "claude_*host", "disk_host", "update_host", "bid_*"],
     "lib/manager.sh": ["manager_*", "watch_stuck*", "watch_capacity*", "metrics_manager*"],
     "lib/metrics.sh": ["metrics_*"],
@@ -23,7 +23,7 @@
     "lib/reconcile.sh": ["status_cached_many", "status_cache_*", "watch_status_*", "recovery_sweep_progress", "watch_stack_background_failure", "reconcile_*", "update_stall_cadence"],
     "lib/self-update.sh": ["update_*"],
     "lib/stack.sh": ["stack_*", "land_*", "pr_ready", "base_merge", "watch_stack_background_failure"],
-    "lib/stall.sh": ["stall_*", "failed_stall_race", "clean_resume_*", "appserver_*", "task_exec_stall", "exec_silence", "metrics_stall_overlap", "watch_stuck*"],
+    "lib/stall.sh": ["stall_*", "code_*_failed_stall", "failed_stall_race", "clean_resume_*", "appserver_*", "task_exec_stall", "exec_silence", "metrics_stall_overlap", "watch_stuck*"],
     "lib/task.sh": ["task_*", "symlink_task_land", "clean_resume_task*", "send_branch_*", "exec_land_*", "appserver_*", "revive_*"],
     "lib/tmp.sh": ["tmp_*", "appserver_*", "qa_*", "host_*"]
   }

@@ -582,7 +582,7 @@ appserver_cached_row() {
   local path=$1 time=$2 dir=${1%/meta} client=false pid=''
   [ ! -f "$dir/appserver/client.pid" ] || read -r pid < "$dir/appserver/client.pid" || true
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then client=true; fi
-  jq -c --argjson at "$time" --argjson client "$client" \
+  jq -c --argjson at "$time" --argjson client "$client" --arg transcript "${3:-}" \
     --rawfile cache <(cat "$dir/appserver/status.json" 2>/dev/null || true) \
     --rawfile 'done' <(cat "$dir/done.json" 2>/dev/null || true) \
     --rawfile last <(tail -c 200 "$dir/log" 2>/dev/null || true) '
@@ -593,7 +593,7 @@ appserver_cached_row() {
       if $client then . else .alive=false | .question_pending=false |
         .agent_status=(if $meta.status=="landed" or $meta.status=="cancelled" then "gone" else "unknown" end) end |
       .status_age_seconds=(if $valid.observed_at!=null then [0,($at-$valid.observed_at)]|max else null end)) as $info |
-    . + {done_head:(try ($done|fromjson|.head) catch null),backend:"appserver",alive:$info.alive,
+    . + {done_head:(try ($done|fromjson|.head) catch null),transcript:(if $transcript=="" then null else $transcript end),backend:"appserver",alive:$info.alive,
       agent_status:$info.agent_status,agent_dead:false,tmux:false,elapsed:($at-.started),
       last_log:($last|split("\n")|map(select(length>0))|last // ""),question_pending:$info.question_pending,
       goal_stalled:false,goal_active:false,agent_state_seq:null,agent_session:null,capacity_detected:false,
