@@ -9,8 +9,8 @@ Linear 이슈를 정리한 뒤 개발 호스트의 로컬 저장소에서 이슈
 
 herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISSUE>` workspace에서 에이전트를 직접 실행하고(Codex hooks 유지), send·status·clean/land는 meta의 backend를 따릅니다(로그는 done/clean 화면 저장, `DV_HERDR=0`·미설치·backend 없는 기존 이슈는 tmux, herdr 시작 실패 시 상태 보존).
 
-1. 구체적인 요구와 완료 기준을 brief 파일로 쓰고 `dv start <repo> <ISSUE> <slug> --brief FILE`로 시작합니다. Codex 기본은 goal입니다. 필요하면 `--agent claude|devin` 또는 Codex `--mode exec`, `--base BRANCH`를 선택합니다.
-2. 에이전트는 실패 시험을 먼저 남기고 개발·관련 시험·커밋·보고서를 마칩니다. GitHub면 `dv pr`, 마지막에 `dv done`을 호출합니다.
+1. 구체적인 요구와 완료 기준을 brief 파일로 쓰고 `dv start <repo> <ISSUE> <slug> --brief FILE`로 시작합니다. 브랜치는 `<type>/<번호>-<slug>`이며 slug 앞의 종류 단어로 type을 정합니다(`fix-save` → `fix/42-save`, 없으면 `feat`). Codex 기본은 goal입니다. 필요하면 `--agent claude|devin` 또는 Codex `--mode exec`, `--base BRANCH`를 선택합니다.
+2. 에이전트는 실패 시험을 먼저 남기고 개발·관련 시험·커밋·보고서를 마칩니다. GitHub면 `dv pr`, 마지막에 `dv done`을 호출합니다. PR 제목은 마지막 커밋 제목 `type(scope): subject`(영어, 이슈 키 없음)이고 본문은 `pr.md`에 `.github/PULL_REQUEST_TEMPLATE.md`의 Summary·`Closes #n`·Verification·Checklist로 씁니다. dv pr이 둘 다 push 전에 확인합니다.
 3. 감시 호스트의 `dv-kick`은 이벤트를 파일에 쓰기만 합니다. `dv-watch`가 3초마다 로컬 큐를 읽고 시온 작업자를 최대 4개 실행합니다. 30분마다 상태 조회로 유실된 done 이벤트만 보완합니다(자기 호스트는 ssh 없이). 모델 폴링을 하지 않습니다. 10-19부터 감시 호스트는 lina-os(systemd user `dev.devflow.watch.service`, `DV_KICK_HOST=lina-os`)입니다.
 4. GitHub 작업자는 `dv pr-wait <ISSUE> --foreground`의 CI와 현재 head의 최신 Codex 리뷰를 읽습니다. P0·P1을 수정·시험·커밋·push하고 새 리뷰를 기다리는 루프를 반복합니다. 첫 리뷰는 PR-open 자동 트리거, 이후는 devflow의 `@codex review` 댓글입니다. `DV_REVIEW_BOTS=codex`, `DV_REVIEW_ROUNDS=4`가 기본입니다.
 5. 같은 head 재조회는 회차를 늘리지 않습니다. 상한에 P0·P1이 남으면 `review-rounds`와 열린 지적으로 차단하며 관리자가 처리합니다. 리뷰가 `DV_REVIEW_WAIT` 동안 없으면 한 번 더 요청하고 다시 기다린 뒤 `review-timeout`으로 차단합니다. P2·P3은 최종 리뷰에서 PR당 후속 이슈 하나로 같은 저장소·같은 milestone에 남깁니다(파일:줄·한 줄 내용, `Depends on #<원 이슈>`). 후속 번호는 report.md와 PR 본문에 기록하며 병합을 막지 않습니다.

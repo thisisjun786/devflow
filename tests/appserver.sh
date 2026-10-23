@@ -723,7 +723,7 @@ case_appserver_pipeline() {
   appserver_wait_work
   jq -e '.files==1' "$DV_STATE/AS-1/done.json"
   dv status AS-1 --json | jq -e '.[0] | .status=="ready" and .agent_status=="goal-complete" and .backend=="appserver" and (.tmux|not)'
-  printf 'Exercise synthetic App Server delivery.\n' > "$DV_STATE/AS-1/pr.md"
+  pr-template-body 'Exercise synthetic App Server delivery.' > "$DV_STATE/AS-1/pr.md"
   dv pr AS-1
   dv pr-wait AS-1 --foreground --review-handled > "$CASE_DIR/pr-result"
   dv 'done' AS-1
@@ -1242,7 +1242,8 @@ case_appserver_pr_idle_recover() {
   appserver_setup remote
   local wt
   wt=$(jq -r .worktree "$DV_STATE/AS-1/meta")
-  git -C "$wt" commit --allow-empty -qm 'AS-1: fake change awaiting delivery'
+  git -C "$wt" commit --allow-empty -qm 'feat(fixture): add a change awaiting delivery'
+  pr-template-body 'Delivers the synthetic change.' > "$DV_STATE/AS-1/pr.md"
   dv pr AS-1
   jq -e '.status=="pr"' "$DV_STATE/AS-1/meta"
   printf 'idle\n' > "$CASE_DIR/server/status"
@@ -1262,13 +1263,14 @@ case_appserver_stale_done_recover() {
   appserver_setup remote
   local wt old_head
   wt=$(jq -r .worktree "$DV_STATE/AS-1/meta")
-  git -C "$wt" commit --allow-empty -qm 'AS-1: completed revision'
+  git -C "$wt" commit --allow-empty -qm 'feat(fixture): complete the revision'
+  pr-template-body 'Delivers the synthetic change.' > "$DV_STATE/AS-1/pr.md"
   dv pr AS-1
   dv pr-wait AS-1 --foreground > "$CASE_DIR/pr-result"
   dv pr-wait AS-1 --foreground --review-handled > "$CASE_DIR/pr-result"
   dv 'done' AS-1
   old_head=$(jq -r .head "$DV_STATE/AS-1/done.json")
-  git -C "$wt" commit --allow-empty -qm 'AS-1: correction still awaiting completion'
+  git -C "$wt" commit --allow-empty -qm 'fix(fixture): correct the revision'
   dv pr AS-1
   jq -e --arg old "$old_head" '.status=="pr" and .head!=$old' "$DV_STATE/AS-1/meta"
   printf 'idle\n' > "$CASE_DIR/server/status"

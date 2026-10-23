@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Print a public PR body in the repository template: SUMMARY [ISSUE_NUMBER].
+set -euo pipefail
+printf '## Summary\n\n%s\n\nCloses #%s\n\n## Verification\n\n- tests/run.sh: passed.\n\n## Checklist\n\n- [x] Scope stays focused.\n' "$1" "${2:-1}"

@@ -3,9 +3,12 @@ set -euo pipefail
 cat "$DV_STATE/$DV_ISSUE/brief.md"
 printf 'change for %s\n' "$DV_ISSUE" > "$DV_ISSUE.txt"
 git add "$DV_ISSUE.txt"
-git commit -qm "$DV_ISSUE: fake change"
+git commit -qm 'feat(fixture): add a fake change'
 printf 'Fake agent report: red/green.\n' > "$DV_STATE/$DV_ISSUE/report.md"
 if git config --get remote.origin.url | grep -q github.com; then
+  number=${DV_ISSUE##*-}
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || number=1
+  pr-template-body 'Adds a fake change.' "$number" > "$DV_STATE/$DV_ISSUE/pr.md"
   dv pr "$DV_ISSUE"
   dv pr-wait "$DV_ISSUE" --foreground
   dv pr-wait "$DV_ISSUE" --foreground --review-handled

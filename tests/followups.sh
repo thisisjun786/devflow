@@ -110,7 +110,7 @@ case_polish_public_during_run() {
 }
 case_polish_public_published() {
   needs_tmux; repo published remote; start PP-1; wait_done PP-1
-  printf 'Public body must stay exact.\n' > "$DV_STATE/PP-1/pr.md"
+  pr-template-body 'Public body must stay exact.' > "$DV_STATE/PP-1/pr.md"
   # The fake worker already published this head. Wait for this publication's
   # waiter instead of accepting the previous worker's ready snapshot.
   mv "$DV_STATE/PP-1/pr-ready.json" "$CASE_DIR/previous-pr-ready.json"
@@ -311,12 +311,12 @@ case_host_npm_origin() {
 }
 case_pr_body_update() {
   needs_tmux; repo public-update remote; start PU-1; wait_done PU-1
-  printf 'First public body.\n\nCloses #1\n' > "$DV_STATE/PU-1/pr.md"
+  pr-template-body 'First public body.' > "$DV_STATE/PU-1/pr.md"
   DV_POLISH=1 dv pr PU-1
   wait_pr_ready PU-1
   # A supplied public body must never be handed to the polish worker.
   test ! -e "$DV_STATE/PU-1/pr-body.orig.md"
-  printf 'Updated public body.\n\nCloses #1\n' > "$DV_STATE/PU-1/pr.md"
+  pr-template-body 'Updated public body.' > "$DV_STATE/PU-1/pr.md"
   dv pr PU-1
   wait_pr_ready PU-1
   cmp "$DV_STATE/PU-1/pr.md" "$GH_STUB_DIR/live-body"
@@ -326,7 +326,7 @@ case_pr_body_update() {
   wait_pr_ready PU-1
   test "$(grep -c 'api -X PATCH .* -F body=@' "$GH_STUB_DIR/calls")" = 2
   cp "$DV_STATE/PU-1/pr-body.md" "$CASE_DIR/last-body"
-  printf 'Retry this body.\n' > "$DV_STATE/PU-1/pr.md"
+  pr-template-body 'Retry this body.' > "$DV_STATE/PU-1/pr.md"
   touch "$GH_STUB_DIR/edit-fail"
   if dv pr PU-1; then return 1; fi
   cmp "$CASE_DIR/last-body" "$DV_STATE/PU-1/pr-body.md"
@@ -336,7 +336,7 @@ case_pr_body_update() {
   cmp "$DV_STATE/PU-1/pr.md" "$GH_STUB_DIR/live-body"
   mkdir "$DV_STATE/PU-1/.polish"
   printf 'owned by an earlier polish\n' > "$DV_STATE/PU-1/.polish/original"
-  printf 'Wait for earlier polish.\n' > "$DV_STATE/PU-1/pr.md"
+  pr-template-body 'Wait for earlier polish.' > "$DV_STATE/PU-1/pr.md"
   if dv pr PU-1; then return 1; fi
   test -s "$DV_STATE/PU-1/.polish/original"
   test ! -e "$DV_STATE/PU-1/.operation"

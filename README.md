@@ -113,13 +113,17 @@ Claude 온보딩은 `check`의 텍스트 출력과 JSON의 `claude.onboarding`�
 ## 하루 흐름
 
 ```bash
-dv start ~/code/my-app APP-42 fix-save --brief /path/brief.md
+dv start ~/code/my-app APP-42 fix-save --brief /path/brief.md   # 브랜치 fix/42-save
 # 에이전트: 개발·시험·커밋 → dv pr APP-42 → dv pr-wait APP-42 --foreground
 # CI 초록 + 현재 head의 최신 Codex 리뷰에 P0/P1이 없을 때 dv done APP-42
 dv status APP-42
 # 시온: green done의 보고서·diff·시험을 이슈 완료 조건·범위와 대조
 dv land APP-42                 # 현재 PR head의 체크가 전부 성공해야 함
 ```
+
+브랜치는 `<type>/<n>-<slug>`입니다(`fix/42-save`). `<n>`은 브리프의 `# APP-42 = GitHub issue #<n>` 머리글 번호, 없으면 키의 번호(`APP-42` → 42)이며, 번호가 없는 키는 소문자 키를 씁니다. slug가 `feat`·`fix`·`docs`·`test`·`refactor`·`perf`·`chore`·`ci` 중 하나이거나 그 단어와 `-`로 시작하면 그 종류를 쓰고, 아니면 `feat`입니다. slug가 키나 번호를 반복하면 빼므로 `APP-42 app-42`는 `feat/42`입니다. dv 키는 상태·세션·브리프에만 남습니다.
+
+PR 제목은 HEAD 커밋 제목이며 영어 Conventional Commits `type(scope): subject`입니다(`fix(tui): keep the progress card after restart`, type은 위 목록, scope는 패키지·화면 같은 영역). `dv pr`은 이슈 키로 시작하거나 type이 없는 제목을 push 전에 거절하고 커밋 제목을 고치라고 안내하며, 제목을 대신 고치지 않습니다. 본문은 상태 폴더의 `pr.md`에 `.github/PULL_REQUEST_TEMPLATE.md`의 `## Summary`, `Closes #<n>`, `## Verification`(명령과 결과, 화면 변경은 캡처), `## Checklist` 순서로 쓰며, `dv pr`이 세 제목과 `Closes #`를 확인합니다. 첫 게시에는 `pr.md`가 필요합니다. 이 형식 전에 시작한 `<agent>/<key>-<slug>` 브랜치의 작업과 열린 PR은 그대로 둡니다(형식 검사 없음, 보고서 요약 본문 유지).
 
 원격이 없으면 로컬 기본 브랜치(main, master, 현재 브랜치 순)를 사용합니다. 원격이 있으면 fetch 후 원격 기본 브랜치에서 시작합니다. `--base`로 지정할 수 있습니다. 로컬 저장소는 `dv review APP-42` 한 번 후 `dv land`; `DV_TEST_CMD` 또는 저장소의 `.devflow`에 `DV_TEST_CMD='bash tests/run.sh'`가 필요합니다. `.devflow`는 신뢰하는 shell 설정이며, 후보 병합을 임시 worktree에서 시험한 뒤 base를 갱신합니다. 기본 ff, `DV_LAND_MODE=merge`는 merge 커밋입니다.
 
@@ -168,9 +172,9 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv submit REPO ISSUE SLUG --brief FILE [--agent AGENT] [--base BRANCH] [--mode MODE]` | 관리자에게 제출, 호스트는 입찰로 결정 |
 | `dv bid --json [--repo REPO] [--agent AGENT]` | 수용량·부하·메모리·디스크·clone·로그인 조회, 상태 변경 없음 |
 | `dv queue [ISSUE] [--json]` / `dv cancel ISSUE` | 관리자 배정 상태 조회 / 미배정 제출 취소 |
-| `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치·상태 및 선택한 backend 생성 |
+| `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치(`<type>/<n>-<slug>`)·상태 및 선택한 backend 생성 |
 | `dv done ISSUE [--note TEXT]` | head·변경 파일 수·보고서 경로·완료 이벤트 |
-| `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작. 제목은 HEAD 커밋 제목. 상태 폴더의 `pr.md`(공개용 본문)를 그대로 쓰고, 없으면 짧은 보고서 요약으로 만든다 |
+| `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작. 제목은 HEAD 커밋 제목(`type(scope): subject`). 상태 폴더의 `pr.md`(PR 템플릿 형식 공개용 본문)를 그대로 쓰고, 이전 형식 브랜치에서 없으면 짧은 보고서 요약으로 만든다 |
 | `dv polish ISSUE` | PR 본문 퇴고·코드/URL 보존 검증 후 본문만 갱신 |
 | `dv pr-wait ISSUE [--foreground [--review-handled]]` | foreground는 CI·리뷰·인라인 지적 JSON 반환. 현재 head의 최신 Codex 리뷰에 P0/P1이 없으면 처리 완료. 기본 모드는 조기 종료 작업자 재개 안전망 |
 | `dv review ISSUE` | 로컬 리뷰 출력과 횟수 저장 |
@@ -254,7 +258,7 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 재시도 영수증은 수용량·준비·만료 검사에 통과한 뒤에만 보관 위치로 옮깁니다. 만료 전 absent 응답이면 호스트와 토큰을 고정한 submitted 상태로 기다리고, 다음 submitted/done/failed/landed 이벤트에서 영수증을 다시 확인합니다. 만료 후에도 absent일 때만 재배정합니다. 낙찰 작업은 meta의 `award_token`과 이벤트의 `token` 및 ID로 시도를 구별합니다. 토큰 없는 이전 버전의 failed 이벤트는 현재 배정 상태를 바꾸지 않으므로 운영자가 결과를 확인해야 합니다. 안전망의 done 복구는 SSH 별칭 대신 원본 meta의 host와 토큰을 사용해 직접 전달·pull과 같은 ID를 만듭니다.
 
-`dv pr`은 공개 본문 `pr.md`가 있으면 그 내용을 그대로 게시하고 자동 퇴고를 시작하지 않습니다. 첫 게시 전에 준비한 이전 형식의 `pr-body.md`도 `pr.md`가 없으면 그대로 사용합니다. 둘 다 없으면 보고서의 첫 문단을 최대 10줄·1,000자로 요약하여 `pr-body.generated.md`에 만들며, 브리프는 읽지 않습니다. `/`·`~`로 시작하는 경로 토큰, 홈·worktree·저장소·상태 디렉터리 경로, `$HOME`·`$WT`·`$REPO`·`$DV_STATE`·`$S` 표현(중괄호 형식 포함), 기본 `.local/state/devflow` 경로가 든 줄은 제외합니다. 설정된 `DV_HOSTS`·`DV_PULL_HOSTS`·`DV_HOST` 이름이 든 줄도 제외합니다. 상대 경로와 공개 URL은 유지하며, 보고서가 없거나 필터 후 내용이 없으면 짧은 안내문을 사용합니다. 공개 본문의 내용은 작업자가 확인해야 하며, 설정에 없는 호스트나 일반 문장 속 모든 민감한 정보를 자동으로 판별하는 필터는 아닙니다.
+`dv pr`은 공개 본문 `pr.md`가 있으면 그 내용을 그대로 게시하고 자동 퇴고를 시작하지 않습니다. 첫 게시 전에 준비한 이전 형식의 `pr-body.md`도 `pr.md`가 없으면 그대로 사용합니다(새 형식 브랜치는 같은 템플릿 검사). 이전 형식 브랜치에서 둘 다 없으면 보고서의 첫 문단을 최대 10줄·1,000자로 요약하여 `pr-body.generated.md`에 만들며, 브리프는 읽지 않습니다. `/`·`~`로 시작하는 경로 토큰, 홈·worktree·저장소·상태 디렉터리 경로, `$HOME`·`$WT`·`$REPO`·`$DV_STATE`·`$S` 표현(중괄호 형식 포함), 기본 `.local/state/devflow` 경로가 든 줄은 제외합니다. 설정된 `DV_HOSTS`·`DV_PULL_HOSTS`·`DV_HOST` 이름이 든 줄도 제외합니다. 상대 경로와 공개 URL은 유지하며, 보고서가 없거나 필터 후 내용이 없으면 짧은 안내문을 사용합니다. 공개 본문의 내용은 작업자가 확인해야 하며, 설정에 없는 호스트나 일반 문장 속 모든 민감한 정보를 자동으로 판별하는 필터는 아닙니다.
 
 생성과 갱신 모두 제목은 HEAD 커밋 제목을 사용합니다. 이미 열린 PR의 제목과 변경된 `pr.md`는 `gh api -X PATCH repos/OWNER/REPO/pulls/NUMBER`로 갱신합니다. `pr.md`가 없거나 마지막 게시 본문과 같으면 본문은 건드리지 않습니다. 갱신 실패 시 마지막 게시 본문을 보존하므로 다시 실행해 재시도할 수 있습니다. 이전 퇴고가 실행 중이면 완료 후 `dv pr`을 다시 실행해야 합니다. 늦게 시작한 퇴고도 `pr.md`가 있거나 공개 본문 게시 이력이 있으면 건너뜁니다. 퇴고 도중 `pr.md`가 생긴 경우에도 게시 직전에 다시 확인합니다.
 

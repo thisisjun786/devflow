@@ -3,6 +3,8 @@
 set -euo pipefail
 state="$DV_STATE/$DV_ISSUE"
 if [ "${DV_PR_EARLY_EXIT:-0}" = 1 ] && [ ! -d "$state/revive" ] && [ ! -f "$state/exec-retry.used" ]; then
+  git commit --allow-empty -qm 'feat(fixture): start the worker change'
+  pr-template-body 'Starts the worker change.' > "$state/pr.md"
   dv pr "$DV_ISSUE"
   if [ "${DV_PR_EXIT_GATE:-0}" = 1 ]; then
     while [ ! -f "$state/exit-release" ]; do sleep 0.05; done
@@ -16,12 +18,12 @@ while :; do
     printf 'P1: fix once\n' > "$state/review-fix.sent"
     printf 'fixed\n' > review-fix
     git add review-fix
-    git commit -qm "$DV_ISSUE: fix review P1"
+    git commit -qm 'fix(fixture): address the review P1'
   fi
   if ! jq -e .green "$state/worker-snapshot" >/dev/null; then
     printf 'fixed\n' > ci-fix
     git add ci-fix
-    git commit -qm "$DV_ISSUE: fix CI"
+    git commit -qm 'fix(ci): repair the fixture check'
     printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   fi
   printf '"auto"\n' > "$GH_STUB_DIR/reviews"
