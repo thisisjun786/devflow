@@ -3,6 +3,8 @@
 # ${VAR:=default} keeps environment overrides, including test agent commands.
 if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOME/dv/wt}"; fi
 : "${DV_STATE:=$HOME/.local/state/devflow}"
+: "${DV_TMP:=$HOME/.cache/dv/tmp}" # host-local disk scratch for dv and its agents
+: "${DV_TMP_QUOTA_KB:=12582912}" # fallback per-user /tmp quota estimate (12 GiB); 0 = unknown
 : "${DV_HOME:=$HOME/.local/state/devflow-mac}"
 : "${DV_HOST:=$(hostname -s)}"
 : "${DV_AUTO_UPDATE:=1}" # clean main checkout: dv checks every 5 min; watcher on landed/safety pass

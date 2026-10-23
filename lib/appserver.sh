@@ -12,7 +12,7 @@ appserver_proxy() {
 appserver_open() {
   [[ "$DV_APPSERVER_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || return 1
   command -v openssl >/dev/null || return 1
-  AS_IO=$(mktemp -d "${TMPDIR:-/tmp}/dv-appserver.XXXXXX") || return 1
+  tmp_make AS_IO dv-appserver || return 1
   mkfifo "$AS_IO/in" "$AS_IO/out" "$AS_IO/receive-ack" "$AS_IO/raw-in" "$AS_IO/raw-out" || { appserver_close; return 1; }
   AS_SEND='' AS_RECEIVE=''
   appserver_proxy < "$AS_IO/raw-in" > "$AS_IO/raw-out" & AS_PID=$!
@@ -435,8 +435,10 @@ cmd__appserver_run() {
     appserver_open && appserver_handshake || return 1
     params=$(jq -cn --arg cwd "$WT" --arg model "$DV_CODEX_MODEL" --arg effort "$DV_CODEX_EFFORT" \
       --arg config "$DV_CONFIG" --arg state "$DV_STATE" --arg work "$DV_WORK" --arg home "$DV_HOME" --arg host "$DV_HOST" --arg path "$DV_ROOT/bin:$PATH" \
+      --arg tmp "$TMPDIR" --arg cache "${GOCACHE:-}" \
       '{cwd:$cwd,model:$model,approvalPolicy:"never",sandbox:"danger-full-access",config:{model_reasoning_effort:$effort,
-        shell_environment_policy:{set:{DV_CONFIG:$config,DV_STATE:$state,DV_WORK:$work,DV_HOME:$home,DV_HOST:$host,PATH:$path}}}}')
+        shell_environment_policy:{set:({DV_CONFIG:$config,DV_STATE:$state,DV_WORK:$work,DV_HOME:$home,DV_HOST:$host,PATH:$path,TMPDIR:$tmp,DV_TMP:$tmp} +
+          (if $cache=="" then {} else {GOCACHE:$cache} end))}}}')
     appserver_mutate thread-start thread/start "$params"
     [ "$AS_CLASS" = accepted ] || return 1
     AS_THREAD=$(printf '%s\n' "$AS_REPLY" | jq -er '.result.thread.id') || return 1

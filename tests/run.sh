@@ -6,6 +6,10 @@ export ROOT
 setup() {
   CASE_DIR=$(mktemp -d "${DV_TEST_TMP:-${TMPDIR:-/tmp}}/dv-test.XXXXXX")
   export CASE_DIR
+  export DV_TEST_TMP=${DV_TEST_TMP:-${TMPDIR:-/tmp}}
+  export TMPDIR="$CASE_DIR/temporary-root"
+  mkdir -p "$TMPDIR"
+  unset DV_TMP
   export HOME="$CASE_DIR/agent home"
   export GOCACHE="$HOME/.cache/go-build"
   mkdir -p "$HOME/.claude"
@@ -2103,6 +2107,8 @@ source "$ROOT/tests/pr-worker.sh"
 source "$ROOT/tests/self-update.sh"
 # shellcheck source=tests/disk.sh
 source "$ROOT/tests/disk.sh"
+# shellcheck source=tests/tmp.sh
+source "$ROOT/tests/tmp.sh"
 # shellcheck source=tests/stack.sh
 source "$ROOT/tests/stack.sh"
 # shellcheck source=tests/watcher-stuck.sh
@@ -2112,6 +2118,8 @@ source "$ROOT/tests/task.sh"
 task_content_setup() {
   task_setup
   export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state" XDG_CACHE_HOME="$HOME/.cache"
+  # Each case has its own process; another case's subshell cannot affect this setup.
+  # shellcheck disable=SC2031
   export TMPDIR="$CASE_DIR/tmp"
   mkdir -p "$TMPDIR"
   export DV_CODEX_MODE=exec DV_AGENT_CMD_codex=''
@@ -2317,6 +2325,7 @@ registered_cases() {
   question_goal_start_ack \
   exec_send_slow_completion \
   appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
+  tmp_reap tmp_guards tmp_agent tmp_appserver tmp_default tmp_quota tmp_reap_bash32 tmp_appserver_killed tmp_usage tmp_cache pr_body_delayed_wait \
   review_source_moved review_source_named review_source_numeric review_source_meta review_source_invalid_meta review_source_unknown review_source_start teardown_wait_host_agent \
   appserver_close_unset appserver_daemon_restart appserver_watch_dead_client appserver_daemon_lost_turn appserver_reconnect_stall_clock appserver_disconnect_unknown watcher_teardown_waiter \
   send_branch_appserver send_branch_appserver_reconnect send_branch_exec send_branch_tmux send_branch_herdr send_branch_revive send_branch_guards send_branch_missing send_branch_replaced_repo send_branch_replaced_path \

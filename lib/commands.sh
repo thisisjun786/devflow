@@ -98,11 +98,12 @@ cmd_start() {
   printf '%s %s %s\n' "$ISSUE" "$BRANCH" "$WT"
 }
 launch_agent() {
+  tmp_agent_environment
   if [ "$BACKEND" = appserver ]; then appserver_start; return; fi
   # Terminal server environments can predate this shell. Pass exported DV_* values explicitly.
   local env_args=() key launcher
   while IFS= read -r key; do
-    case "$key" in DV_*|CODEX_HOME|CLAUDE_CONFIG_DIR|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
+    case "$key" in DV_*|TMPDIR|GOCACHE|CODEX_HOME|CLAUDE_CONFIG_DIR|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
   done < <(compgen -e)
   launcher=$(shell_join env "PATH=$PATH" "${env_args[@]}" "$DV_ROOT/bin/dv" _agent "$ISSUE" "$@")
   if [ "$BACKEND" = exec ]; then
