@@ -287,8 +287,8 @@ cmd_cancel() (
   valid_issue "$1"
   local dir="$DV_HOME/submissions/$1"
   [ -f "$dir/task.json" ] || fail 'unknown submission'
-  bid_lock "$DV_HOME/.schedule-lock" || fail 'scheduler busy'
-  trap 'rmdir "$DV_HOME/.schedule-lock"' EXIT
+  bid_lock "$DV_HOME/.schedule-lock" "${BASHPID:-$$}" || fail 'scheduler busy'
+  trap 'owned_unlock "$DV_HOME/.schedule-lock" "${BASHPID:-$$}"' EXIT
   jq -e '.status=="submitted" and .host==null' "$dir/task.json" >/dev/null || fail 'only unassigned submissions can be canceled'
   bid_task_set "$dir" '.status="canceled"'
   "$DV_ROOT/bin/dv-kick" canceled "$1" 'Submission canceled' "$DV_HOST"
@@ -514,8 +514,10 @@ bid_event() (
   case "$kind" in submitted|done|failed|landed|question|blocked|parked|closed) ;; *) exit 0 ;; esac
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || exit 0
   mkdir -p "$DV_HOME/submissions"
-  bid_lock "$DV_HOME/.schedule-lock" || return 1
-  trap 'rmdir "$DV_HOME/.schedule-lock"' EXIT
+  # Same owned protocol as autofill: a killed holder (reboot, SIGTERM) is
+  # reclaimed instead of leaving an ownerless directory that blocks the queue.
+  bid_lock "$DV_HOME/.schedule-lock" "${BASHPID:-$$}" || return 1
+  trap 'owned_unlock "$DV_HOME/.schedule-lock" "${BASHPID:-$$}"' EXIT
   issue=$(printf '%s\n' "$line" | jq -r .issue); valid_issue "$issue"
   host=$(printf '%s\n' "$line" | jq -r .host); head=$(printf '%s\n' "$line" | jq -r '.head//""')
   event_token=$(printf '%s\n' "$line" | jq -r '.token//""')
