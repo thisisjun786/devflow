@@ -171,12 +171,84 @@ case_stall_dead() {
   stall_fixture
   rm "$CASE_DIR/herdr/w-ST-1/detected"
   printf 'shell$ \n' > "$CASE_DIR/herdr/w-ST-1/output"
-  dv status ST-1 --json | jq -e '.[0] | .agent_status=="unknown" and .agent_dead==true'
+  dv status ST-1 --json | jq -e '.[0] | .agent_status=="exited" and .agent_dead==true'
+  dv status ST-1 | awk -F '\t' '$2=="running" && $8=="agent=exited" { found=1 } END { exit !found }'
   stall_functions
   STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
-  stall_scan; stall_tick 9; stall_count 0
-  stall_tick 1; stall_count 1
+  # Confirmed process loss is reported on the first scan, not after DV_STALL_AFTER.
+  stall_scan; stall_count 1
+  jq -se '.[0].message|contains("exited without dv done")' "$DV_HOME/kick.q"
   stall_tick; stall_count 1
+}
+# DF-270: a terminal server restart kills the worker together with its wrapper
+# (DF-231: herdr was OOM-killed and omp got SIGHUP). No exit record is left.
+# The next status scan relaunches it once in the same worktree.
+stall_dead_relaunch() {
+  local status=$1 wt
+  repo dead-relaunch; herdr_setup; watch_fixture
+  export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=1 DV_STALL_AFTER=300
+  cat > "$CASE_DIR/held-agent" <<'AGENT'
+#!/usr/bin/env bash
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+printf '%s\n' "${DV_REVIVE_ID:-first}" >> "$state/held-runs"
+if [ -z "${DV_REVIVE_ID:-}" ]; then
+  printf 'partial work\n' > partial.txt
+  printf '%s\n' "$$" > "$state/held.pid"
+  while :; do sleep 0.05; done
+fi
+exec "$ROOT/tests/fixtures/agent"
+AGENT
+  chmod +x "$CASE_DIR/held-agent"
+  export DV_AGENT_CMD_codex="$CASE_DIR/held-agent"
+  dv start "$REPO" DR-1 relaunch --mode goal
+  wait_file "$DV_STATE/DR-1/held.pid"
+  wt=$(jq -r .worktree "$DV_STATE/DR-1/meta")
+  kill -KILL "$(cat "$DV_STATE/DR-1/agent.pid")" "$(cat "$DV_STATE/DR-1/held.pid")"
+  wait_file "$CASE_DIR/herdr/w-DR-1/exit"
+  if [ "$status" = waiting-capacity ]; then
+    # Killed during a provider wait; the restarted server lost the pane.
+    jq --argjson time "$(date +%s)" '.status="waiting-capacity" |
+      .capacity={since:$time,attempt:1,resume_status:"running",next_try_at:($time+120)}' \
+      "$DV_STATE/DR-1/meta" > "$CASE_DIR/meta.tmp"
+    mv "$CASE_DIR/meta.tmp" "$DV_STATE/DR-1/meta"
+    rm -rf "$CASE_DIR/herdr/w-DR-1"
+  else
+    # The restarted server restored the pane with a fresh shell.
+    printf 'shell$ \n' > "$CASE_DIR/herdr/w-DR-1/output"
+  fi
+  test ! -f "$DV_STATE/DR-1/agent.exit"
+  dv status DR-1 --json | jq -e '.[0] | .agent_dead and .agent_status=="exited"'
+  dv status DR-1 | awk -F '\t' '$8=="agent=exited" { found=1 } END { exit !found }'
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  wait_file "$DV_STATE/DR-1/done.json"
+  wait_file "$CASE_DIR/herdr/w-DR-1/exit"
+  wait_file "$DV_STATE/DR-1/agent.exit"
+  # Later scans see a finished job and never start a second replacement.
+  sleep 1.5
+  touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
+  test "$(cat "$DV_STATE/DR-1/agent.exit")" = 0
+  jq -e '.status=="done" and .capacity==null' "$DV_STATE/DR-1/meta"
+  test "$(wc -l < "$DV_STATE/DR-1/held-runs" | tr -d ' ')" = 2
+  test "$(sed -n 2p "$DV_STATE/DR-1/held-runs")" = "$(cat "$DV_STATE/DR-1/revive/id")"
+  test "$(cat "$wt/partial.txt")" = 'partial work'
+  grep -F 'exited without dv done' "$DV_STATE/DR-1/revive/prompt.md"
+  grep -F 'Finish with dv done DR-1' "$DV_STATE/DR-1/revive/prompt.md"
+  test ! -d "$DV_STATE/DR-1/revive/blocked"
+  jq -se '[.[]|select(.kind=="stalled")]|length==1' "$DV_HOME/kick.q"
+  jq -se 'map(.kind)|map(select(.=="done"))|length==1' "$DV_STATE/DR-1/events.log"
+}
+case_stall_dead_relaunch() { stall_dead_relaunch running; }
+case_stall_dead_capacity_relaunch() { stall_dead_relaunch waiting-capacity; }
+# DF-231's hosts returned 0.3-0.8 MB of status rows; argv (Linux: 128 KiB
+# per argument) must not carry them, or every reconcile round fails.
+case_stall_large_rows() {
+  stall_functions
+  local rows
+  rows=$(jq -cn --argjson row "$STALL_ROW" '[range(300) as $n | $row + {issue:("ST-\($n)"),last_log:("x" * 4000)}]')
+  test "${#rows}" -gt 1100000
+  stall_reconcile alias "$rows" 60
+  jq -e 'length==300' "$DV_HOME/stalls.json"
 }
 case_stall_capacity() {
   stall_fixture

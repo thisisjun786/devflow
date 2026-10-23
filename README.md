@@ -198,7 +198,9 @@ exec의 `alive`는 래퍼 프로세스의 생존 여부입니다. 새 JSON 이�
 
 자동 재시도 중의 실패는 로그에 남기며, 재시도를 소진하면 `agent.exit`를 기록한 뒤 `failed`와 `blocked` 이벤트를 보냅니다. 스케줄러는 최종 `failed`로 제출 작업의 실패를 확인하고 대기 작업을 다시 입찰합니다. 에이전트의 `dv done` 이후에도 CLI가 실패할 수 있으므로, `dv land`는 병합 전에 exec 래퍼의 종료, 종료 코드 0, 감독 상태 `done`을 모두 확인합니다. 정상·실패 반환과 신호 종료 시 exec 잠금을 해제합니다.
 
-herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있습니다. `dv send`는 전달 실패 후 에이전트 종료가 확인되면 같은 worktree·브랜치·에이전트 종류·실행 모드로 한 번 자동 재시작합니다. 요청 문장을 첫 입력에 넣고 기존 brief·보고서 경로를 함께 전달합니다. 미커밋 변경과 PR, `review-fix.sent`는 보존하며 기존 작업과 pr-loop.json의 회차 기록을 이어갑니다.
+herdr 0.9.1에서 `alive`는 pane 존재 여부를 뜻합니다. 사용자 지정 명령처럼 에이전트가 감지되지 않아도 `alive=true`, `agent_status=unknown`일 수 있습니다. 래퍼와 에이전트의 종료가 확인되면 `agent=exited`(0이 아닌 종료 코드가 기록됐으면 `failed`)로 표시합니다. `dv send`는 전달 실패 후 에이전트 종료가 확인되면 같은 worktree·브랜치·에이전트 종류·실행 모드로 한 번 자동 재시작합니다. 요청 문장을 첫 입력에 넣고 기존 brief·보고서 경로를 함께 전달합니다. 미커밋 변경과 PR, `review-fix.sent`는 보존하며 기존 작업과 pr-loop.json의 회차 기록을 이어갑니다.
+
+herdr 서버가 끝나면 pane의 에이전트와 래퍼도 SIGHUP·SIGKILL로 함께 끝나며 종료 기록이 남지 않습니다. systemd user unit의 기본 `OOMPolicy=stop`은 pane 안의 프로세스 하나가 OOM으로 죽어도 unit 전체를 멈춥니다. herdr를 unit으로 띄우면 `OOMPolicy=continue`를 두세요. 종료된 작업은 다음 상태 점검이 한 번 다시 띄웁니다.
 
 tmux는 사라진 세션이나 종료된 pane을 확인하고, herdr는 `agent_not_found`와 래퍼 종료를 함께 확인합니다. pane이 사라졌어도 살아 있는 래퍼는 재시작하지 않으며 통신 오류, 감지 지연에도 재시작하지 않습니다. 기존 herdr pane이 있으면 재사용하고 없으면 같은 작업 폴더에 새 workspace를 만듭니다. `$DV_STATE/ISSUE/revive/`에 최초 요청과 이전 실행·완료 기록을 보존하며 이슈당 자동 재시작은 한 번입니다. 새 에이전트의 시작·실행이 실패하거나 goal이 새 `dv done` 없이 끝나면 `blocked` 이벤트를 한 번 보냅니다. 강제 종료로 래퍼까지 사라져 종료 처리가 실행되지 않았다면 다음 `dv send`가 종료를 확인해 차단을 알립니다. 이전 버전의 herdr 이슈에서 래퍼 PID와 종료 기록이 모두 없으면 `pane process-info`가 셸만 있는 전경 프로세스를 확인할 때 종료로 봅니다. 다른 명령이 실행 중이거나 프로세스 정보가 없거나 조회에 실패하면 재시작하지 않습니다.
 
@@ -408,7 +410,7 @@ learned/effective slots를 덧붙입니다. 모델이나 사용 가능한 슬롯
 
 감시 호스트의 `$DV_HOME/kick.q`와 `events.log`는 JSON Lines입니다. 이벤트 ID(host/issue/kind/head)로 중복을 무시하며, 작업자 로그·프롬프트는 `workers/`에 남습니다. 3초 간격은 로컬 파일 읽기이며 원격 안전망은 `ssh HOST dv status --json`입니다(감시 호스트 자신은 ssh 없이). 점검 간격은 `DV_RECONCILE_INTERVAL`, `DV_STALL_AFTER`, 60초 중 최솟값입니다. 원격 개발 호스트는 감시 호스트의 dv-watch가 `DV_PULL_HOSTS`에 적힌 호스트마다 `dv-kick-pull <host>`를 띄워, 그 호스트의 `kick.q`를 ssh 한 줄기로 `tail -f` 해 받아 옵니다(끊기면 dv-watch가 다시 띄움, 별도 데몬 없음). 개발 호스트에서 감시 호스트로 가는 ssh 키가 필요 없고, 폴링 없이 쓰는 즉시 도착하며, 줄 위치와 파일 inode를 이 쪽 큐에 쓴 뒤에만 저장해, 전달 실패·재접속·큐 교체 때도 빠짐없이 이어 받습니다. 원격 쪽은 그 호스트의 devflow 설정(DV_HOME)을 읽습니다. 그 호스트의 `DV_KICK_HOST`는 자기 자신(로컬 큐)으로 둡니다. `$DV_HOME/stop`을 만들면 새 작업을 멈추고 실행 중인 작업자를 기다립니다. 재시작할 때 stop 파일을 지우세요. 비정상 종료의 잠금은 PID와 실제 프로세스를 확인한 뒤 사람이 지웁니다.
 
-`DV_STALL_AFTER`는 양의 정수 초이며 기본값은 App Server와 공유하는 300입니다. `DV_HOSTS`의 `running` 작업에서 `idle`, 현재 Codex 화면의 `Goal stalled`, 또는 `unknown`이면서 에이전트 종료가 확인된 상태를 이 시간 이상 관측하면 `stalled` 이벤트를 보냅니다. 화면 기록이나 로그의 옛 문구는 사용하지 않으며, 현재의 명시적 정체 배너는 herdr의 `working`보다 우선합니다. 마지막 배너가 `Pursuing goal` 또는 `Working`이면 활동 중으로 보호합니다. 현재 화면에 여러 문구가 남아 있으면 마지막 goal 상태·capacity 문구를 사용합니다. `dv status --json`은 `goal_stalled`, `goal_active`, `agent_dead`, `agent_state_seq`, `agent_session`도 제공합니다. `agent_dead`는 단순한 감지 실패와 구별되는 종료 증거입니다. 첫 정체 관측부터 시간을 재므로 알림에는 점검 주기와 호스트 조회 시간이 추가될 수 있습니다. tmux에서는 명시적인 정체 화면이나 종료된 pane·세션으로 감지하고 `Pursuing goal`·`Working`으로 활동 재개를 확인합니다.
+`DV_STALL_AFTER`는 양의 정수 초이며 기본값은 App Server와 공유하는 300입니다. `DV_HOSTS`의 `running` 작업에서 `idle`이나 현재 Codex 화면의 `Goal stalled`를 이 시간 이상 관측하면 `stalled` 이벤트를 보냅니다. `dv done` 없이 에이전트와 래퍼의 종료가 확인된 작업(`agent=exited`, 용량 대기 중 래퍼가 함께 끝난 경우 포함)은 기다리지 않고 첫 점검에서 알린 뒤 다시 띄웁니다. 화면 기록이나 로그의 옛 문구는 사용하지 않으며, 현재의 명시적 정체 배너는 herdr의 `working`보다 우선합니다. 마지막 배너가 `Pursuing goal` 또는 `Working`이면 활동 중으로 보호합니다. 현재 화면에 여러 문구가 남아 있으면 마지막 goal 상태·capacity 문구를 사용합니다. `dv status --json`은 `goal_stalled`, `goal_active`, `agent_dead`, `agent_state_seq`, `agent_session`도 제공합니다. `agent_dead`는 단순한 감지 실패와 구별되는 종료 증거입니다. 첫 정체 관측부터 시간을 재므로 알림에는 점검 주기와 호스트 조회 시간이 추가될 수 있습니다. tmux에서는 명시적인 정체 화면이나 종료된 pane·세션으로 감지하고 `Pursuing goal`·`Working`으로 활동 재개를 확인합니다.
 
 정체 구간과 고유 이벤트 ID는 watcher의 `$DV_HOME/stalls.json`에 보관합니다. 같은 구간은 watcher 재시작 후에도 한 번만 알리고, 활동이 확인되면 새 구간으로 계산합니다. 명시적인 정체 화면이 계속되는 동안은 재개 시도에 따른 herdr 상태 번호 변경만으로 구간을 초기화하지 않습니다. 종료 증거 없는 상태 불명·통신 실패에서는 타이머를 멈추고, 긴 점검 공백 뒤에는 다시 시간을 잽니다. `done`·`landed` 등 실행 중이 아닌 작업과 완료·정리 기록이 있는 작업은 제외합니다.
 
@@ -524,6 +526,11 @@ App Server의 기존 `appserver.capacity_retry_at`도 유지합니다. 대기 �
 finding 기록을 보존하며 Codex가 thread ID를 제공했다면 `exec resume`으로 이어갑니다.
 Claude QA는 세션을 저장하지 않는 기존 설정을 유지하고 같은 checkout과 원래 브리프로 이어갑니다.
 터미널은 현재 화면을 사용하고, 이후 `Pursuing goal`·`Working`·`Thinking` 배너가 나오면 옛 오류를 무시합니다.
+Codex·Claude는 화면의 모든 줄을 분류합니다. omp는 화면 대신 이번 실행 뒤 `DV_OMP_SESSIONS`에 쓴 세션 JSONL의
+마지막 message가 `stopReason:"error"`이고 `errorStatus` 429이거나 오류 문구가 위 분류에 맞을 때만 기다리며,
+그 뒤 입력이나 응답이 기록되면 대기를 끝냅니다. 세션 기록이 없는 omp와 Devin·agy·grok·cursor는
+`Error:`·`API Error: 429`처럼 오류 메시지로 시작하는 줄만 분류합니다. 도구 출력에 보인 시험 이름이나 문서의
+용량 문구로는 대기하지 않습니다.
 
 용량 대기는 exec의 단발 재시도, terminal revive, `DV_RECOVER_MAX`를 소모하지 않습니다.
 일반 오류는 기존 복구 정책을 유지합니다. `dv status`와 JSON의 `recoveries`,

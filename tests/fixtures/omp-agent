@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# omp stand-in: keeps a session JSONL where omp does (DV_OMP_SESSIONS) and
+# prints ordinary tool output. OMP_FIXTURE_MODE=error records a provider 429.
+set -euo pipefail
+state="$DV_STATE/$DV_ISSUE"
+dir="$DV_OMP_SESSIONS/--$(pwd -P | sed 's|^/||' | tr '/\\:' '---')--"
+mkdir -p "$dir"
+n=1
+[ ! -f "$state/omp-runs" ] || n=$(( $(cat "$state/omp-runs") + 1 ))
+printf '%s\n' "$n" > "$state/omp-runs"
+session="$dir/2026-10-23T09-47-0${n}-000Z_fixture-$n.jsonl"
+message() {
+  local extra=${4:-}
+  [ -n "$extra" ] || extra='{}'
+  jq -cn --arg role "$1" --arg stop "$2" --arg text "$3" --argjson extra "$extra" \
+    '{type:"message",message:({role:$role,content:[{type:"text",text:$text}]} +
+      (if $stop=="" then {} else {stopReason:$stop} end) + $extra)}' >> "$session"
+}
+jq -cn --arg cwd "$(pwd -P)" '{type:"session",version:3,id:"fixture",cwd:$cwd}' >> "$session"
+message user '' 'Read the brief'
+if [ "${OMP_FIXTURE_MODE:-text}" = error ] && [ "$n" = 1 ]; then
+  message assistant error '' '{"errorStatus":429,"errorMessage":"429 status code (no body)"}'
+  printf ' π > ◒ DeepSeek V4.1 Flash (InferHub) > ⑂ main\n'
+  # herdr delivers the continuation as a prompt, not on stdin.
+  while ! grep -q 'Continue the interrupted request' "$state/sent-input" 2>/dev/null; do sleep 0.05; done
+  message user '' 'Continue the interrupted request'
+fi
+message assistant toolUse 'Reading the test registry'
+# The DF-231 screen: a registered case name and documentation, not an error.
+printf 'stack_wait appserver_rate_limit appserver_legacy_capacity\n'
+printf 'README: HTTP 429 means too many requests; the agent waits.\n'
+message toolResult '' 'stack_wait appserver_rate_limit appserver_legacy_capacity'
+touch "$state/omp-ready"
+while [ "${OMP_FIXTURE_MODE:-text}" = text ] && [ ! -f "$state/omp-release" ]; do sleep 0.05; done
+message assistant stop 'Done'
+"$ROOT/tests/fixtures/agent"

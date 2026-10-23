@@ -121,6 +121,8 @@ case "$1 $2" in
   'pane read')
     test "$4" = --source
     case "$5" in visible|recent-unwrapped) ;; *) exit 1 ;; esac
+    # Show the agent's own output as the visible screen, as a real pane does.
+    if [ "$5" = visible ] && [ -f "$stub/visible-output" ]; then cat "$dir/output"; exit; fi
     if [ "$5" = visible ] && [ -f "$dir/startup-mode" ]; then
       mode=$(cat "$dir/startup-mode")
       case "$mode" in

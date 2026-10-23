@@ -255,3 +255,54 @@ case_capacity_terminal_timeout() {
   test -d "$(jq -r .worktree "$DV_STATE/CT-1/meta")"
   if kill -0 "$(cat "$DV_STATE/CT-1/held.pid")" 2>/dev/null; then return 1; fi
 }
+# DF-270: omp's visible tool output can name limits (DF-231 showed the case
+# name appserver_rate_limit). Only its session record of a provider error counts.
+case_capacity_omp_screen_text() {
+  repo omp-text; herdr_setup
+  export DV_OMP_BIN="$ROOT/tests/fixtures/omp-agent" OMP_FIXTURE_MODE=text
+  mkdir -p "$CASE_DIR/herdr"; touch "$CASE_DIR/herdr/visible-output"
+  dv start "$REPO" OM-1 omp --agent omp --mode goal
+  wait_file "$DV_STATE/OM-1/omp-ready"
+  # Let the supervisor's one-second polls see the text on the visible screen.
+  sleep 2.5
+  dv status OM-1 --json | jq -e '.[0] | .status=="running" and .capacity_detected==false and .capacity==null'
+  touch "$DV_STATE/OM-1/omp-release"
+  wait_native OM-1
+  jq -e '.status=="done" and .capacity==null' "$DV_STATE/OM-1/meta"
+  jq -se 'map(.kind)==["done"]' "$DV_STATE/OM-1/events.log"
+  test ! -f "$DV_STATE/OM-1/sent-input"
+}
+case_capacity_omp_session() {
+  repo omp-session; herdr_setup; capacity_clock_setup
+  export DV_OMP_BIN="$ROOT/tests/fixtures/omp-agent" OMP_FIXTURE_MODE=error
+  mkdir -p "$CASE_DIR/herdr"; touch "$CASE_DIR/herdr/visible-output"
+  dv start "$REPO" OM-1 omp --agent omp --mode goal
+  capacity_status_wait OM-1
+  capacity_clock_advance 120
+  wait_native OM-1
+  jq -e '.status=="done" and .capacity==null' "$DV_STATE/OM-1/meta"
+  test "$(grep -c 'Continue the interrupted request' "$DV_STATE/OM-1/sent-input")" = 1
+  jq -se 'map(.kind)==["waiting-capacity","done"]' "$DV_STATE/OM-1/events.log"
+}
+case_capacity_agent_lines() {
+  bidding_functions
+  local agent line state="$CASE_DIR/no-session"
+  mkdir "$state"
+  # Codex and Claude keep the existing visible-screen classifier.
+  for agent in codex claude; do
+    capacity_agent_error "$agent" 'Selected model is at capacity' "$state" "$CASE_DIR"
+  done
+  # Other CLIs, and omp without a session record, count only error lines.
+  for agent in omp devin agy grok cursor; do
+    for line in 'Error: provider overloaded (HTTP 429)' 'API Error: 429 {"type":"rate_limit_error"}' \
+      '✗ Error: usage limit reached' '  error: Too Many Requests'; do
+      capacity_agent_error "$agent" "$line" "$state" "$CASE_DIR" || { printf '%s missed: %s\n' "$agent" "$line" >&2; return 1; }
+    done
+    for line in 'Implemented rate limiting for the API' 'stack_wait appserver_rate_limit' \
+      'Selected model is at capacity' "  printf 'Error: usage limit\\n'" 'Error: tests failed'; do
+      if capacity_agent_error "$agent" "$line" "$state" "$CASE_DIR"; then printf '%s matched: %s\n' "$agent" "$line" >&2; return 1; fi
+    done
+    # A later activity banner supersedes an old error line.
+    if capacity_agent_error "$agent" "$(printf 'Error: rate limit\nWorking\n')" "$state" "$CASE_DIR"; then return 1; fi
+  done
+}

@@ -614,7 +614,8 @@ cmd_status() {
         terminal_exit=$(cat "$(dirname "$path")/agent.exit" 2>/dev/null) || terminal_exit=''
         # A task can record done before its terminal exits unsuccessfully.
         # Keep its completion snapshot while exposing the confirmed failure.
-        if jq -e --arg exit "$terminal_exit" '.status=="running" or
+        # A provider wait is owned by the wrapper; if that died too, nobody resumes it.
+        if jq -e --arg exit "$terminal_exit" '.status=="running" or .status=="waiting-capacity" or
           (.kind=="task" and .status=="done" and ($exit|test("^[1-9][0-9]*$")))' "$path" >/dev/null &&
           (load_issue "$(jq -r .issue "$path")"; agent_gone); then
           agent_dead=true
@@ -622,7 +623,7 @@ cmd_status() {
           # nonzero exit confirms failure; keep metadata intact for revival.
           if [[ "$terminal_exit" =~ ^[1-9][0-9]*$ ]]; then
             agent_status=failed; agent_exit_code=$terminal_exit
-          fi
+          else agent_status=exited; fi
         fi
       fi
       if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" or .status=="waiting-capacity"' "$path" >/dev/null; then
@@ -640,7 +641,7 @@ cmd_status() {
           /^([[:space:]]|│|┃)*((•|[*])[[:space:]]+)?(Pursuing goal|Working)([[:space:]:.]|$)/ { state="active" }
           END { print state }')
         case "$goal_state" in stalled) goal_stalled=true ;; active) goal_active=true ;; esac
-        if printf '%s\n' "$screen" | capacity_screen_error; then provider_capacity=true; goal_stalled=true; goal_active=false; fi
+        if capacity_agent_error "$row_agent" "$screen" "$(dirname "$path")" "$row_worktree"; then provider_capacity=true; goal_stalled=true; goal_active=false; fi
       fi
       elapsed=$(( $(now) - $(jq -r .started "$path") ))
       # done_at can describe an earlier PR revision. Read the completion head
@@ -651,7 +652,7 @@ cmd_status() {
         '.+{done_head:(if $done_head=="" then null else $done_head end),transcript:(if $transcript=="" then null else $transcript end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session,capacity_detected:$provider_capacity}' "$path")
       if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],status_age_seconds:0,recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
       row=$(printf '%s\n' "$row" | jq -c '.capacity_retry_at=(.capacity.next_try_at // null) |
-        if .status=="waiting-capacity" then .agent_status="waiting-capacity" else . end')
+        if .status=="waiting-capacity" and .agent_dead!=true then .agent_status="waiting-capacity" else . end')
       if [ "$agent_status" = failed ] &&
         { [ "$agent_dead" = true ] || { [ "$backend" = exec ] && [ "$alive" = false ]; }; }; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
