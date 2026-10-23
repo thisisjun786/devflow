@@ -23,6 +23,10 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
 : "${DV_CLAUDE_BIN:=claude}"
 : "${DV_DEVIN_BIN:=$HOME/.local/bin/devin}"
+: "${DV_OMP_BIN:=omp}"
+: "${DV_AGY_BIN:=agy}"
+: "${DV_GROK_BIN:=grok}"
+: "${DV_CURSOR_BIN:=cursor-agent}"
 : "${DV_CODEX_MODEL:=gpt-6-astra}"
 : "${DV_CODEX_EFFORT:=xhigh}"
 : "${DV_CODEX_DISABLE_HOOKS:=1}" # tmux only; herdr always keeps its state hooks enabled
@@ -30,17 +34,31 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_CLAUDE_MODEL:=opus}"
 : "${DV_CLAUDE_EFFORT:=xhigh}"
 : "${DV_DEVIN_MODEL:=fusion-gpt-6-astra-xhigh-sidekick-swe-2-high}"
+: "${DV_OMP_MODEL:=inferhub/deepseek-v4.1-flash}" # provider/model; custom providers live in ~/.omp/agent/models.yml
+: "${DV_AGY_MODEL:=gemini-4-argon}" # Argon at medium effort; the TUI ignores gemini-4-argon-medium
+: "${DV_GROK_MODEL:=}" # empty = grok's own default
+: "${DV_CURSOR_MODEL:=}" # empty = cursor-agent's own default
+: "${DV_ROUTE_WRITING=agy}" # dv submit without --agent: brief line "Route: writing"; empty keeps DV_AGENT
+: "${DV_ROUTE_SMALL=omp}" # brief line "Route: small" (one package, about 200 lines); empty keeps DV_AGENT
 : "${DV_AGENT:=codex}"
 : "${DV_AGENT_QUESTIONS:=sion}" # herdr: question tools on; off (always under tmux): disable Codex/Claude question tools
 : "${DV_CODEX_SESSIONS:=${CODEX_HOME:-$HOME/.codex}/sessions}" # question transcripts, read only
 : "${DV_CLAUDE_SESSIONS:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" # question transcripts, read only
+: "${DV_OMP_SESSIONS:=$HOME/.omp/agent/sessions}" # transcripts shown by dv status and revival, read only
+: "${DV_AGY_SESSIONS:=$HOME/.gemini/antigravity-cli/conversations}"
+: "${DV_GROK_SESSIONS:=$HOME/.grok/sessions}"
+: "${DV_CURSOR_SESSIONS:=$HOME/.cursor/projects}"
 : "${DV_MODE:=}" # optional legacy override; --mode takes precedence
 : "${DV_AGENT_CMD_codex:=}" # complete shell command, no extra CLI flags
 : "${DV_AGENT_CMD_claude:=}"
 : "${DV_AGENT_CMD_devin:=}"
+: "${DV_AGENT_CMD_omp:=}"
+: "${DV_AGENT_CMD_agy:=}"
+: "${DV_AGENT_CMD_grok:=}"
+: "${DV_AGENT_CMD_cursor:=}"
 : "${DV_TMUX_SOCKET:=}" # empty uses the normal tmux server
 : "${DV_HERDR:=1}" # native herdr backend when installed; 0 uses tmux
-: "${DV_START_WAIT:=30}" # seconds to wait for Codex prompt / Devin trust menu
+: "${DV_START_WAIT:=30}" # seconds to wait for Codex prompt / Devin, agy, grok trust menu
 : "${DV_BLOCKED_GRACE:=20}" # seconds a herdr pane must stay blocked before a question event
 : "${DV_READY_PATTERN:=›|❯|dv-ready>}" # Codex TUI input marker
 : "${DV_SEND_DELAY:=0.3}" # let bracketed paste settle before Enter
@@ -80,6 +98,10 @@ if [ -d /scratch ]; then : "${DV_WORK:=/scratch/dv-wt}"; else : "${DV_WORK:=$HOM
 : "${DV_AGENT_READY_codex:=}" # optional read-only auth probe command (exit 0 = ready)
 : "${DV_AGENT_READY_claude:=}"
 : "${DV_AGENT_READY_devin:=}"
+: "${DV_AGENT_READY_omp:=}" # default: DV_OMP_MODEL's provider and key are configured
+: "${DV_AGENT_READY_agy:=}" # default for agy, grok, cursor: "<bin> models" succeeds
+: "${DV_AGENT_READY_grok:=}"
+: "${DV_AGENT_READY_cursor:=}"
 # DV_CONFIG: config file override (default ~/.config/devflow/config.sh).
 # DV_TEST_TMP: test temporary root (default TMPDIR or /tmp); no live agents/network.
 : "${DV_QA:=0}" # 1: real-use QA after landed; .devflow on merged base may opt in/out
