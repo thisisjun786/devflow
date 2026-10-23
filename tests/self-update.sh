@@ -226,6 +226,7 @@ case_update_host() {
   update_publish
   git -C "$UPDATE_ROOT" fetch -q origin
   DV_AUTO_UPDATE=0 "$UPDATE_ROOT/bin/dv" host check --json > "$CASE_DIR/check.json"
+  jq -e '.tmp | .usage_kb==64 and .quota_kb==1024 and .source=="quota"' "$CASE_DIR/check.json"
   jq -e --arg old "$UPDATE_OLD" --arg new "$UPDATE_NEW" '.watcher | .running and .status=="outdated" and .commit==$old and .origin_main==$new' "$CASE_DIR/check.json"
   DV_AUTO_UPDATE=0 "$UPDATE_ROOT/bin/dv" host check > "$CASE_DIR/check.txt"
   grep "watcher: outdated commit=$UPDATE_OLD origin/main=$UPDATE_NEW" "$CASE_DIR/check.txt"

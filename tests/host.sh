@@ -13,11 +13,31 @@ host_setup() {
   chmod +x "$CASE_DIR/host-bin/uname"
   printf '#!/usr/bin/env bash\nexit 99\n' > "$CASE_DIR/host-bin/sudo"
   chmod +x "$CASE_DIR/host-bin/sudo"
+  # All host checks, including copied self-update checkouts, inherit these probes.
+  ln -s "$HOST_FIXTURES/host-quota" "$CASE_DIR/host-bin/quota"
+  ln -s "$HOST_FIXTURES/host-tmp-guard" "$CASE_DIR/host-bin/find"
+  ln -s "$HOST_FIXTURES/host-tmp-guard" "$CASE_DIR/host-bin/du"
   export PATH="$CASE_DIR/host-bin:$PATH"
   # Copy the checkout so host-scoped rows can be tested without changing source.
   mkdir "$CASE_DIR/host-root"
   cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/hosts" "$ROOT/config.example.sh" "$CASE_DIR/host-root/"
   HOST_DV="$CASE_DIR/host-root/bin/dv"
+}
+case_host_tmp_guard() {
+  host_setup
+  local tool path
+  for tool in find du; do
+    for path in /tmp /tmp/ /private/tmp /private/tmp/; do
+      if HOST_TMP_SCAN_LOG="$CASE_DIR/expected-scans" "$tool" "$path"; then return 1; fi
+    done
+  done
+  test "$(wc -l < "$CASE_DIR/expected-scans" | tr -d ' ')" = 8
+  mkdir "$CASE_DIR/synthetic-tmp"
+  printf 'fixture\n' > "$CASE_DIR/synthetic-tmp/data"
+  find "$CASE_DIR/synthetic-tmp" -type f > "$CASE_DIR/found"
+  grep -Fx "$CASE_DIR/synthetic-tmp/data" "$CASE_DIR/found"
+  du -k "$CASE_DIR/synthetic-tmp/data" > "$CASE_DIR/usage"
+  test -s "$CASE_DIR/usage"
 }
 host_fake() {
   mkdir -p "$(dirname "$1")"
@@ -34,6 +54,7 @@ case_host_check() {
   host_fake "$HOME/system/claude" 2.1.304
   printf 'optional\t1.0.0\tcheck\tother-host\n' >> "$CASE_DIR/host-root/hosts/tools.tsv"
   "$HOST_DV" host check --json > "$CASE_DIR/check.json"
+  jq -e '.tmp | .usage_kb==64 and .quota_kb==1024 and .source=="quota" and (.warning|not)' "$CASE_DIR/check.json"
   jq -e '.tools[] | select(.name=="node") | .login.status=="ok" and .ssh.status=="wrong-version" and (.ssh.path|endswith("/ssh/node"))' "$CASE_DIR/check.json"
   jq -e '.tools[] | select(.name=="uv") | .login.status=="missing"' "$CASE_DIR/check.json"
   jq -e '.auth.gh.login=="logged-in" and .auth.claude.login=="unavailable" and all(.tools[]; .name!="optional")' "$CASE_DIR/check.json"
