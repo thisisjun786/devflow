@@ -30,17 +30,24 @@ checksum() {
   printf '%s\n' "${sum%% *}" > "$HOME/download.sha256"
   printf '%s\n' "${url##*/}" > "$HOME/download.asset"
 }
+archive=tar
 case "$url" in
-  */go1.27.3.linux-*.tar.gz) dir=go/bin; tool=go; version=1.27.3 ;;
+  */go1.27.3.linux-*.tar.gz|*/go1.27.3.darwin-arm64.tar.gz) dir=go/bin; tool=go; version=1.27.3 ;;
   */node-v24.20.0-linux-*.tar.gz) dir=node-v24.20.0-linux-x64/bin; tool=node; version=24.20.0 ;;
   */uv-*-unknown-linux-gnu.tar.gz) dir=uv-x86_64-unknown-linux-gnu; tool=uv; version=0.11.32 ;;
   */gh_2.102.1_linux_*.tar.gz) dir=gh_2.102.1_linux_amd64/bin; tool=gh; version=2.102.1 ;;
   */gitleaks_8.30.1_linux_*.tar.gz) dir=.; tool=gitleaks; version=8.30.1 ;;
-  */herdr-linux-*) payload "$out" 0.9.1; checksum; exit ;;
+  */herdr-linux-*|*/herdr-macos-aarch64) payload "$out" 0.9.1; checksum; exit ;;
+  */node-v24.20.0-darwin-arm64.tar.gz) dir=node-v24.20.0-darwin-arm64/bin; tool=node; version=24.20.0 ;;
+  */uv-aarch64-apple-darwin.tar.gz) dir=uv-aarch64-apple-darwin; tool=uv; version=0.11.32 ;;
+  */gh_2.102.1_macOS_arm64.zip) dir=gh_2.102.1_macOS_arm64/bin; tool=gh; version=2.102.1; archive=zip ;;
+  */gitleaks_8.30.1_darwin_arm64.tar.gz) dir=.; tool=gitleaks; version=8.30.1 ;;
   *) printf 'Unexpected download: %s\n' "$url" >&2; exit 1 ;;
 esac
 mkdir -p "$stage/$dir"
 payload "$stage/$dir/$tool" "${HOST_BAD_VERSION:-$version}"
 if [ "$tool" = node ]; then payload "$stage/$dir/npm" 11.6.2; fi
-tar -czf "$out" -C "$stage" .
+# zip appends .zip to a name without an extension.
+if [ "$archive" = zip ]; then (cd "$stage" && zip -qr "$out.zip" .) && mv "$out.zip" "$out"
+else tar -czf "$out" -C "$stage" .; fi
 checksum

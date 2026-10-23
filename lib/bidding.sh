@@ -43,16 +43,10 @@ bid_cores() {
   printf '%s\n' "$cores"
 }
 bid_resources() {
-  local cores load memory page cache cache_free=null
+  local cores load memory cache cache_free=null
   cores=$(bid_cores)
-  if [ -r /proc/loadavg ]; then
-    load=$(awk '{print $2}' /proc/loadavg)
-    memory=$(awk '/^MemAvailable:/ {printf "%d", $2/1024}' /proc/meminfo)
-  else
-    load=$(sysctl -n vm.loadavg | awk '{print $3}')
-    page=$(sysctl -n hw.pagesize)
-    memory=$(vm_stat | awk -v page="$page" '/Pages (free|inactive|speculative):/ {gsub("\\.", "", $NF); pages+=$NF} END {printf "%d", pages*page/1048576}')
-  fi
+  load=$(portable_load5)
+  memory=$(portable_memory_mb)
   cache=$(disk_cache_path) || cache=''
   [ -z "$cache" ] || cache_free=$(disk_available_gb "$cache" || echo null)
   jq -cn --argjson cores "$cores" --argjson load "${load:-null}" --argjson memory "${memory:-null}" \

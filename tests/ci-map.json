@@ -19,6 +19,7 @@
     "lib/host-capacity.sh": ["learned_*", "capacity_*", "autofill_watch"],
     "lib/manager.sh": ["manager_*", "watch_stuck*", "watch_capacity*", "metrics_manager*", "autofill_manager_alarm"],
     "lib/metrics.sh": ["metrics_*"],
+    "lib/portable.sh": ["portable_*", "bid_*", "host_*"],
     "lib/polish.sh": ["polish_*", "pr_public_body", "pr_prepared_body", "pr_body_update"],
     "lib/pr-review.sh": ["review_*", "pr_worker_*", "pr_wait_*", "land_*", "stack_*", "qa_*"],
     "lib/qa.sh": ["qa_*"],

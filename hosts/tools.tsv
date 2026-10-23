@@ -17,6 +17,7 @@ tmux	system	apt	all
 sqlite3	system	apt	all
 git	system	apt	all
 zsh	system	apt	all
+flock	system	apt	all
 omp	system	check	all
 agy	system	check	all
 grok	system	check	all
