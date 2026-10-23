@@ -5,7 +5,7 @@ description: Use when running dev work through dv (devflow).
 
 # 시온의 devflow
 
-Linear 이슈를 정리한 뒤 개발 호스트의 로컬 저장소에서 이슈당 에이전트 하나·worktree 하나·브랜치 하나로 개발합니다. 개발 중 설계·비평·relay·리뷰 루프는 없습니다.
+GitHub 이슈(저장소별 Issues·마일스톤)를 정리한 뒤 개발 호스트의 로컬 저장소에서 이슈당 에이전트 하나·worktree 하나·브랜치 하나로 개발합니다. 개발 중 설계·비평·relay·리뷰 루프는 없습니다.
 
 herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISSUE>` workspace에서 에이전트를 직접 실행하고(Codex hooks 유지), send·status·clean/land는 meta의 backend를 따릅니다(로그는 done/clean 화면 저장, `DV_HERDR=0`·미설치·backend 없는 기존 이슈는 tmux, herdr 시작 실패 시 상태 보존).
 
@@ -39,10 +39,27 @@ herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISS
 - 현재 head의 CI·Codex 리뷰 조건(#167)은 전달 배관의 병합 조건으로 관리한다.
 - 실사용에서 본 문제가 배관이 아니면 에이전트 지시문이나 리나 설계로 보낸다.
 
+## omh 스킬 활용 (준 10-23)
+oh-my-hermes에서 들여온 개발 스킬(카테고리 omh-dev, 원본 `~/.hermes/shared-skills/omh-dev/`)을 시온과 작업자 둘 다 쓴다. 작업 기기에는 `~/omh-skills/`로 복사해 두었다(skill 갱신 뒤 `rsync -a --delete ~/.hermes/shared-skills/omh-dev/ <host>:omh-skills/`). 브리프에는 맞는 것 하나의 경로만 적는다.
+| 상황 | 스킬 |
+|---|---|
+| 원인 모르는 버그 | app-debugging (재현 → 경쟁 가설 3개 → 증명된 원인만 수정) |
+| 느림·CI 무거움·비용 | perf (기준선 → 가장 큰 비용 하나씩 → 같은 명령으로 재측정) |
+| 합친 뒤 QA·실사용 확인 | qa (적대적 시나리오, 관찰한 통과/실패만) |
+| 에이전트·모델 비교, 평가 세트 | agent-evaluation (같은 입력 쌍 비교, 결과와 과정 따로 채점) |
+| LLM 호출 기능 | llm-app-dev (모델 id·스키마 고정, 평가 세트 동봉) |
+| 작업자의 '끝났다' 확인 | verification-gate (실제로 돈 명령만 근거, PASS/HOLD/BLOCK) |
+| 멈추거나 헤매는 작업자 | agent-debug (기록 읽기 전용, 가장 작은 되돌릴 수 있는 복구) |
+| CI 실패 묶음 | build-failure-triage (원인·출처별로 묶고 최소 수정) |
+| 실패가 초록으로 덮이는지 | failure-signal-audit |
+| 이슈 요구가 빈약함 | issue-requirements |
+
 ## 실사용에서 확인된 것 (10-18, 10-19)
+- **PR·이슈 글은 영어가 기본이다(준 10-23).** 제목·본문·PR 템플릿·브리프가 요구하는 `pr.md`, 시온과 작업자가 올리는 이슈·댓글 모두 영어로 쓴다. 준에게 하는 보고와 제품 UI 문구는 한국어 그대로다. 기존 한국어 이슈는 영어로 옮겨 두었다.
 - 10-19 Hermes가 lina-os로 옮겨오며 감시자도 lina-os로 옮겼다. lina-os는 자기 자신에게 ssh 키가 없으므로 같은 호스트 이벤트는 ssh 없이 처리한다(#6, #7). 기기의 `dv-kick-relay`는 lina-os의 `dv-kick`으로 바로 보낸다. 아래 Mac 관련 항목은 옛 구성이다.
-- 이슈 이름(10-21): 저장소 약칭 + GitHub 이슈 번호. devflow `DF-`, murmur `MM-`, lyric-studio `LS-`. 새 저장소는 대문자 두 글자를 정해 여기에 적는다. 저장소마다 번호가 겹치므로 `GH-<번호>`는 쓰지 않는다. **lina 저장소의 `LINA-<n>`은 Linear LINA 팀 이슈 키와 겹친다**: PR 제목·브랜치의 `LINA-<n>` 때문에 Linear GitHub 연동이 머지 순간 엉뚱한 Linear 이슈(대부분 10-01 Canceled)를 Done으로 바꾼다(10-20 16건 발생, 10-21 전부 Canceled로 되돌림). 새 lina 이슈는 `LN-<n>`으로 띄운다. 이미 `LINA-<n>`으로 돈 이슈는 land 뒤 Linear 같은 번호의 상태 이력을 보고 머지 직전 상태로 되돌린다. 봇이 `tool-issue`로 올린 도구 고장 이슈(`[도구 이슈 · <봇>] <url>`)도 같은 이름으로 띄우고, 처리 절차는 공용 스킬 `tool-issue-handoff`의 '시온이 받았을 때'를 따른다.
-- 개발 호스트 동점 순서(준 10-20 결정): **hx-linux → amd-linux → go2-linux → lina-os → gos-linux(jun 계정만, 최후)**. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 그룹 순이며, 그룹 안의 배정은 점수가 높은 호스트부터다. gos는 점수가 높아도 lina-os보다 뒤이고 `DV_HOSTS`에 명시할 때만 쓴다. amd-linux는 OS hostname이 `oldamdlinux`라 기기 config에서 `DV_HOST=DV_KICK_HOST=amd-linux`로 고정한다. lina-os는 Hermes·상주 서비스 몫이라 작업용 기기가 찼을 때만 쓴다. gos의 OpenClaw 사용자(neolina·eunbot)는 외부용이라 건드리지 않는다.
+- 이슈 이름(10-21, 10-22 정정): 준에게 말하거나 보고할 때는 `lina #12`처럼 저장소 이름 + GitHub 번호만 쓴다. 약칭(`LN-12` 등)은 dv 작업 폴더·workspace 이름이 저장소를 가리지 않고 한 곳에 모이기 때문에 dv 내부 키로만 쓴다. devflow `DF-`, murmur `MM-`, lyric-studio `LS-`. 새 저장소는 대문자 두 글자를 정해 여기에 적는다. 저장소마다 번호가 겹치므로 `GH-<번호>`는 쓰지 않는다. **lina 저장소의 `LINA-<n>`은 Linear LINA 팀 이슈 키와 겹친다**: PR 제목·브랜치의 `LINA-<n>` 때문에 Linear GitHub 연동이 머지 순간 엉뚱한 Linear 이슈(대부분 10-01 Canceled)를 Done으로 바꾼다(10-20 16건 발생, 10-21 전부 Canceled로 되돌림). 새 lina 이슈는 `LN-<n>`으로 띄운다. 이미 `LINA-<n>`으로 돈 이슈는 land 뒤 Linear 같은 번호의 상태 이력을 보고 머지 직전 상태로 되돌린다. 봇이 `tool-issue`로 올린 도구 고장 이슈(`[도구 이슈 · <봇>] <url>`)도 같은 이름으로 띄우고, 처리 절차는 공용 스킬 `tool-issue-handoff`의 '시온이 받았을 때'를 따른다.
+- **gos-linux는 10-23부터 작업용에서 뺀다(준: 성능이 너무 나쁘다).** lina-os config `DV_HOSTS`에서 지웠고(새 배정 없음), `DV_PULL_HOSTS`에는 남은 작업의 이벤트를 받으려고 당분간 둔다. 남은 작업은 브랜치에 push한 뒤 다른 기기로 옮긴다. 다시 넣으라고 할 때까지 gos에 작업을 띄우지 않는다.
+- 개발 호스트 동점 순서(준 10-20 결정, 10-23 gos 제외): **hx-linux → amd-linux → go2-linux → lina-os**. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 그룹 순이며, 그룹 안의 배정은 점수가 높은 호스트부터다. gos는 점수가 높아도 lina-os보다 뒤이고 `DV_HOSTS`에 명시할 때만 쓴다. amd-linux는 OS hostname이 `oldamdlinux`라 기기 config에서 `DV_HOST=DV_KICK_HOST=amd-linux`로 고정한다. lina-os는 Hermes·상주 서비스 몫이라 작업용 기기가 찼을 때만 쓴다. gos의 OpenClaw 사용자(neolina·eunbot)는 외부용이라 건드리지 않는다.
 - 원격 호스트 이벤트: 기기는 lina-os로 ssh 키가 없다. 대신 lina-os dv-watch가 `DV_PULL_HOSTS="hx-linux amd-linux go2-linux gos-linux"`로 기기마다 `dv-kick-pull`을 띄워 기기의 `kick.q`를 ssh `tail -f`로 받아 온다(#11). 기기 config는 `DV_KICK_HOST=<자기 hostname>`, `DV_KICK=`(로컬 큐). 옛 `dv-kick-relay`는 쓰지 않는다.
 - 기기에서 시작: `ssh hx-linux 'bash -lc "dv start ~/code/<repo> ISSUE slug --brief ~/dv/briefs/brief-x.md"'`. 저장소·브리프는 그 기기에 있어야 한다. 개발 저장소는 전부 GitHub 비공개 원격(devflow, murmur 등)을 두고 기기마다 clone한다. 원격 없는 로컬 저장소는 기기에서 시작하지 말고 먼저 비공개 원격을 만든다(gitleaks로 히스토리 검사, CI 붙이기).
 - 기기에는 `gh`(thisisjun786 로그인)가 있다.

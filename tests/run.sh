@@ -588,7 +588,7 @@ clean_resume_appserver() {
   dv send TK-1 'Revise the summary' > "$CASE_DIR/resume-receipt" || rc=$?
   jq -e --arg outcome "$outcome" '.outcome==$outcome' "$CASE_DIR/resume-receipt"
   if [ "$outcome" = accepted ]; then test "$rc" = 0; else test "$rc" != 0; fi
-  dv status TK-1 --json | jq -e '.[0] | .alive and .agent_status=="working"'
+  dv status TK-1 --live --json | jq -e '.[0] | .alive and .agent_status=="working"'
   resume_capacity_rejected
   resume_capacity_observed TK-1
   test -f "$wt/out/summary.txt"
@@ -2514,6 +2514,8 @@ case_task_mixed_files() {
 }
 # shellcheck source=tests/capacity.sh
 source "$ROOT/tests/capacity.sh"
+# shellcheck source=tests/status-nonblocking.sh
+source "$ROOT/tests/status-nonblocking.sh"
 # shellcheck source=tests/heavy.sh
 source "$ROOT/tests/heavy.sh"
 # shellcheck source=tests/process-cleanup.sh
@@ -2617,6 +2619,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+   status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
   task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
   config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
   appserver_sender_close \
@@ -2649,7 +2652,7 @@ registered_cases() {
   exec_cleanup_success exec_cleanup_failure exec_cleanup_signal exec_exhausted_rebids exec_land_running exec_land_github_running exec_land_failed \
   exec_success exec_config_flags exec_launch_race exec_nonzero exec_capacity exec_rate exec_silence exec_unfinished exec_retry exec_send exec_working exec_fresh exec_partial exec_followup_unfinished exec_no_terminal \
   symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_done_capacity revive_orphan_owner revive_orphan_close_failure revive_stale_marker revive_goal_owned_done revive_report_event revive_orphan_workspace revive_manual_done revive_capacity revive_release_event revive_legacy_idle revive_legacy_unknown revive_capacity_status revive_legacy_busy revive_legacy_uncertain revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_worktree_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal \
-  manager_reexec manager_real_conflict manager_real_pending_conflict manager_conflict_restart manager_reserved_collision manager_note_busy watch_stuck_route watch_stuck_bid watch_stuck_stack watch_stuck_empty watch_stuck_worker manager_collision manager_fallback_collision manager_hash_collision manager_legacy_replay manager_note manager_pool_independent watch_capacity_eight watch_stuck \
+  manager_reexec manager_real_conflict manager_real_pending_conflict manager_conflict_restart manager_reserved_collision manager_note_busy watch_stuck_route watch_stuck_bid watch_stack_background_failure watch_stuck_empty watch_stuck_worker manager_collision manager_fallback_collision manager_hash_collision manager_legacy_replay manager_note manager_pool_independent watch_capacity_eight watch_stuck \
   manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_runner_ownership \
   pr_wait_caller_killed pr_wait_caller_fallback pr_wait_caller_delayed pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote \
   codex_allowlist codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid \
