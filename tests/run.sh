@@ -1625,7 +1625,7 @@ case_herdr_disabled_legacy() {
 herdr_isolated_path() {
   # Exclude user PATH and ~/.local/bin so native tests cannot reach real herdr.
   mkdir -p "$CASE_DIR/path" "$CASE_DIR/empty-home"
-  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed sort tail wc grep rm touch awk ln getconf df; do
+  for tool in bash dirname git jq mkdir date tr basename cat env sleep mktemp mv rmdir sed sort tail wc grep rm touch awk ln getconf df uname id ps tee; do
     ln -s "$(command -v "$tool")" "$CASE_DIR/path/$tool"
   done
   # Host admission samples memory/load on macOS through these standard tools.
