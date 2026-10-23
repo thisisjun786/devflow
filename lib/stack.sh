@@ -32,7 +32,8 @@ stack_land_gate() {
   [ ! -f "$S/pr.md" ] || local_body=$(cat "$S/pr.md") || return 1
   dependencies=$(jq -cn --arg body "$body" --arg local_body "$local_body" '
     [($body,$local_body) | split("\n")[] |
-      capture("^[ \\t]*Depends on #(?<number>[1-9][0-9]*)[ \\t\\r]*$") | .number] | unique') || return 1
+      select(test("^[ \\t]*Depends on[ \\t]+#[1-9][0-9]*(?:[ \\t]*[.,;][ \\t]*#[1-9][0-9]*)*[ \\t]*[.,;]?[ \\t\\r]*$")) |
+      match("#([1-9][0-9]*)"; "g") | .captures[0].string] | unique') || return 1
   [ "$dependencies" != '[]' ] || return 0
   [ "$BRANCH" != "$BASE" ] || fail 'cannot push the base branch'
   printf '%s\n' "$snapshot" | jq -e --arg base "$BASE" '.baseRefName==$base and .state=="OPEN"' >/dev/null || fail 'PR base/state mismatch'
