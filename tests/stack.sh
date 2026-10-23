@@ -142,6 +142,18 @@ case_stack_local_body() {
   stack_waiting 2
   test ! -f "$GH_STUB_DIR/order"
 }
+case_stack_dependency_punctuation() {
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1.'
+  # A trailing period must not hide the dependency from the land gate.
+  stack_waiting 2
+  jq -e '.stack_dependencies==["1"]' "$DV_STATE/S-2/meta"
+  test ! -f "$GH_STUB_DIR/order"
+  # Several dependencies may share one line with trailing punctuation.
+  stack_pr 3 dev 'Depends on #1, #2;'
+  stack_waiting 3
+  jq -e '.stack_dependencies==["1","2"]' "$DV_STATE/S-3/meta"
+  test ! -f "$GH_STUB_DIR/order"
+}
 case_stack_closed_base() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   jq '.state="CLOSED"' "$GH_STUB_DIR/pr-1.json" > "$CASE_DIR/closed"

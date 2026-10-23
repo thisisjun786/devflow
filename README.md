@@ -178,7 +178,7 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 열린 선행 이슈 때문에 진행할 수 없는 running 작업은 `dv park ISSUE --on 12,13 [--note TEXT]`로 보류합니다. 깨끗한 worktree와 선행 이슈가 열려 있는지 확인하고, force 없이 브랜치를 push하고, 작업 이슈(meta의 `source_issue`, 없으면 ISSUE 끝 번호)에 head별 마커가 있는 댓글을 한 번 남긴 뒤 상태를 `parked`로 바꾸고 `parked` 이벤트를 보냅니다. parked 작업은 입찰 슬롯을 차지하지 않고 정체 복구 대상도 아니며, 에이전트가 끝나도 failed를 보내지 않습니다. worktree는 보존하고 `dv send`가 상태를 running으로 되돌려 같은 worktree에서 재개합니다.
 
-쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
+쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 줄 끝의 `.`·`,`·`;`는 무시하고 `Depends on #1, #2`처럼 한 줄에 여러 번호를 적어도 됩니다. 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
 
 선행 PR의 landed 이벤트를 받으면 `dv-watch`는 자신과 `DV_HOSTS`의 모든 `waiting-base` 작업을 기존 재시도 큐에 넣습니다. `stack_head`가 없는 과거 기록도 포함합니다. 주기적 상태 안전망도 같은 호스트들을 조회하므로 대기에 들어오기 전에 병합된 기반과 놓친 이벤트를 복구합니다. 선행 PR이 모두 병합되고 병합 결과가 실제 `origin/<BASE>`에 포함되면, 해당 작업자에게 `dv send`로 base 병합·필요한 시험 재실행·일반 push·현재 head의 초록 CI·`dv done`을 요청합니다. 기존 land 승인(`stack_head`)이 있는 작업은 새 done 뒤 자동 병합을 이어가고, 승인 기록이 없으면 완료를 관리자에게 전달합니다. 미병합 기반은 다음 이벤트나 안전망까지 유예하며 `DV_MAX_WORKERS`의 동시 실행 한도를 공유합니다.
 
