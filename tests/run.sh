@@ -20,7 +20,7 @@ setup() {
   printf '{"skipDangerousModePermissionPrompt":true}\n' > "$HOME/.claude/settings.json"
   export DV_CONFIG="$CASE_DIR/config.sh" DV_STATE="$CASE_DIR/state" DV_WORK="$CASE_DIR/work" DV_HOME="$CASE_DIR/home"
   export DV_KICK="$ROOT/bin/dv-kick" DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"
-  export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1
+  export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_CHECKS_INTERVAL=1
   if [ -n "${DV_TEST_PROCESS_DIR:-}" ]; then
     printf '%s\n' "$DV_TMUX_SOCKET" > "$DV_TEST_PROCESS_DIR/tmux-socket"
   fi
