@@ -180,7 +180,7 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 다른 PR로 이미 합쳐진 작업은 `dv done ISSUE --already-merged <PR 번호·PR URL·커밋>`으로 끝냅니다. 숫자만 쓰면 PR 번호입니다. PR은 MERGED이고 같은 base에 병합됐는지 확인해 병합 커밋을 씁니다. 그 커밋이 fetch한 `origin/<BASE>`(원격이 없으면 로컬 base)의 조상이고, 이 브랜치를 base에 병합해도 tree가 바뀌지 않아야 합니다. 같은 수정을 다시 만든 커밋은 통과하며 base에 없는 변경이 남으면 거절합니다. 작업 자신의 PR이 열려 있어도 거절합니다. 결과는 done.json의 `merged_via`에 남고 상태는 ready입니다. 관리자의 `dv land`는 병합하지 않고 같은 확인을 반복한 뒤 landed 기록·worktree 정리·`landed` 이벤트를 처리합니다.
 
-열린 선행 이슈 때문에 진행할 수 없는 running 작업은 `dv park ISSUE --on 12,13 [--note TEXT]`로 보류합니다. 깨끗한 worktree와 선행 이슈가 열려 있는지 확인하고, force 없이 브랜치를 push하고, 작업 이슈(meta의 `source_issue`, 없으면 ISSUE 끝 번호)에 head별 마커가 있는 댓글을 한 번 남긴 뒤 상태를 `parked`로 바꾸고 `parked` 이벤트를 보냅니다. parked 작업은 입찰 슬롯을 차지하지 않고 정체 복구 대상도 아니며, 에이전트가 끝나도 failed를 보내지 않습니다. worktree는 보존하고 `dv send`가 상태를 running으로 되돌려 같은 worktree에서 재개합니다.
+열린 선행 이슈 때문에 진행할 수 없는 running 또는 pr 상태의 code 작업은 `dv park ISSUE --on 12,13 [--note TEXT]`로 보류합니다. 깨끗한 worktree와 선행 이슈가 열려 있는지 확인하고, force 없이 브랜치를 push하고, 작업 이슈(meta의 `source_issue`, 없으면 ISSUE 끝 번호)에 head별 마커가 있는 댓글을 한 번 남긴 뒤 상태를 `parked`로 바꾸고 `parked` 이벤트를 보냅니다. parked 작업은 입찰 슬롯을 차지하지 않고 PR 대기자 재시작·자동 재개·정체 복구 대상도 아니며, 에이전트가 끝나도 failed를 보내지 않습니다. 보류 중에도 PR의 병합·닫힘은 상태 안전망이 감지합니다. worktree는 보존하고 `dv send`가 상태를 running으로 되돌려 같은 worktree에서 재개합니다. 이후 `dv pr` 또는 `dv pr-wait`가 상태를 pr로 되돌리며 `pr-loop.json`의 누적 CI·리뷰 횟수와 요청 기록은 유지합니다.
 
 쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 줄 끝의 `.`·`,`·`;`는 무시하고 `Depends on #1, #2`처럼 한 줄에 여러 번호를 적어도 됩니다. 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
 
@@ -229,7 +229,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv queue [ISSUE] [--json]` / `dv cancel ISSUE` | 관리자 배정 상태 조회 / 미배정 제출 취소 |
 | `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin\|omp\|agy\|grok\|cursor] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치(`<type>/<n>-<slug>`)·상태 및 선택한 backend 생성 |
 | `dv done ISSUE [--note TEXT] [--already-merged PR\|COMMIT]` | head·변경 파일 수·보고서 경로·완료 이벤트. `--already-merged`는 다른 PR로 이미 base에 들어간 작업을 ready로 기록 |
-| `dv park ISSUE --on N[,N...] [--note TEXT]` | 열린 선행 이슈를 기다리는 running 작업 보류: 브랜치 push·이슈 댓글·슬롯 반환, `dv send`로 재개 |
+| `dv park ISSUE --on N[,N...] [--note TEXT]` | 열린 선행 이슈를 기다리는 running·pr 작업 보류: 브랜치 push·이슈 댓글·슬롯 반환, `dv send`로 재개 |
 | `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작. 제목은 HEAD 커밋 제목(`type(scope): subject`). 상태 폴더의 `pr.md`(PR 템플릿 형식 공개용 본문)를 그대로 쓰고, 이전 형식 브랜치에서 없으면 짧은 보고서 요약으로 만든다 |
 | `dv polish ISSUE` | PR 본문 퇴고·코드/URL 보존 검증 후 본문만 갱신 |
 | `dv pr-wait ISSUE [--foreground [--review-handled]]` | foreground는 CI·리뷰·인라인 지적 JSON 반환. 현재 head의 최신 Codex 리뷰에 P0/P1이 없으면 처리 완료. 기본 모드는 조기 종료 작업자 재개 안전망 |
@@ -268,7 +268,7 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 감시자는 작업자가 성공 종료한 이벤트만 `seen`에 기록합니다. 실패한 이벤트는 `$DV_HOME/pending/`에 보존하고 `DV_WORKER_RETRY`초(기본 15) 후 다시 실행하며, 재시작 후에도 이어집니다. 실행 중인 중복 이벤트는 한 작업자로 묶습니다. 작업자가 외부 작업을 끝내고 성공 기록 전에 죽으면 다시 실행될 수 있으므로 작업은 재실행을 견딜 수 있어야 합니다. 상태 안전망은 `done`과, `done_at`이 있고 완료 head가 현재 head와 같은 `pr/ready`의 완료 이벤트를 복구합니다. `dv status --json`의 `done_head`는 기존 `done.json`에서 읽으며, 완료 기록을 읽을 수 없으면 `null`입니다. 이전 완료 시각은 보존하므로 수정본의 `dv pr`이 작업 중 슬롯 계산을 바꾸지 않습니다.
 
-같은 안전망은 `pr`·`ready`·`waiting-base` 작업의 PR을 작업 호스트에서 `dv _pr-reconcile`로 확인합니다. 살아 있는 pr-wait가 지켜보는 `pr` 작업은 건너뜁니다. GitHub에서 병합된 PR은 `dv land`와 같은 조건(base·head 일치, 체크 전부 성공, 깨끗한 worktree)을 확인한 뒤 landed로 기록하고 worktree를 정리하며 `landed` 이벤트를 한 번 보냅니다. 조건이 맞지 않으면 아무것도 지우지 않고 같은 head·이유마다 한 번 `blocked`로 알립니다. 병합 없이 닫힌 PR은 `closed` 상태와 `closed` 이벤트로 남기며 worktree와 브랜치는 보존합니다. 다시 진행하려면 PR을 다시 열고 `dv pr`을 실행합니다. parked·closed 이벤트도 done·landed처럼 대기 중인 제출의 배정을 다시 시도합니다.
+같은 안전망은 `pr`·`ready`·`waiting-base`·`parked` 작업의 PR을 작업 호스트에서 `dv _pr-reconcile`로 확인합니다. 살아 있는 pr-wait가 지켜보는 `pr` 작업은 건너뜁니다. GitHub에서 병합된 PR은 `dv land`와 같은 조건(base·head 일치, 체크 전부 성공, 깨끗한 worktree)을 확인한 뒤 landed로 기록하고 worktree를 정리하며 `landed` 이벤트를 한 번 보냅니다. 조건이 맞지 않으면 아무것도 지우지 않고 같은 head·이유마다 한 번 `blocked`로 알립니다. 병합 없이 닫힌 PR은 `closed` 상태와 `closed` 이벤트로 남기며 worktree와 브랜치는 보존합니다. 다시 진행하려면 PR을 다시 열고 `dv pr`을 실행합니다. parked·closed 이벤트도 done·landed처럼 대기 중인 제출의 배정을 다시 시도합니다.
 
 ## 프로젝트 관리자
 

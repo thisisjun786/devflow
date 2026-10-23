@@ -220,7 +220,7 @@ cmd_pr_reconcile() {
   local status pr context=$REPO rc=0 reason
   status=$(jq -r .status "$S/meta")
   case "$status" in
-    pr|ready|waiting-base) ;;
+    pr|ready|waiting-base|parked) ;;
     # Recorded as landed, but cleanup or the landed event did not finish.
     landed) jq -e '.pr_reconcile_pending==true' "$S/meta" >/dev/null || return 0 ;;
     *) return 0 ;;
@@ -265,7 +265,7 @@ cmd_pr_reconcile() {
   esac
 }
 # Open PR jobs, and landings whose cleanup or landed event did not finish.
-pr_reconcile_filter='((.status=="pr" or .status=="ready" or .status=="waiting-base") and .pr!=null) or .pr_reconcile_pending==true'
+pr_reconcile_filter='((.status=="pr" or .status=="ready" or .status=="waiting-base" or .status=="parked") and .pr!=null) or .pr_reconcile_pending==true'
 cmd_pr_reconcile_start() {
   # The watcher's host pass is killed at its deadline. Detach the sweep, like
   # a PR waiter, so GitHub queries and cleanup never lose the issue lock.
@@ -369,9 +369,10 @@ cmd_park() {
   done
   [[ "$on" =~ $on_pattern ]] || fail 'usage: dv park ISSUE --on N[,N...] [--note TEXT]'
   [ "$KIND" = code ] || fail 'only code jobs can be parked'
+  issue_lock
   status=$(jq -r .status "$S/meta")
-  [ "$status" = running ] || fail "only a running job can be parked (status: $status)"
-  issue_lock; require_worktree; require_clean "$WT"
+  case "$status" in running|pr) ;; *) fail "only a running or PR job can be parked (status: $status)" ;; esac
+  require_worktree; require_clean "$WT"
   is_github || fail 'dv park requires a GitHub origin'
   [ "$BRANCH" != "$BASE" ] || fail 'cannot push the base branch'
   slug=$(manager_identity "$REPO"); slug=${slug#github.com/}
@@ -427,8 +428,17 @@ cmd_pr_wait() {
   [ "$handled:$foreground" != true:false ] || fail '--review-handled requires --foreground'
   [[ "$DV_REVIEW_ROUNDS" =~ ^[1-9][0-9]*$ ]] || fail 'DV_REVIEW_ROUNDS must be a positive integer'
   local pr head rc=0 tmp current green=false loop review deadline max_deadline retry reason='' reviewed=false rounds=0
+  # Park is an explicit pause, including for a waiter already in flight. Do
+  # not reset its review counters or let it submit automatic recovery input.
+  [ "$(jq -r .status "$S/meta")" != parked ] || return 0
   pr=$(jq -er .url "$S/pr.json")
+  if jq -e '.status=="running" and .unparked_at!=null' "$S/meta" >/dev/null; then
+    # send resumes in running; waiting on its existing PR restores ownership.
+    # Serialize with park so an earlier status observation cannot undo it.
+    (issue_lock; meta_set 'if .status=="running" and .unparked_at!=null then .status="pr" else . end')
+  fi
   until pr_wait_lock; do
+    [ "$(jq -r .status "$S/meta")" != parked ] || return 0
     [ "$foreground" = true ] || return 0
     sleep "$DV_POLL_INTERVAL"
   done
@@ -439,13 +449,16 @@ cmd_pr_wait() {
   loop=$(printf '%s\n' "$loop" | jq '.reviewed_heads //= [] | .requests //= {} | .review_handled=false')
   review=$(mktemp "$S/.review-result.XXXXXX")
   while :; do
+    [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
     head=$(jq -r '.head // empty' "$S/meta"); [ -n "$head" ] || head=$(git rev-parse HEAD)
     loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.initial_head //= (.review_head // $head)')
     rc=0
     gh pr checks "$pr" --watch --interval "${DV_CHECKS_INTERVAL:-60}" > "$S/checks.log" 2>&1 || rc=$?
+    [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
     tmp=$(mktemp "$S/.pr-snapshot.XXXXXX")
     gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state > "$tmp"
     mv "$tmp" "$S/pr-snapshot.json"
+    [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
     if [ "$(jq -r .state "$S/pr-snapshot.json")" != OPEN ]; then
       [ "$foreground" != true ] || fail 'PR is no longer open'
       rm "$review"
@@ -460,6 +473,7 @@ cmd_pr_wait() {
       sleep "$DV_POLL_INTERVAL"; continue
     fi
     review_snapshot "$pr" "$S/pr-snapshot.json" || { rm "$review"; return 1; }
+    [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
     review_parse "$S/pr-snapshot.json" "$head" > "$review"
     green=false; checks_green "$S/pr-snapshot.json" && green=true
     # CI failures return to the worker immediately; review waiting starts only
@@ -501,6 +515,7 @@ cmd_pr_wait() {
     tmp=$(mktemp "$S/.pr-loop.XXXXXX"); printf '%s\n' "$loop" > "$tmp"; mv "$tmp" "$S/pr-loop.json"
     sleep "$DV_POLL_INTERVAL"
   done
+  [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
   rounds=$(printf '%s\n' "$loop" | jq '.reviewed_heads|length')
   if [ "$green" = false ] && [ "$(printf '%s\n' "$loop" | jq '.failed_heads|length')" -ge 3 ]; then reason=ci-rounds; fi
   if [ "$green" = true ] && [ "$rounds" -ge "$DV_REVIEW_ROUNDS" ] && jq -e '.high|length>0' "$review" >/dev/null; then reason='review-rounds'; fi
@@ -544,9 +559,13 @@ cmd_pr_wait() {
   pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
     [ -f "$S/agent.exit" ] || return 0
-    while kill -0 "$pid" 2>/dev/null; do sleep "$DV_POLL_INTERVAL"; done
+    while kill -0 "$pid" 2>/dev/null; do
+      [ "$(jq -r .status "$S/meta")" != parked ] || return 0
+      sleep "$DV_POLL_INTERVAL"
+    done
   fi
   [ "$(jq -r '.head // empty' "$S/meta")" = "$head" ] || return 0
+  [ "$(jq -r .status "$S/meta")" != parked ] || return 0
   if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
   if agent_gone; then
     DV_PR_RECOVERY_HEAD="$head" DV_PR_RECOVERY_EPISODE="$recovery_episode" \
