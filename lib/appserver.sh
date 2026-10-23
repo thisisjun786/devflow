@@ -109,13 +109,12 @@ appserver_probe() {
   return "$rc"
 }
 appserver_selected() {
-  [ "$1" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] || return 1
-  [ "$2" = auto ] || return 1
-  case "$DV_CODEX_MODE" in
-    appserver) return 0 ;;
-    auto|tui|goal|exec) appserver_available ;;
-    *) fail 'DV_CODEX_MODE must be auto, appserver, exec, goal or tui' ;;
-  esac
+  # A shared external daemon does not inherit the client's job scope/ulimit.
+  # Preserve existing threads, but new auto/appserver jobs use isolated exec.
+  if [ "$1:$2" = codex:auto ] && [ "$DV_CODEX_MODE" = appserver ]; then
+    printf 'dv: shared App Server cannot enforce job limits; starting exec instead\n' >&2
+  fi
+  return 1
 }
 appserver_atomic() {
   local target=$1 tmp

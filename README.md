@@ -475,21 +475,25 @@ watcher 점검은 감시자가 종료된 작업에 남은 등록도 확인합니
 그런 실행기는 launchd 정의에 작업 디렉터리나 `DV_ISSUE`를 넣어야 합니다.
 
 제한 종료는 `resource-failure.json`과 누적 `resource-events.jsonl`에
-`MemoryMax-OOM`/`TasksMax` 원인과 연속 횟수를 기록합니다. 첫 제한 종료는 새
+`MemoryMax-OOM`/`TasksMax` 원인과 연속 횟수를 기록합니다. ulimit fallback은
+해당 실행의 stderr에서 fork 거절·메모리 할당 실패를 확인하면
+`ulimit-nproc`/`ulimit-memory`로 기록합니다. 첫 제한 종료는 새
 scope로 한 번 재시도하고, 같은 원인이 두 번 이어지면 blocked를 보내며 이후
 자동 시작·부활을 거절합니다. 원인이 달라져도 한 실행기의 자동 재시도는 한 번뿐입니다.
 일반 종료 코드 137만으로 OOM이라고 판정하지 않습니다. 운영자가 원인을 해결한
 뒤 기록을 보존하고 차단 해제를 결정해야 합니다. `dv host check`의 `Job limits`
 및 JSON `job_limits`에 systemd 사용 가능 여부·설정 상한·계산한 nproc가 표시됩니다.
 
-`DV_CODEX_MODE=auto`가 기본값입니다. 호스트에 이미 실행 중인 Codex App Server의
-`initialize`가 성공하면 App Server를 사용하고, 연결할 수 없으면 백그라운드 exec로 시작합니다.
-`DV_CODEX_MODE=appserver`는 이 경로만 사용하며 시작 실패 후 다른 backend로 중복 실행하지
-않습니다. `DV_CODEX_MODE=goal`/`tui`는 기존 herdr/tmux 경로, `DV_CODEX_MODE=exec` 또는
+`DV_CODEX_MODE=auto`가 기본값이며 새 작업은 자원 제한을 상속하는 백그라운드 exec로
+시작합니다. `DV_CODEX_MODE=appserver`도 경고 후 exec로 시작합니다. 외부 공유
+App Server의 도구 프로세스는 연결 클라이언트의 scope/ulimit를 상속하지 않기 때문입니다.
+기존 App Server 작업은 저장된 thread와 연결을 유지하며, 이 Linux 자원 격리를
+소급 적용하지 않습니다. 기존 작업을 종료한 뒤 새 작업으로 시작해야 적용됩니다.
+`DV_CODEX_MODE=goal`/`tui`는 기존 herdr/tmux 경로, `DV_CODEX_MODE=exec` 또는
 `dv start ... --mode exec`는 일회 실행 경로입니다. 사용자 지정 `DV_AGENT_CMD_codex`는
 기존 실행기를 유지합니다. Claude와 Devin의 경로는 바뀌지 않습니다.
 
-호스트 운영자가 준비한 `codex app-server daemon`에 `codex app-server proxy`로 연결합니다.
+기존 App Server 작업은 호스트 운영자가 준비한 `codex app-server daemon`에 `codex app-server proxy`로 연결합니다.
 daemon과 proxy를 지원하는 Codex 및 표준 암호 도구 `openssl`이 필요합니다.
 proxy는 원시 바이트를 전달하므로 Bash 전송 계층이 WebSocket upgrade, 클라이언트 masking,
 분할 frame과 ping/pong을 처리합니다. dv는 데몬을 설치·시작·재시작하거나 인증

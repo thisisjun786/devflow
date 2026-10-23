@@ -162,7 +162,7 @@ job_launchd_check() {
   done <<< "$labels"
 }
 job_fallback_run() {
-  local os=$1 uid current max hard limit memory rc=0
+  local os=$1 uid current max hard limit memory rc=0 reason='' stderr_line=1
   shift
   uid=$(id -u); current=$(job_user_count "$os")
   hard=$(ulimit -H -u)
@@ -177,19 +177,36 @@ job_fallback_run() {
   printf 'ulimit -u %s\n' "$limit" > "$JOB_ATTEMPT/limits"
   if [ "$os" = Darwin ]; then job_launchd_check "$uid" "$JOB_ATTEMPT" || return 125; job_can_launch || return 137; fi
   memory=$(( $(job_memory_bytes "$DV_JOB_MEMORY_MAX") / 1024 ))
+  if [ -f "$S/agent.stderr" ]; then stderr_line=$(( $(wc -l < "$S/agent.stderr") + 1 )); fi
   (
     ulimit -S -u "$limit" || exit 125
     # macOS does not enforce RLIMIT_AS. Linux fallback is per process only.
     if [ "$os" = Linux ]; then ulimit -S -v "$memory" || exit 125; fi
     exec "$@"
-  ) <&0 & JOB_CHILD=$!
+  ) <&0 2> >(tee "$JOB_ATTEMPT/stderr" >&2) & JOB_CHILD=$!
   while kill -0 "$JOB_CHILD" 2>/dev/null; do
     if [ "$os" = Darwin ]; then job_launchd_check "$uid" "$JOB_ATTEMPT" || true; fi
+    reason=$(job_fallback_reason "$stderr_line")
+    if [ -n "$reason" ]; then
+      printf '%s\n' "$reason" > "$JOB_ATTEMPT/reason"
+      bid_stop_tree "$JOB_CHILD"; break
+    fi
     sleep 1
   done
   wait "$JOB_CHILD" || rc=$?
   JOB_CHILD=''
+  reason=$(job_fallback_reason "$stderr_line")
+  if [ -n "$reason" ]; then printf '%s\n' "$reason" > "$JOB_ATTEMPT/reason"; rc=137; fi
   return "$rc"
+}
+job_fallback_reason() {
+  local output
+  output=$({ cat "$JOB_ATTEMPT/stderr" 2>/dev/null || true; tail -n "+$1" "$S/agent.stderr" 2>/dev/null || true; } | tail -n 50)
+  if printf '%s\n' "$output" | grep -Eq 'fork:.*Resource temporarily unavailable|failed to create new OS thread|pthread_create.*Resource temporarily unavailable'; then
+    printf 'ulimit-nproc\n'
+  elif printf '%s\n' "$output" | grep -Eqi 'xmalloc:.*cannot allocate|runtime: out of memory|cannot allocate memory'; then
+    printf 'ulimit-memory\n'
+  fi
 }
 job_cleanup() {
   job_scope_stop

@@ -22,7 +22,7 @@ fi
 : "${DV_KICK_HOST:=lina-os}" # host running dv-watch (lina-mac before 10-19)
 : "${DV_KICK:=}" # shell command; receives kind issue message host head as arguments
 : "${DV_CODEX_BIN:=codex}" # ~/node/bin/codex or ~/.opencodex/bin/codex
-: "${DV_CODEX_MODE:=auto}" # existing App Server, otherwise exec; appserver, exec, goal/tui
+: "${DV_CODEX_MODE:=auto}" # new auto/appserver jobs use isolated exec; goal/tui keeps terminals
 : "${DV_APPSERVER_SOCKET:=}" # empty uses Codex's existing default control socket
 : "${DV_APPSERVER_TIMEOUT:=10}" # bounded JSON-RPC response wait, seconds
 : "${DV_APPSERVER_POLL:=5}" # job client state refresh, seconds

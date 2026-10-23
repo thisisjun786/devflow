@@ -67,6 +67,16 @@ case_job_generic_exit() {
   test "$rc" = 137
   test ! -f "$S/resource-failure.json"
 }
+case_job_auto_exec() {
+  job_test_load
+  # shellcheck source=lib/appserver.sh
+  source "$ROOT/lib/appserver.sh"
+  appserver_available() { return 0; }
+  DV_AGENT_CMD_codex=''; DV_CODEX_MODE=auto
+  if appserver_selected codex auto; then return 1; fi
+  DV_CODEX_MODE=appserver
+  if appserver_selected codex auto; then return 1; fi
+}
 case_job_host() {
   host_setup
   export DV_JOB_MEMORY_MAX=4G DV_JOB_TASKS_MAX=700 DV_JOB_LAUNCHD_PATTERN='org.example.*'

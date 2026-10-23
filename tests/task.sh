@@ -372,6 +372,7 @@ ENV
   done
 }
 task_appserver_setup() {
+  legacy_appserver_fixture
   task_setup
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
   export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_POLL=1
