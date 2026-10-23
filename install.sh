@@ -23,8 +23,6 @@ if [ "$mac" = 1 ] || [ "$linux_watch" = 1 ]; then
 fi
 missing=0
 for tool in git gh tmux jq flock; do
-  # dv heavy falls back to perl's flock(2) where macOS has no flock(1).
-  if [ "$tool" = flock ] && command -v perl >/dev/null; then continue; fi
   if ! command -v "$tool" >/dev/null; then printf 'Missing: %s — install with your package manager.\n' "$tool"; missing=$((missing + 1)); fi
 done
 if { [ "$mac" = 1 ] || [ "$linux_watch" = 1 ]; } && ! command -v hermes >/dev/null; then echo 'Missing: hermes — install Hermes and configure the sion profile.'; missing=$((missing + 1)); fi

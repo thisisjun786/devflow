@@ -357,11 +357,11 @@ host_sync() (
     esac
   done <<< "$rows"
   host_path_update "$HOME/.profile" "$brew"; host_path_update "$HOME/.zshenv" "$brew"
-  if [ "$os" = darwin ]; then
-    # macOS has no flock(1); dv heavy otherwise falls back to perl.
-    command -v flock >/dev/null || missing_apt="$missing_apt flock"
-    [ -z "$missing_apt" ] || printf 'Operator action (not executed): brew install%s\n' "$(printf '%s' "$missing_apt" | sed 's/ sqlite3/ sqlite/')"
-  elif [ -n "$missing_apt" ]; then printf 'Operator action (not executed): sudo apt-get install%s\n' "$missing_apt"; fi
+  if [ -z "$missing_apt" ]; then :
+  elif [ "$os" = darwin ]; then
+    # Homebrew names the sqlite3 command's formula sqlite.
+    printf 'Operator action (not executed): brew install%s\n' "$(printf '%s' "$missing_apt" | sed 's/ sqlite3/ sqlite/')"
+  else printf 'Operator action (not executed): sudo apt-get install%s\n' "$missing_apt"; fi
   printf 'Sync complete. Run dv host check in a fresh shell; check-only tools/auth may still need operator action.\n'
 )
 cmd_host() {

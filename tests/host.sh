@@ -234,6 +234,8 @@ case_host_sync_darwin() {
   grep -Fx "$line" "$HOME/.zshenv"
   "$HOST_DV" host check --json > "$CASE_DIR/after.json"
   jq -e 'all(.tools[] | select(.install!="apt" and .install!="check"); .login.status=="ok" and .ssh.status=="ok")' "$CASE_DIR/after.json"
+  # dv heavy needs flock(1), which macOS lacks: check reports it like other system tools.
+  jq -e 'any(.tools[]; .name=="flock" and .install=="apt" and .expected=="system")' "$CASE_DIR/after.json"
   cp "$HOME/downloads" "$CASE_DIR/downloads.after"
   cp "$HOME/.zshenv" "$CASE_DIR/zshenv.after"
   PATH="$CASE_DIR/homebrew/bin:$PATH" "$HOST_DV" host sync > "$CASE_DIR/sync2.txt"
