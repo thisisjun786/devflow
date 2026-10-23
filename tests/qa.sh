@@ -266,7 +266,7 @@ qa_direct_fixture() {
   mkdir "$CASE_DIR/qa-bin"
   cat > "$CASE_DIR/qa-bin/sleep" <<'SLEEP'
 #!/usr/bin/env bash
-[ "$*" != 5 ] || exit 0
+if [ "$*" = 5 ]; then printf '%s\n' "$*" >> "$CASE_DIR/qa-delays"; exit 0; fi
 exec /bin/sleep "$@"
 SLEEP
   chmod +x "$CASE_DIR/qa-bin/sleep"
@@ -320,6 +320,52 @@ case_qa_base_lookup_blocked() {
   jq -e '.status=="blocked" and (.failure_reason|contains("pr lookup"))' "$qa_dir/meta"
   grep 'QA failed at pr lookup' "$qa_dir/log"
 }
+qa_lookup_response_retry() {
+  local response=$1 base_lookup=${2:-false} expected_calls=2
+  qa_direct_fixture
+  if [ "$base_lookup" = true ]; then
+    jq '.base=""' "$qa_dir/running.json" > "$CASE_DIR/request.tmp"
+    mv "$CASE_DIR/request.tmp" "$qa_dir/running.json"
+    # Base discovery succeeds; the second lookup at the checked-out head fails.
+    printf 'ok\n' > "$GH_STUB_DIR/qa-pull-responses"
+    expected_calls=3
+  fi
+  printf '%s\n' "$response" >> "$GH_STUB_DIR/qa-pull-responses"
+  qa_direct_run
+  test "$qa_rc" = 0
+  test "$(cat "$GH_STUB_DIR/qa-pull-count")" = "$expected_calls"
+  test "$(cat "$CASE_DIR/qa-delays")" = 5
+  test "$(wc -l < "$CASE_DIR/qa-runs" | tr -d ' ')" = 1
+  jq -e '.pr==7 and .base=="main" and .milestone.title=="M1" and .status=="done"' "$DV_STATE"/QA-*/meta
+}
+case_qa_request_retry() { qa_lookup_response_retry fail; }
+case_qa_empty_reply_retry() { qa_lookup_response_retry empty; }
+case_qa_invalid_reply_retry() { qa_lookup_response_retry invalid; }
+case_qa_second_lookup_retry() { qa_lookup_response_retry fail true; }
+qa_lookup_response_blocked() {
+  local response=$1 base_lookup=${2:-false} attempt record
+  qa_direct_fixture
+  if [ "$base_lookup" = true ]; then
+    jq '.base=""' "$qa_dir/running.json" > "$CASE_DIR/request.tmp"
+    mv "$CASE_DIR/request.tmp" "$qa_dir/running.json"
+  fi
+  for attempt in 1 2 3 4 5 6; do
+    printf '%s\n' "$response" >> "$GH_STUB_DIR/qa-pull-responses"
+  done
+  qa_direct_run
+  test "$qa_rc" = 1
+  test "$(cat "$GH_STUB_DIR/qa-pull-count")" = 6
+  test "$(wc -l < "$CASE_DIR/qa-delays" | tr -d ' ')" = 5
+  test ! -f "$CASE_DIR/qa-runs"
+  if [ "$base_lookup" = true ]; then record="$qa_dir/meta"
+  else record=$(find "$DV_STATE" -path '*/QA-*/meta' -print); fi
+  jq -e '.status=="blocked" and (.failure_reason|contains("pr lookup"))' "$record"
+  test -f "$qa_dir/running.json"
+  grep 'QA failed at pr lookup' "$qa_dir/log"
+}
+case_qa_request_blocked() { qa_lookup_response_blocked fail; }
+case_qa_empty_reply_blocked() { qa_lookup_response_blocked empty; }
+case_qa_base_request_blocked() { qa_lookup_response_blocked fail true; }
 case_qa_milestone_graphql() {
   qa_direct_fixture; qa_without_pr_milestone
   qa_direct_run
@@ -374,4 +420,115 @@ case_qa_milestone_ambiguous() {
   test ! -f "$CASE_DIR/qa-runs"
   grep 'multiple distinct milestones' "$qa_dir/log"
   jq -e '.status=="blocked" and (.failure_reason|contains("milestone"))' "$DV_STATE"/QA-*/meta
+}
+
+# Test finding publication directly, without starting a watcher or agent.
+qa_finding_fixture() {
+  repo finding remote
+  mkdir "$DV_STATE/QA-FINDING"
+  jq -n --arg repo "$REPO" --arg head "$(git -C "$REPO" rev-parse HEAD)" \
+    '{issue:"QA-FINDING",kind:"qa",repo:$repo,worktree:$repo,branch:"main",base:"main",
+      repository:"test/repo",head:$head,milestone:{number:1,title:"M1"}}' > "$DV_STATE/QA-FINDING/meta"
+  printf '{}\n' > "$GH_STUB_DIR/qa-pr"
+  printf '[]\n' > "$GH_STUB_DIR/qa-issues"
+  printf '[]\n' > "$GH_STUB_DIR/qa-comments"
+  printf '{"number":158,"title":"Conversation input stalls","state":"open"}\n' > "$GH_STUB_DIR/qa-issue-158"
+  jq -n '{kind:"bug",title:"Cannot start a conversation",steps:"Type hello",expected:"Response",
+    actual:"No response",evidence:"Synthetic transcript",match:158}' > "$CASE_DIR/finding.json"
+}
+qa_finding_run() {
+  qa_rc=0
+  dv qa finding QA-FINDING "$CASE_DIR/finding.json" > "$CASE_DIR/finding.log" 2>&1 || qa_rc=$?
+  cat "$CASE_DIR/finding.log"
+  printf 'QA finding exit: %s\n' "$qa_rc"
+}
+qa_finding_no_writes() {
+  test "$qa_rc" != 0
+  test ! -s "$GH_STUB_DIR/qa-actions"
+  test ! -e "$GH_STUB_DIR/qa-created"
+  test ! -e "$DV_STATE/QA-FINDING/findings.jsonl"
+  if grep -E '^(label create|issue (edit|comment)|api --method POST) ' "$GH_STUB_DIR/calls"; then return 1; fi
+}
+qa_title_fixture() {
+  qa_finding_fixture
+  jq 'del(.match)' "$CASE_DIR/finding.json" > "$CASE_DIR/title.json"
+  mv "$CASE_DIR/title.json" "$CASE_DIR/finding.json"
+}
+qa_full_page() {
+  # PRs count toward the page size, even though they cannot match a finding.
+  jq -n '[range(1;101) | {number:.,title:"Cannot start a conversation",state:"open",pull_request:{url:"synthetic"}}]' > "$GH_STUB_DIR/qa-issues"
+}
+case_qa_match_unlisted() {
+  qa_finding_fixture
+  qa_finding_run
+  test "$qa_rc" = 0
+  grep 'issue-comment 158' "$GH_STUB_DIR/qa-actions"
+  grep -Fx 'api repos/test/repo/issues/158' "$GH_STUB_DIR/calls"
+  if grep -E '(state=open|issue-create)' "$GH_STUB_DIR/calls" "$GH_STUB_DIR/qa-actions"; then return 1; fi
+  jq -e '.action=="commented"' "$DV_STATE/QA-FINDING/findings.jsonl"
+}
+qa_rejected_match() {
+  qa_finding_fixture
+  # A stale list must not override the direct issue's state or type.
+  jq -s . "$GH_STUB_DIR/qa-issue-158" > "$GH_STUB_DIR/qa-issues"
+  jq "$1" "$GH_STUB_DIR/qa-issue-158" > "$CASE_DIR/issue.tmp"
+  mv "$CASE_DIR/issue.tmp" "$GH_STUB_DIR/qa-issue-158"
+  qa_finding_run
+  qa_finding_no_writes
+}
+case_qa_match_closed() { qa_rejected_match '.state="closed"'; }
+case_qa_match_pr() { qa_rejected_match '.pull_request={url:"synthetic"}'; }
+case_qa_match_error() { qa_rejected_match '{message:"Not Found"}'; }
+case_qa_match_http_failure() {
+  qa_finding_fixture
+  jq -s . "$GH_STUB_DIR/qa-issue-158" > "$GH_STUB_DIR/qa-issues"
+  touch "$GH_STUB_DIR/qa-issue-158-fail"
+  qa_finding_run
+  qa_finding_no_writes
+}
+case_qa_title_error_object() {
+  qa_title_fixture
+  printf '{"message":"Service Unavailable"}\n' > "$GH_STUB_DIR/qa-issues"
+  qa_finding_run
+  qa_finding_no_writes
+}
+case_qa_title_second_page() {
+  qa_title_fixture
+  qa_full_page
+  jq '[. + {title:"CANNOT START A CONVERSATION"}]' "$GH_STUB_DIR/qa-issue-158" > "$GH_STUB_DIR/qa-page-2"
+  qa_finding_run
+  test "$qa_rc" = 0
+  grep 'issue-comment 158' "$GH_STUB_DIR/qa-actions"
+  if grep -q issue-create "$GH_STUB_DIR/qa-actions"; then return 1; fi
+}
+case_qa_title_page_failure() {
+  qa_title_fixture
+  qa_full_page
+  # Even an exact match on page one must wait for later page validation.
+  jq '.[0] |= del(.pull_request)' "$GH_STUB_DIR/qa-issues" > "$CASE_DIR/page.tmp"
+  mv "$CASE_DIR/page.tmp" "$GH_STUB_DIR/qa-issues"
+  touch "$GH_STUB_DIR/qa-page-2-fail"
+  qa_finding_run
+  qa_finding_no_writes
+}
+case_qa_title_page_error() {
+  qa_title_fixture
+  qa_full_page
+  printf '{"message":"Service Unavailable"}\n' > "$GH_STUB_DIR/qa-page-2"
+  qa_finding_run
+  qa_finding_no_writes
+}
+case_qa_title_empty_response() {
+  qa_title_fixture
+  : > "$GH_STUB_DIR/qa-issues"
+  qa_finding_run
+  qa_finding_no_writes
+}
+case_qa_title_full_last_page() {
+  qa_title_fixture
+  qa_full_page
+  qa_finding_run
+  test "$qa_rc" = 0
+  grep -Fx 'api repos/test/repo/issues?state=open&per_page=100&page=2' "$GH_STUB_DIR/calls"
+  test "$(grep -c issue-create "$GH_STUB_DIR/qa-actions")" = 1
 }

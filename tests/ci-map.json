@@ -1,0 +1,29 @@
+{
+  "smoke": ["runner_*", "capacity_classifier", "screen_locale_c", "install"],
+  "libraries": {
+    "lib/appserver-transport.sh": ["appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*"],
+    "lib/appserver.sh": ["appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*"],
+    "lib/bidding.sh": ["bid_*", "award_*", "submit_*", "goal_exit_*", "admission_*", "disk_bid", "disk_award", "manager_*", "watch_stuck*"],
+    "lib/capacity.sh": ["capacity_*", "appserver_*capacity*", "exec_capacity", "exec_rate", "task_capacity", "revive_*capacity*", "qa_recovered_capacity"],
+    "lib/claude.sh": ["claude_*", "question_claude*", "symlink_claude*", "capacity_claude", "task_claude", "qa_fresh_claude"],
+    "lib/codex-exec.sh": ["exec_*", "capacity_exec_*", "task_exec_*", "send_branch_exec", "symlink_exec_send", "clean_resume_*exec", "pr_worker_*exec*", "revive_*"],
+    "lib/codex.sh": ["codex_*", "question_*", "task_codex_goal", "revive_codex_goal", "host_codex", "capacity_*", "appserver_*", "exec_*"],
+    "lib/commands.sh": ["*"],
+    "lib/common.sh": ["*"],
+    "lib/delivery.sh": ["pr_*", "review_*", "reconcile_*", "status_done_head", "watch_*", "land_*", "stack_*", "start_done", "local_land", "polish_*"],
+    "lib/disk.sh": ["disk_*", "teardown_*", "bid_*", "award_*", "start_done"],
+    "lib/heavy.sh": ["heavy_*", "bid_*", "watch_capacity*", "manager_*"],
+    "lib/herdr.sh": ["herdr_*", "task_herdr_*", "send_branch_herdr", "capacity_terminal*", "capacity_legacy_terminal"],
+    "lib/host.sh": ["host_*", "claude_*host", "disk_host", "update_host", "bid_*"],
+    "lib/manager.sh": ["manager_*", "watch_stuck*", "watch_capacity*", "metrics_manager*"],
+    "lib/metrics.sh": ["metrics_*"],
+    "lib/polish.sh": ["polish_*", "pr_public_body", "pr_prepared_body", "pr_body_update"],
+    "lib/pr-review.sh": ["review_*", "pr_worker_*", "pr_wait_*", "land_*", "stack_*", "qa_*"],
+    "lib/qa.sh": ["qa_*"],
+    "lib/self-update.sh": ["update_*"],
+    "lib/stack.sh": ["stack_*", "land_*", "pr_ready", "base_merge"],
+    "lib/stall.sh": ["stall_*", "failed_stall_race", "clean_resume_*", "appserver_*", "task_exec_stall", "exec_silence", "metrics_stall_overlap", "watch_stuck*"],
+    "lib/task.sh": ["task_*", "symlink_task_land", "clean_resume_task*", "send_branch_*", "exec_land_*", "appserver_*", "revive_*"],
+    "lib/tmp.sh": ["tmp_*", "appserver_*", "qa_*", "host_*"]
+  }
+}

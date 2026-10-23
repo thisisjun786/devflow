@@ -28,7 +28,7 @@ edge_request() {
     '{issue:$issue,repo:$repo,slug:"edge",agent:"codex",mode:"goal",base:"",brief:"fake",token:$token,deadline:$deadline}'
 }
 case_award_retry_rejection() {
-  needs_tmux; repo retry
+  needs_tmux; repo retry; failed_start_fixture
   export DV_MAX_JOBS=1
   edge_request RETRY-1 first | DV_AGENT_CMD_codex=false dv _award > "$CASE_DIR/first"
   jq -e '.status=="failed"' "$CASE_DIR/first"

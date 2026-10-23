@@ -5,7 +5,6 @@
 revive_setup() {
   repo revive
   herdr_setup
-  export DV_START_WAIT=2
   dv start "$REPO" RV-1 followup --mode goal
   wait_native RV-1
   RV_STATE="$DV_STATE/RV-1"
@@ -60,6 +59,8 @@ then verify and finish.'
   jq -e --arg message "$message" --arg s "$RV_STATE" '.args[-1] | startswith($message) and contains($s+"/brief.md") and contains($s+"/report.md")' "$RV_STATE/revived-input.json"
   test ! -e "$RV_WT/SHOULD_NOT_EXIST"
   revive_preserved
+  grep -F 'single local review and one P0/P1 correction limit' "$RV_STATE/revive/prompt.md"
+  ! grep -F 'pr-loop.json review round counts' "$RV_STATE/revive/prompt.md"
 }
 case_revive_live() {
   revive_setup
@@ -164,12 +165,12 @@ case_revive_undetected() {
   if dv send RV-1 'do not replace active command'; then return 1; fi
   test ! -d "$RV_STATE/revive"
 }
-case_revive_branch_guard() {
+case_revive_worktree_guard() {
   revive_setup; revive_dead
-  git -C "$RV_WT" checkout -qb unexpected
-  if dv send RV-1 'stay on original branch'; then return 1; fi
+  mv "$RV_WT" "$CASE_DIR/moved-worktree"
+  if dv send RV-1 'stay in original worktree'; then return 1; fi
   test ! -d "$RV_STATE/revive"
-  test "$(cat "$RV_WT/dirty")" = 'unfinished work'
+  test "$(cat "$CASE_DIR/moved-worktree/dirty")" = 'unfinished work'
 }
 case_revive_goal_no_done() {
   revive_setup; revive_dead
@@ -178,6 +179,7 @@ case_revive_goal_no_done() {
   export DV_DEVIN_BIN="$ROOT/tests/fixtures/revived-agent" DV_REVIVE_TEST_NO_DONE=1
   dv send RV-1 'finish the current request'
   revive_wait
+  test -f "$RV_STATE/trust-enter"
   for _ in {1..100}; do
     if jq -se 'any(.[]; .kind=="blocked")' "$RV_STATE/events.log" >/dev/null; then break; fi
     sleep 0.05

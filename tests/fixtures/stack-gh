@@ -8,6 +8,10 @@ case "$1 $2" in
     [ ! -f "$GH_STUB_DIR/fail-$number" ] || exit 1
     jq --arg head "$(git --git-dir="$CASE_DIR/remote.git" rev-parse "refs/heads/stack-$number")" \
       '.headRefOid=$head | if .checked_head==$head then . else .statusCheckRollup=[] end' "$file" ;;
+  'pr comment')
+    number=${3##*/}; file="$GH_STUB_DIR/pr-$number.json"
+    jq --arg head "$(git rev-parse HEAD)" '.reviews=[{id:2,user:{login:"chatgpt-codex-connector[bot]"},commit_id:$head,state:"COMMENTED",body:"Looks good"}]' "$file" > "$file.review"
+    mv "$file.review" "$file" ;;
   'pr merge')
     number=${3##*/}; file="$GH_STUB_DIR/pr-$number.json"
     if [ -f "$GH_STUB_DIR/fail-merge-$number" ]; then
@@ -29,6 +33,10 @@ case "$1 $2" in
   'api repos/test/repo')
     jq -n --arg method "${STACK_TEST_METHOD:-merge}" \
       '{allow_merge_commit:($method=="merge"),allow_squash_merge:($method=="squash"),allow_rebase_merge:($method=="rebase")}' ;;
-  'api --paginate') printf '[]\n' ;;
+  'api --paginate')
+    case "$3" in
+      */reviews) number=${3%/reviews}; number=${number##*/}; jq '.reviews' "$GH_STUB_DIR/pr-$number.json" ;;
+      *) printf '[]\n' ;;
+    esac ;;
   *) printf 'Unexpected stack gh: %s\n' "$*" >&2; exit 1 ;;
 esac
