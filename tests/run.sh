@@ -2346,6 +2346,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+  config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
   appserver_sender_close \
   metrics_restart_slow_start \
   award_timeout_slow_success \
