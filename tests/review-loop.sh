@@ -260,6 +260,60 @@ case_review_retry_arrives() {
   jq -e '.review.clean and (.review_timed_out|not)' "$CASE_DIR/result"
   test "$(grep -c '^pr comment .*@codex review' "$GH_STUB_DIR/calls")" = 1
 }
+review_deadline_fixture() {
+  review_fixture
+  local offset=$1 retried=$2 initial head expected
+  initial=$(git -C "$REPO" rev-parse HEAD)
+  git -C "$REPO" commit --allow-empty -qm 'P-1: new review head'
+  head=$(git -C "$REPO" rev-parse HEAD)
+  jq --arg head "$head" '.head=$head' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/P-1/meta"
+  # Only disposable fixture state is seeded; retain the old-head review.
+  jq -n --arg initial "$initial" --arg head "$head" --argjson deadline "$((1000 + offset))" --argjson retried "$retried" \
+    '{initial_head:$initial,failed_heads:[],reviewed_heads:[$initial],requests:{($head):{deadline:$deadline,retried:$retried}}}' > "$DV_STATE/P-1/pr-loop.json"
+  export DV_REVIEW_WAIT=2
+  printf '1000\n' > "$CASE_DIR/review-clock"
+  touch "$GH_STUB_DIR/review-on-request"
+  cat > "$DV_CONFIG" <<'CONFIG'
+date() {
+  if [ "$*" = +%s ]; then cat "$CASE_DIR/review-clock"; else command date "$@"; fi
+}
+sleep() {
+  if [ "${FUNCNAME[1]:-}" != cmd_pr_wait ]; then command sleep "$@"; return; fi
+  local tick
+  tick=$(cat "$CASE_DIR/review-clock")
+  if [ "$tick" = 1000 ]; then cp "$DV_STATE/P-1/pr-loop.json" "$CASE_DIR/first-persisted"; fi
+  if grep -q '^pr comment .*@codex review' "$GH_STUB_DIR/calls"; then
+    printf '%s\n' "$tick" > "$CASE_DIR/review-request-at"
+  elif [ "$tick" -ge 1002 ]; then
+    printf 'BUG: no @codex review within DV_REVIEW_WAIT=2; persisted deadline remains in the future\n' >&2
+    exit 1
+  fi
+  [ "$tick" -lt 1003 ] || exit 1
+  printf '%s\n' "$((tick + 1))" > "$CASE_DIR/review-clock"
+}
+CONFIG
+  if dv pr-wait P-1 --foreground > "$CASE_DIR/result"; then
+    test "$retried" = false
+  else
+    test "$retried" = true
+  fi
+  expected=$((1000 + offset)); [ "$expected" -le 1002 ] || expected=1002
+  jq -e --arg head "$head" --arg initial "$initial" --argjson deadline "$expected" --argjson retried "$retried" \
+    '.requests[$head]=={deadline:$deadline,retried:$retried} and .initial_head==$initial and .reviewed_heads==[$initial]' "$CASE_DIR/first-persisted"
+  if [ "$retried" = false ]; then
+    test "$(cat "$CASE_DIR/review-request-at")" = "$expected"
+    test "$(grep -c '^pr comment .*@codex review' "$GH_STUB_DIR/calls")" = 1
+    jq -e '.review.clean and .review_handled and (.review_timed_out|not)' "$CASE_DIR/result"
+    printf 'Review requested at synthetic time %s (wait budget ends at 1002)\n' "$expected"
+  else
+    ! grep -q '^pr comment .*@codex review' "$GH_STUB_DIR/calls"
+    jq -e '.blocked and .reason=="review-timeout" and (.review_handled|not)' "$CASE_DIR/result"
+  fi
+}
+case_review_future_deadline() { review_deadline_fixture 604800 false; }
+case_review_future_deadline_retried() { review_deadline_fixture 604800 true; }
+case_review_near_deadline() { review_deadline_fixture 1 false; }
 case_review_done_live() {
   review_fixture
   dv pr-wait P-1 --foreground >/dev/null

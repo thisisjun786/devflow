@@ -397,7 +397,7 @@ cmd_pr_wait() {
   done
   [ "$handled:$foreground" != true:false ] || fail '--review-handled requires --foreground'
   [[ "$DV_REVIEW_ROUNDS" =~ ^[1-9][0-9]*$ ]] || fail 'DV_REVIEW_ROUNDS must be a positive integer'
-  local pr head rc=0 tmp current green=false loop review deadline retry reason='' reviewed=false rounds=0
+  local pr head rc=0 tmp current green=false loop review deadline max_deadline retry reason='' reviewed=false rounds=0
   pr=$(jq -er .url "$S/pr.json")
   until pr_wait_lock; do
     [ "$foreground" = true ] || return 0
@@ -445,6 +445,7 @@ cmd_pr_wait() {
       break
     fi
     deadline=$(printf '%s\n' "$loop" | jq -r --arg head "$head" '.requests[$head].deadline // empty')
+    max_deadline=$(( $(now) + DV_REVIEW_WAIT ))
     if [ -z "$deadline" ]; then
       # PR-open triggers the initial review. Every later head gets one explicit
       # request, persisted under the waiter lock so foreground/background agree.
@@ -457,6 +458,9 @@ cmd_pr_wait() {
       fi
       deadline=$(( $(now) + DV_REVIEW_WAIT ))
       loop=$(printf '%s\n' "$loop" | jq --arg head "$head" --argjson deadline "$deadline" '.requests[$head]={deadline:$deadline,retried:false}')
+    elif [ "$deadline" -gt "$max_deadline" ]; then
+      deadline=$max_deadline
+      loop=$(printf '%s\n' "$loop" | jq --arg head "$head" --argjson deadline "$deadline" '.requests[$head].deadline=$deadline')
     fi
     if [ "$(now)" -ge "$deadline" ]; then
       retry=$(printf '%s\n' "$loop" | jq -r --arg head "$head" '.requests[$head].retried')
