@@ -90,13 +90,9 @@ bid_agent() {
   [ "$agent" != codex ] || codex_environment || return 1
   probe="DV_AGENT_READY_$agent"; probe=${!probe}
   if [ -n "$probe" ]; then bid_limit "$DV_BID_TIMEOUT" bash -c "$probe" >/dev/null 2>&1; return; fi
-  case "$agent" in
-    codex) bin=$DV_CODEX_BIN; set -- login status ;;
-    claude) bin=$DV_CLAUDE_BIN; set -- auth status ;;
-    devin) bin=$DV_DEVIN_BIN; set -- auth status ;;
-  esac
+  bin=$(agent_bin "$agent")
   command -v "$bin" >/dev/null || return 1
-  bid_limit "$DV_BID_TIMEOUT" "$bin" "$@" >/dev/null 2>&1
+  bid_limit "$DV_BID_TIMEOUT" agent_auth_probe "$agent" "$bin" >/dev/null 2>&1
 }
 bid_settings() {
   disk_settings
@@ -122,10 +118,10 @@ cmd_bid() {
       --json) json=1; shift ;;
       --repo|--agent) [ "$#" -ge 2 ] || fail 'missing bid value'
         case "$1" in --repo) repo=$2 ;; --agent) agent=$2 ;; esac; shift 2 ;;
-      *) fail 'usage: dv bid --json [--repo REPO] [--agent codex|claude|devin]' ;;
+      *) fail 'usage: dv bid --json [--repo REPO] [--agent codex|claude|devin|omp|agy|grok|cursor]' ;;
     esac
   done
-  case "$agent" in codex|claude|devin) ;; *) fail 'unknown agent' ;; esac
+  known_agent "$agent" || fail 'unknown agent'
   resources=$(bid_resources); capacity=$DV_MAX_JOBS
   [ -n "$capacity" ] || capacity=$(printf '%s' "$resources" | jq '[1,(.cores/8|floor)]|max')
   [[ "$capacity" =~ ^[1-9][0-9]*$ ]] || fail 'DV_MAX_JOBS must be a positive integer'
@@ -155,9 +151,24 @@ cmd_bid() {
       (if $min_disk>0 and $disk!=null then [0,20*(2*$min_disk-$disk)/$min_disk]|max else 0 end))' |
     if [ "$json" = 1 ]; then cat; else jq -r '[.host,.status,(.free_slots|tostring),(.score|tostring),.reason,("heavy="+(.heavy.in_use|tostring)+"/"+(.heavy.slots|tostring)+" waiting="+(.heavy.waiting|tostring))]|@tsv'; fi
 }
+# Without --agent, a brief line "Route: writing|small" selects DV_ROUTE_WRITING
+# or DV_ROUTE_SMALL; "Route: default", no line or an empty target keep DV_AGENT.
+submit_route() {
+  local route target
+  route=$(sed -n '/^Route:/{s/^Route:[[:space:]]*//;s/[[:space:]]*$//;p;q;}' "$1")
+  case "$route" in
+    ''|default) return 0 ;;
+    writing) target=$DV_ROUTE_WRITING ;;
+    small) target=$DV_ROUTE_SMALL ;;
+    *) fail "unknown brief line Route: $route (writing, small or default)" ;;
+  esac
+  [ -n "$target" ] || return 0
+  printf 'dv: Route: %s selects --agent %s\n' "$route" "$target" >&2
+  agent=$target
+}
 cmd_submit() {
   [ "$#" -ge 3 ] || fail 'usage: dv submit REPO ISSUE slug --brief FILE [--agent AGENT] [--mode MODE] [--base BASE]'
-  local repo=$1 issue=$2 slug=$3 brief='' agent=$DV_AGENT mode=$DV_MODE base='' request origin
+  local repo=$1 issue=$2 slug=$3 brief='' agent='' mode=$DV_MODE base='' request origin
   shift 3; valid_issue "$issue"
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || fail 'invalid slug'
   while [ "$#" -gt 0 ]; do
@@ -166,8 +177,13 @@ cmd_submit() {
     shift 2
   done
   [ -f "$brief" ] || fail 'brief file not found'
+  if [ -z "$agent" ]; then
+    agent=$DV_AGENT
+    # Codex-only modes keep the configured Codex agent.
+    case "$mode" in ''|goal) submit_route "$brief" ;; esac
+  fi
   [ -n "$mode" ] || mode=$(codex_default_mode "$agent")
-  case "$agent:$mode" in codex:auto|codex:goal|codex:exec|claude:goal|devin:goal) ;; *) fail 'invalid agent/mode' ;; esac
+  case "$agent:$mode" in codex:auto|codex:goal|codex:exec) ;; *:goal) known_agent "$agent" || fail 'invalid agent/mode' ;; *) fail 'invalid agent/mode' ;; esac
   [ -z "$base" ] || git check-ref-format "refs/heads/$base" >/dev/null || fail 'invalid base'
   if [ -d "$repo" ]; then
     repo=$(cd "$repo" && git rev-parse --show-toplevel)
@@ -182,7 +198,8 @@ bid_request_valid() {
   jq -e 'type=="object" and (.issue|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9_-]*$")) and
     (.slug|type=="string" and test("^[a-zA-Z0-9][a-zA-Z0-9-]*$")) and (.repo|type=="string" and length>0 and (startswith("-")|not)) and
     (.brief|type=="string") and (.base|type=="string") and
-    ((.agent=="codex" and (.mode=="auto" or .mode=="goal" or .mode=="exec")) or ((.agent=="claude" or .agent=="devin") and .mode=="goal"))' >/dev/null
+    ((.agent=="codex" and (.mode=="auto" or .mode=="goal" or .mode=="exec")) or
+      (.agent as $agent | ["claude","devin","omp","agy","grok","cursor"] | index($agent) != null) and .mode=="goal")' >/dev/null
 }
 cmd__submit() {
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || fail 'submit must be received by the manager'

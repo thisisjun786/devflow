@@ -64,6 +64,26 @@ case_host_check() {
   test ! -e "$HOME/downloads"
   test ! -e "$HOME/.local"
 }
+case_host_agents() {
+  host_setup
+  local tool
+  for tool in omp agy grok cursor-agent; do host_fake "$HOME/system/$tool" 1.2.3; done
+  mkdir -p "$HOME/.omp/agent"
+  printf 'providers:\n  inferhub:\n    apiKey: INFERHUB_API_KEY\n' > "$HOME/.omp/agent/models.yml"
+  printf 'INFERHUB_API_KEY=omp-secret-value\n' > "$HOME/.omp/agent/.env"
+  "$HOST_DV" host check --json > "$CASE_DIR/check.json"
+  jq -e '[.tools[] | select(.name=="omp" or .name=="agy" or .name=="grok" or .name=="cursor-agent") |
+    .install=="check" and .login.status=="ok" and .ssh.status=="ok"] | length==4 and all' "$CASE_DIR/check.json"
+  jq -e '.auth.omp=={login:"logged-in",ssh:"logged-in"} and .auth.agy.login=="logged-in" and .auth.grok.ssh=="logged-in" and .auth.cursor=={login:"unavailable",ssh:"unavailable"}' "$CASE_DIR/check.json"
+  "$HOST_DV" host check > "$CASE_DIR/check.txt"
+  grep -Fx 'auth cursor: login=unavailable ssh=unavailable' "$CASE_DIR/check.txt"
+  if grep -e 'private auth detail' -e 'omp-secret-value' "$CASE_DIR/check.json" "$CASE_DIR/check.txt"; then return 1; fi
+  rm "$HOME/.omp/agent/.env" "$HOME/system/agy"
+  "$HOST_DV" host check --json > "$CASE_DIR/missing.json"
+  jq -e '.auth.omp.login=="unavailable" and .auth.agy.login=="missing" and (.tools[] | select(.name=="agy") | .login.status=="missing")' "$CASE_DIR/missing.json"
+  "$HOST_DV" host sync > "$CASE_DIR/sync.txt"
+  for tool in omp agy grok cursor-agent; do grep -F "Check only: $tool (system)" "$CASE_DIR/sync.txt"; done
+}
 case_host_sync() {
   host_setup
   printf '# user profile\nexport USER_SETTING=keep\n' > "$HOME/.profile"

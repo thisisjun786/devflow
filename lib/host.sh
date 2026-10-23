@@ -76,13 +76,10 @@ host_measure() {
 }
 host_auth() {
   local name=$1 path=$2 bin output
-  case "$name" in
-    codex) bin=$DV_CODEX_BIN ;; claude) bin=$DV_CLAUDE_BIN ;; devin) bin=$DV_DEVIN_BIN ;; *) bin=$name ;;
-  esac
+  bin=$(agent_bin "$name") || bin=$name
   bin=$(host_resolve "$path" "$bin")
   if [ -z "$bin" ] || [ ! -x "$bin" ]; then echo missing; return; fi
-  case "$name" in codex) set -- login status ;; *) set -- auth status ;; esac
-  if output=$(PATH="$path" host_limit 10 "$bin" "$@" 2>/dev/null); then
+  if output=$(PATH="$path" host_limit 10 agent_auth_probe "$name" "$bin" 2>/dev/null); then
     # Claude can return JSON with loggedIn=false without a failing exit status.
     if [ "$name" = claude ] && printf '%s' "$output" | jq -e '.loggedIn==false' >/dev/null 2>&1; then
       echo unavailable
@@ -154,7 +151,7 @@ host_check() {
         '{name:$name,expected:$expected,install:$install,scope:$scope,login:$login,ssh:$ssh}'
     done <<< "$rows"
   )
-  for name in gh codex claude devin; do
+  for name in gh codex claude devin omp agy grok cursor; do
     login=$(host_auth "$name" "$login_path"); ssh=$(host_auth "$name" "$ssh_path")
     auth=$(printf '%s' "$auth" | jq --arg name "$name" --arg login "$login" --arg ssh "$ssh" '. + {($name):{login:$login,ssh:$ssh}}')
   done

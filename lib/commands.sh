@@ -26,7 +26,7 @@ cmd_start() {
     esac
     shift 2
   done
-  case "$agent" in codex|claude|devin) ;; *) fail 'unknown agent' ;; esac
+  known_agent "$agent" || fail 'unknown agent'
   [ -n "$mode" ] || mode=$(codex_default_mode "$agent")
   case "$mode" in auto|goal|exec) ;; *) fail 'mode must be auto, goal or exec' ;; esac
   [ "$agent" = codex ] || [ "$mode" = goal ] || fail 'auto/exec modes are Codex-only'
@@ -228,9 +228,32 @@ run_agent() {
           [ "$DV_AGENT_QUESTIONS" != off ] || args+=(--disallowedTools AskUserQuestion)
           capacity_terminal_run 1 "${args[@]}" -- "$instruction" || rc=$?
         fi ;;
-      devin)
-        accept_devin_trust & helper=$!
-        capacity_terminal_run 1 "$DV_DEVIN_BIN" --model "$DV_DEVIN_MODEL" --permission-mode dangerous -- "$instruction" || rc=$?
+      omp)
+        args=("$DV_OMP_BIN")
+        [ -z "$DV_OMP_MODEL" ] || args+=(--model "$DV_OMP_MODEL")
+        # A first interactive start otherwise opens the provider setup wizard
+        # instead of the prompt. This skips it for dv runs only.
+        export OMP_SKIP_SETUP=1
+        capacity_terminal_run 1 "${args[@]}" --approval-mode=yolo -- "$instruction" || rc=$? ;;
+      cursor)
+        args=("$DV_CURSOR_BIN" --yolo --trust)
+        [ -z "$DV_CURSOR_MODEL" ] || args+=(--model "$DV_CURSOR_MODEL")
+        capacity_terminal_run 1 "${args[@]}" -- "$instruction" || rc=$? ;;
+      devin|agy|grok)
+        case "$agent" in
+          devin) args=("$DV_DEVIN_BIN" --model "$DV_DEVIN_MODEL" --permission-mode dangerous --) ;;
+          agy)
+            args=("$DV_AGY_BIN" --dangerously-skip-permissions)
+            [ -z "$DV_AGY_MODEL" ] || args+=(--model "$DV_AGY_MODEL")
+            # agy takes the initial interactive prompt as the value of -i.
+            args+=(-i) ;;
+          grok)
+            args=("$DV_GROK_BIN" --always-approve)
+            [ -z "$DV_GROK_MODEL" ] || args+=(-m "$DV_GROK_MODEL")
+            args+=(--) ;;
+        esac
+        accept_folder_trust & helper=$!
+        capacity_terminal_run 1 "${args[@]}" "$instruction" || rc=$?
         stop_question_sentinel
         wait "$helper" || true ;;
     esac
@@ -381,7 +404,8 @@ inject_goal() {
   codex_start_failed 'Codex prompt not detected' "$screen"
   return 1
 }
-accept_devin_trust() {
+# Devin, agy and grok ask once per new folder; the default choice trusts it.
+accept_folder_trust() {
   local end=$(( $(now) + DV_START_WAIT )) pane
   while [ "$(now)" -lt "$end" ]; do
     pane=$(read_session 2>/dev/null) || return 0
@@ -481,6 +505,7 @@ cmd_status() {
   heavy=$(heavy_snapshot)
   local selected='' json=0 path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
   local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead provider_capacity
+  local row_agent row_worktree transcript
   for path in "$@"; do case "$path" in --json) json=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   if [ "$json" = 0 ]; then
@@ -495,6 +520,12 @@ cmd_status() {
       goal_stalled=false; goal_active=false; agent_state_seq=null; agent_session=null
       provider_capacity=false
       backend=$(jq -r '.backend // "tmux"' "$path")
+      # Finished jobs have no worktree; skip them to keep status cheap.
+      transcript=''
+      IFS=$'\t' read -r row_agent row_worktree < <(jq -r '[.agent // "", .worktree // ""]|@tsv' "$path") || true
+      if [ -n "$row_worktree" ] && [ -d "$row_worktree" ]; then
+        transcript=$(agent_transcript "$row_agent" "$(cd "$row_worktree" && pwd -P)") || transcript=''
+      fi
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
       last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
       if [ "$backend" = appserver ]; then
@@ -544,6 +575,9 @@ cmd_status() {
       if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$agent_status" = unknown ] && jq -e '.status=="running"' "$path" >/dev/null &&
         (load_issue "$(jq -r .issue "$path")"; agent_gone); then
         agent_dead=true
+        # Process absence alone can be a recoverable interruption. A recorded
+        # nonzero exit confirms failure; keep metadata intact for revival.
+        if [[ "$(cat "$(dirname "$path")/agent.exit" 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then agent_status=failed; fi
       fi
       if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" or .status=="waiting-capacity"' "$path" >/dev/null; then
         screen=''
@@ -566,13 +600,14 @@ cmd_status() {
       # done_at can describe an earlier PR revision. Read the completion head
       # without changing metadata or the bidding code's historical done_at.
       done_head=$(jq -r '.head | select(type=="string")' "$(dirname "$path")/done.json" 2>/dev/null) || done_head=''
-      row=$(jq -c --arg done_head "$done_head" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" \
+      row=$(jq -c --arg done_head "$done_head" --arg transcript "$transcript" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" \
         --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" --argjson agent_dead "$agent_dead" --argjson provider_capacity "$provider_capacity" \
-        '.+{done_head:(if $done_head=="" then null else $done_head end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session,capacity_detected:$provider_capacity}' "$path")
+        '.+{done_head:(if $done_head=="" then null else $done_head end),transcript:(if $transcript=="" then null else $transcript end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session,capacity_detected:$provider_capacity}' "$path")
       if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
       row=$(printf '%s\n' "$row" | jq -c '.capacity_retry_at=(.capacity.next_try_at // null) |
         if .status=="waiting-capacity" then .agent_status="waiting-capacity" else . end')
-      if [ "$backend" = exec ] && [ "$alive" = false ] && [ "$agent_status" = failed ]; then
+      if [ "$agent_status" = failed ] &&
+        { [ "$agent_dead" = true ] || { [ "$backend" = exec ] && [ "$alive" = false ]; }; }; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
       fi
       if [ "$json" = 1 ]; then printf '%s\n' "$row" | jq -c --argjson heavy "$heavy" '.+{heavy:$heavy}'
@@ -646,7 +681,7 @@ revive_agent() {
   printf '%s\n' "$(now):$$:$RANDOM" > "$S/revive/id"
   # Keep the previous completion and review-fix.sent intact. The new wrapper
   # checks its own completion marker, including report-only fixes at the same SHA.
-  local file
+  local file transcript
   for file in agent.exit agent.pid done.json; do
     [ ! -f "$S/$file" ] || cp "$S/$file" "$S/revive/previous-$file"
   done
@@ -658,6 +693,9 @@ revive_agent() {
       printf 'Continue in the existing worktree %s on its current checkout (%s).\n' "$WT" "$(git -C "$WT" rev-parse --abbrev-ref HEAD)"
     fi
     printf 'Read %s/brief.md and, if present, %s/report.md for context.\n' "$S" "$S"
+    if transcript=$(agent_transcript_dir "$(jq -r .agent "$S/meta")" "$(cd "$WT" && pwd -P)") && [ -d "$transcript" ]; then
+      printf 'Earlier session transcripts for this worktree (read only): %s\n' "$transcript"
+    fi
     printf 'This continues the same request; preserve %s/review-fix.sent.\n' "$S"
     if [ "$KIND" != task ]; then
       if is_github; then

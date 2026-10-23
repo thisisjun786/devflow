@@ -9,20 +9,20 @@ Linear 이슈를 정리한 뒤 개발 호스트의 로컬 저장소에서 이슈
 
 herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISSUE>` workspace에서 에이전트를 직접 실행하고(Codex hooks 유지), send·status·clean/land는 meta의 backend를 따릅니다(로그는 done/clean 화면 저장, `DV_HERDR=0`·미설치·backend 없는 기존 이슈는 tmux, herdr 시작 실패 시 상태 보존).
 
-1. 구체적인 요구와 완료 기준을 brief 파일로 쓰고 `dv start <repo> <ISSUE> <slug> --brief FILE`로 시작합니다. Codex 기본은 goal입니다. 필요하면 `--agent claude|devin` 또는 Codex `--mode exec`, `--base BRANCH`를 선택합니다.
-2. 에이전트는 실패 시험을 먼저 남기고 개발·관련 시험·커밋·보고서를 마칩니다. GitHub면 `dv pr`, 마지막에 `dv done`을 호출합니다.
+1. 구체적인 요구와 완료 기준을 brief 파일로 쓰고 `dv start <repo> <ISSUE> <slug> --brief FILE`로 시작합니다. Codex 기본은 goal입니다. 필요하면 `--agent claude|devin|omp|agy|grok|cursor` 또는 Codex `--mode exec`, `--base BRANCH`를 선택합니다. `dv submit`은 `--agent` 없이 brief의 `Route: writing`이면 agy, `Route: small`이면 omp로 보냅니다(`DV_ROUTE_WRITING`·`DV_ROUTE_SMALL`, 비우면 끔).
+2. 에이전트는 실패 시험을 먼저 남기고 개발·관련 시험·커밋·보고서를 마칩니다. GitHub면 `dv pr` 후 `dv pr-wait <ISSUE> --foreground`(`--review-handled`)로 CI와 리뷰를 처리하고, 현재 head의 초록 CI와 깨끗한 Codex 리뷰(`checks=green review=handled`)를 확인한 뒤에만 `dv done`을 호출합니다. 원격 없는 로컬 저장소는 바로 `dv done`을 호출합니다.
 3. 감시 호스트의 `dv-kick`은 이벤트를 파일에 쓰기만 합니다. `dv-watch`가 3초마다 로컬 큐를 읽고 시온 작업자를 최대 4개 실행합니다. 30분마다 상태 조회로 유실된 done 이벤트만 보완합니다(자기 호스트는 ssh 없이). 모델 폴링을 하지 않습니다. 10-19부터 감시 호스트는 lina-os(systemd user `dev.devflow.watch.service`, `DV_KICK_HOST=lina-os`)입니다.
-4. GitHub 작업자는 `dv pr-wait <ISSUE> --foreground`의 CI와 현재 head의 최신 Codex 리뷰를 읽습니다. P0·P1을 수정·시험·커밋·push하고 새 리뷰를 기다리는 루프를 반복합니다. 첫 리뷰는 PR-open 자동 트리거, 이후는 devflow의 `@codex review` 댓글입니다. `DV_REVIEW_BOTS=codex`, `DV_REVIEW_ROUNDS=4`가 기본입니다.
+4. GitHub 작업자는 `dv pr-wait <ISSUE> --foreground`의 CI와 현재 head의 최신 Codex 리뷰를 읽습니다. P0·P1을 수정·시험·커밋·`dv pr`로 push하고 새 리뷰를 기다리는 루프를 반복하며 `--review-handled`로 현재 head의 깨끗한 리뷰를 확인합니다. 첫 리뷰는 PR-open 자동 트리거, 이후는 devflow의 `@codex review` 댓글입니다. `DV_REVIEW_BOTS=codex`, `DV_REVIEW_ROUNDS=4`가 기본입니다.
 5. 같은 head 재조회는 회차를 늘리지 않습니다. 상한에 P0·P1이 남으면 `review-rounds`와 열린 지적으로 차단하며 관리자가 처리합니다. 리뷰가 `DV_REVIEW_WAIT` 동안 없으면 한 번 더 요청하고 다시 기다린 뒤 `review-timeout`으로 차단합니다. P2·P3은 최종 리뷰에서 PR당 후속 이슈 하나로 같은 저장소·같은 milestone에 남깁니다(파일:줄·한 줄 내용, `Depends on #<원 이슈>`). 후속 번호는 report.md와 PR 본문에 기록하며 병합을 막지 않습니다.
-6. 현재 PR head의 CI 전체가 초록이고 최신 Codex 리뷰에 P0·P1이 없으면 `dv land`로 저장소가 허용하는 병합 방식(squash 우선)을 사용합니다. 로컬은 `.devflow` 또는 설정의 `DV_TEST_CMD`를 후보 병합 결과에서 통과한 뒤 base를 갱신합니다. fast-forward 기본이며 `DV_LAND_MODE=merge`는 merge 커밋입니다. 원격 브랜치는 남습니다.
+6. 관리자는 `done`(`checks=green review=handled`)에서 보고서·diff·시험을 이슈 완료 조건·범위와 대조합니다. 현재 PR head의 CI 전체가 초록이고 최신 Codex 리뷰에 P0·P1이 없으면 `dv land`로 저장소가 허용하는 병합 방식(squash 우선)을 사용합니다. 로컬은 `dv review` 한 번 후 `.devflow` 또는 설정의 `DV_TEST_CMD`를 후보 병합 결과에서 통과한 뒤 base를 갱신합니다. fast-forward 기본이며 `DV_LAND_MODE=merge`는 merge 커밋입니다. 원격 브랜치는 남습니다.
 7. 이슈에 결과를 한 줄 남깁니다. 준에게 보내는 알림(준 10-22 "보내는 메시지 정돈해라"): 합친 결과는 바로 보내지 않고 `~/.local/state/devflow-mac/digest.tsv`에 `시각\t저장소\t쉬운 말 한 줄`로 덧붙인다. `~/dv/bin/sion-digest`가 09·12·15·18·21·00시에 저장소별로 묶어 한 통 보낸다(user timer `sion-digest`). 바로 보내는 건 준만 할 수 있는 일(돈·계정·공개·되돌릴 수 없는 일)과 시온이 풀 수 없는 막힘뿐, 두 줄(무엇이 막혔나 / 준이 할 일). 재시도·충돌·리뷰 수정처럼 시온이 처리할 막힘은 알리지 않고 처리한다. 번호·경로·PR·시험 개수·CI 같은 말을 쓰지 않는다.
 
 | 명령 | 용도 |
 |---|---|
 | `dv status [ISSUE] [--json]` | 상태·에이전트·호스트·경과·backend·생존·에이전트 상태·마지막 로그 |
 | `dv send ISSUE 'text'` | herdr agent prompt(차단 시 대기 후 한 번 재시도) / tmux 붙여넣기 후 Enter |
-| `dv done ISSUE [--note TEXT]` | head·파일 수·보고서 경로를 기록하고 이벤트 |
-| `dv pr ISSUE` / `dv pr-wait ISSUE` | 브랜치 push·PR / 백그라운드 체크·리뷰 대기 |
+| `dv done ISSUE [--note TEXT]` | head·파일 수·보고서 경로(GitHub는 `checks=green review=handled`)를 기록하고 이벤트 |
+| `dv pr ISSUE` / `dv pr-wait ISSUE [--foreground [--review-handled]]` | 브랜치 push·PR / foreground CI·리뷰 확인(기본은 조기 종료 작업자 재개 안전망) |
 | `dv review ISSUE` | 로컬 Codex 리뷰, 횟수와 출력 보관 |
 | `dv land ISSUE` | 체크/시험을 통과한 변경 병합·worktree 정리 |
 | `dv clean ISSUE` | 깨끗한 worktree와 herdr/tmux 정리, 머지된 로컬 브랜치만 삭제 |

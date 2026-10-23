@@ -3,7 +3,7 @@
 # crash/stall recovery. Callers supply errors, never arbitrary agent messages.
 # shellcheck disable=SC2016
 capacity_error() {
-  LC_ALL=C grep -Ei 'usage[ _-]*limit|usageLimitExceeded|rate[ _-]*limit|too many requests|at capacity|overloaded|HTTP(/[0-9.]+)?[^[:alnum:]]*429|"(httpStatusCode|statusCode|status|code)"[[:space:]]*:[[:space:]]*429' >/dev/null
+  LC_ALL=C grep -Ei 'usage[ _-]*limit|usageLimitExceeded|rate[ _-]*limit|resource[ _-]*exhausted|too many requests|at capacity|overloaded|HTTP(/[0-9.]+)?[^[:alnum:]]*429|"(httpStatusCode|statusCode|status|code)"[[:space:]]*:[[:space:]]*429' >/dev/null
 }
 capacity_validate() {
   [[ "$DV_CAPACITY_BACKOFF" =~ ^[1-9][0-9]*$ ]] || fail 'DV_CAPACITY_BACKOFF must be positive seconds'
