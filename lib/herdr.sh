@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # jq filters intentionally use literal dollars.
 # shellcheck disable=SC2016
+# Startup text of each supported CLI (omp shows only a logo and its π status
+# line). Rust regex: [[:alnum:]] is ASCII, so the CLI's name follows symbols.
+HERDR_AGENT_BANNER='(?m)^[^[:alnum:]]*(OpenAI Codex|Claude Code|Devin|Antigravity CLI|Grok Build|Cursor Agent|π > )'
 herdr_bin() {
   if command -v herdr >/dev/null 2>&1; then command -v herdr
   elif [ -x "$HOME/.local/bin/herdr" ]; then printf '%s\n' "$HOME/.local/bin/herdr"
@@ -174,7 +177,7 @@ herdr_question_sentinel() {
       # do not poll agent.get while the process is starting.
       if [ "$first" = 1 ] && jq -e '.error.code=="agent_not_found"' "$question_tmp/error" >/dev/null 2>&1; then
         first=0
-        herdr_question_wait pane wait-output "$HERDR_PANE" --regex '(?m)^[^[:alnum:]]*(OpenAI Codex|Claude Code|Devin)' --source visible --timeout "$((DV_START_WAIT * 1000))" || break
+        herdr_question_wait pane wait-output "$HERDR_PANE" --regex "$HERDR_AGENT_BANNER" --source visible --timeout "$((DV_START_WAIT * 1000))" || break
         continue
       fi
       jq -e '.error.code=="timeout"' "$question_tmp/error" >/dev/null 2>&1 || break
