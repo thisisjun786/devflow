@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Synthetic accounting only: never query the real account or traverse /tmp.
+test "$*" = '-w -u -f /tmp'
+printf '%s\n' 'Filesystem blocks quota limit grace files quota limit grace' \
+  'tmpfs 64 1024 1024 none 1 0 0'

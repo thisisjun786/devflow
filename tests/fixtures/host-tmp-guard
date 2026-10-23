@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+tool=${0##*/}
+case "$tool" in find|du) ;; *) exit 2 ;; esac
+for path in "$@"; do
+  case "$path" in
+    /tmp|/tmp/|/private/tmp|/private/tmp/)
+      printf '%s %s\n' "$tool" "$path" >> "${HOST_TMP_SCAN_LOG:-$CASE_DIR/host-tmp-scans}"
+      exit 1 ;;
+  esac
+done
+exec "/usr/bin/$tool" "$@"
