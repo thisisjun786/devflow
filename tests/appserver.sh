@@ -312,9 +312,9 @@ READ_PARTIAL
 case_appserver_large_reply() {
   # A multi-MB thread/read reply arrives over many one-second reads. It must be
   # assembled, not dropped, so status, clean and land see the real state.
-  # The job client starts in setup; give it a production-scale RPC budget so
-  # slow CI hosts still assemble the reply across many one-second reads.
-  DV_APPSERVER_TIMEOUT_CASE=30 appserver_setup
+  # The job client starts in setup; allow repeated large replies on busy CI
+  # hosts. This tests assembly and lifecycle, not a 30-second throughput limit.
+  DV_APPSERVER_TIMEOUT_CASE=120 appserver_setup
   head -c 1500000 /dev/zero | tr '\0' 'x' > "$CASE_DIR/big.txt"
   jq -cn --rawfile big "$CASE_DIR/big.txt" '{thread:{id:"thread-1",status:{type:"idle"},
     turns:[{id:"turn-1",status:"completed",error:null,
