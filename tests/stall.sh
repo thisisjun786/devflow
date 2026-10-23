@@ -171,14 +171,27 @@ case_stall_dead() {
   stall_fixture
   rm "$CASE_DIR/herdr/w-ST-1/detected"
   printf 'shell$ \n' > "$CASE_DIR/herdr/w-ST-1/output"
-  dv status ST-1 --json | jq -e '.[0] | .agent_status=="exited" and .agent_dead==true'
+  # No wrapper record: a legacy job, or a start whose wrapper is not running yet.
+  dv status ST-1 --json | jq -e '.[0] | .agent_status=="exited" and .agent_dead==true and .agent_launched==false'
   dv status ST-1 | awk -F '\t' '$2=="running" && $8=="agent=exited" { found=1 } END { exit !found }'
   stall_functions
   STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
-  # Confirmed process loss is reported on the first scan, not after DV_STALL_AFTER.
-  stall_scan; stall_count 1
+  stall_scan; stall_tick 9; stall_count 0
+  stall_tick 1; stall_count 1
   jq -se '.[0].message|contains("exited without dv done")' "$DV_HOME/kick.q"
   stall_tick; stall_count 1
+}
+# A recorded wrapper that is gone is reported and relaunched on the first scan.
+# Without that record the pane may still be starting, so the threshold applies.
+case_stall_dead_launched() {
+  stall_functions
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq -c '.agent_status="exited" | .agent_dead=true | .agent_launched=true')
+  stall_scan; stall_count 1
+  stall_tick; stall_count 1
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq -c '.award_token="round-2" | .agent_launched=false')
+  stall_scan; stall_count 1
+  stall_tick 9; stall_count 1
+  stall_tick 1; stall_count 2
 }
 # DF-270: a terminal server restart kills the worker together with its wrapper
 # (DF-231: herdr was OOM-killed and omp got SIGHUP). No exit record is left.
@@ -218,7 +231,7 @@ AGENT
     printf 'shell$ \n' > "$CASE_DIR/herdr/w-DR-1/output"
   fi
   test ! -f "$DV_STATE/DR-1/agent.exit"
-  dv status DR-1 --json | jq -e '.[0] | .agent_dead and .agent_status=="exited"'
+  dv status DR-1 --json | jq -e '.[0] | .agent_dead and .agent_launched and .agent_status=="exited"'
   dv status DR-1 | awk -F '\t' '$8=="agent=exited" { found=1 } END { exit !found }'
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_file "$DV_STATE/DR-1/done.json"

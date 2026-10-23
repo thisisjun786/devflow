@@ -538,7 +538,7 @@ cmd_status() {
   heavy=$(heavy_snapshot)
   local selected='' json=0 live=0 time path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
   local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead provider_capacity
-  local row_agent row_worktree transcript terminal_exit agent_exit_code
+  local row_agent row_worktree transcript terminal_exit agent_exit_code agent_launched
   for path in "$@"; do case "$path" in --json) json=1 ;; --live) live=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   time=$(now)
@@ -553,6 +553,10 @@ cmd_status() {
       agent_dead=false; agent_exit_code=null
       goal_stalled=false; goal_active=false; agent_state_seq=null; agent_session=null
       provider_capacity=false
+      # The wrapper records agent.pid as it starts. Without it (or an exit record)
+      # a shell-only pane may still be starting, so it is not a confirmed loss.
+      agent_launched=false
+      if [ -f "$(dirname "$path")/agent.pid" ] || [ -f "$(dirname "$path")/agent.exit" ]; then agent_launched=true; fi
       backend=$(jq -r '.backend // "tmux"' "$path")
       # Finished jobs have no worktree; skip them to keep status cheap.
       transcript=''
@@ -648,8 +652,8 @@ cmd_status() {
       # without changing metadata or the bidding code's historical done_at.
       done_head=$(jq -r '.head | select(type=="string")' "$(dirname "$path")/done.json" 2>/dev/null) || done_head=''
       row=$(jq -c --arg done_head "$done_head" --arg transcript "$transcript" --arg backend "$backend" --arg agent_status "$agent_status" --argjson alive "$alive" --argjson tmux "$tmux_alive" --argjson elapsed "$elapsed" --argjson question_pending "$question_pending" --arg last "$last" \
-        --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" --argjson agent_dead "$agent_dead" --argjson provider_capacity "$provider_capacity" \
-        '.+{done_head:(if $done_head=="" then null else $done_head end),transcript:(if $transcript=="" then null else $transcript end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session,capacity_detected:$provider_capacity}' "$path")
+        --argjson goal_stalled "$goal_stalled" --argjson goal_active "$goal_active" --argjson agent_state_seq "$agent_state_seq" --argjson agent_session "$agent_session" --argjson agent_dead "$agent_dead" --argjson agent_launched "$agent_launched" --argjson provider_capacity "$provider_capacity" \
+        '.+{done_head:(if $done_head=="" then null else $done_head end),transcript:(if $transcript=="" then null else $transcript end),backend:$backend,alive:$alive,agent_status:$agent_status,agent_dead:$agent_dead,agent_launched:$agent_launched,tmux:$tmux,elapsed:$elapsed,last_log:$last,question_pending:$question_pending,goal_stalled:$goal_stalled,goal_active:$goal_active,agent_state_seq:$agent_state_seq,agent_session:$agent_session,capacity_detected:$provider_capacity}' "$path")
       if [ "$backend" = appserver ]; then row=$(printf '%s\n%s\n' "$row" "$info" | jq -sc '.[0] + {appserver:.[1],status_age_seconds:0,recoveries:.[1].recoveries,last_recovery_reason:.[1].last_recovery_reason}'); fi
       row=$(printf '%s\n' "$row" | jq -c '.capacity_retry_at=(.capacity.next_try_at // null) |
         if .status=="waiting-capacity" and .agent_dead!=true then .agent_status="waiting-capacity" else . end')

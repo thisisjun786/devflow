@@ -43,7 +43,7 @@ stall_reconcile() {
         .[$key].seq=($row.agent_state_seq // .[$key].seq) |
         .[$key].session=($row.agent_session // .[$key].session) |
         .[$key].observed=$time | .[$key].expires=($time+$gap) |
-        .[$key].row=($row|{issue,head,start_head,award_token,goal_stalled,agent_dead}) |
+        .[$key].row=($row|{issue,head,start_head,award_token,goal_stalled,agent_dead,agent_launched}) |
         .[$key].host=$host | .[$key].source=$source
       end)' "$tmp" > "$tmp.next"; then
     rm -f "$tmp" "$tmp.next" "$tmp.rows"; return 1
@@ -56,8 +56,9 @@ stall_reconcile() {
     stall_recover "$host" "$row" || true
   done < <(printf '%s\n' "$rows" | jq -c '.[] | select((.backend=="tmux" or .backend=="herdr") and
     (.capacity_detected==true or .capacity!=null)) | {row:.,id:"capacity"}')
-  # Confirmed process loss needs no idle threshold: report and relaunch it on
-  # the first scan that sees it (the revive path still allows one relaunch).
+  # A recorded wrapper that is gone needs no idle threshold: report and relaunch
+  # it on the first scan (revive still allows one). Without that record the
+  # pane may still be starting, so the threshold applies as before.
   # Persist IDs before delivery. If interrupted after append, the queue itself
   # is the acknowledgement and the next scan cannot append the event twice.
   while IFS= read -r row; do
@@ -76,7 +77,7 @@ stall_reconcile() {
       ! mv "$tmp" "$state"; then rm -f "$tmp"; return 1; fi
   done < <(jq -c --argjson time "$time" --argjson after "$DV_STALL_AFTER" \
     '.[] | select(.emitted==false and .since!=null and .observed==$time and
-      ($time - .since >= $after or .row.agent_dead==true))' "$state")
+      ($time - .since >= $after or (.row.agent_dead==true and .row.agent_launched==true)))' "$state")
   # Revisit the same episode on the existing scan. The issue host serializes
   # recovery and persists its five-minute retry budget across watcher restarts.
   while IFS= read -r row; do
@@ -106,7 +107,7 @@ cmd__stall_recover() (
   # episode is cleared and the exited agent is revived below.
   if printf '%s\n' "$row" | jq -e --arg token "$token" '
     (.status=="running" or .status=="waiting-capacity") and .done_at==null and .cleaned_at==null and
-    (.award_token // "")==$token and .question_pending!=true and (.alive==true or .agent_dead==true) and
+    (.award_token // "")==$token and .question_pending!=true and (.alive==true or (.agent_dead==true and .agent_launched==true)) and
     (.capacity_detected==true or .capacity!=null)' >/dev/null; then
     supervisor=$(cat "$S/capacity-supervisor.pid" 2>/dev/null) || supervisor=''
     if [[ "$supervisor" =~ ^[1-9][0-9]*$ ]] && kill -0 "$supervisor" 2>/dev/null; then return 0; fi
