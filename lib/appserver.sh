@@ -13,7 +13,7 @@ appserver_open() {
   [[ "$DV_APPSERVER_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || return 1
   command -v openssl >/dev/null || return 1
   tmp_make AS_IO dv-appserver || return 1
-  mkfifo "$AS_IO/in" "$AS_IO/out" "$AS_IO/raw-in" "$AS_IO/raw-out" || { appserver_close; return 1; }
+  mkfifo "$AS_IO/in" "$AS_IO/out" "$AS_IO/receive-ack" "$AS_IO/raw-in" "$AS_IO/raw-out" || { appserver_close; return 1; }
   AS_SEND='' AS_RECEIVE=''
   appserver_proxy < "$AS_IO/raw-in" > "$AS_IO/raw-out" & AS_PID=$!
   exec 7> "$AS_IO/raw-in" 6< "$AS_IO/raw-out"
@@ -21,12 +21,13 @@ appserver_open() {
   if ! (appserver_ws_upgrade); then appserver_close; return 1; fi
   appserver_ws_send 1 < "$AS_IO/in" >&7 6>&- 7>&- & AS_SEND=$!
   exec 9> "$AS_IO/in"
-  appserver_ws_receive 0 <&6 > "$AS_IO/out" 6>&- 7>&- 9>&- & AS_RECEIVE=$!
+  exec 5<> "$AS_IO/receive-ack"
+  appserver_ws_receive 0 "$AS_IO/receive-record" <&6 > "$AS_IO/out" 5< "$AS_IO/receive-ack" 6>&- 7>&- 9>&- & AS_RECEIVE=$!
   exec 8< "$AS_IO/out" 6>&- 7>&-
 }
 appserver_close() {
   local pid
-  exec 6>&- 7>&- 8>&- 9>&-
+  exec 5>&- 6>&- 7>&- 8>&- 9>&-
   for pid in "${AS_WRITER:-}" "${AS_PID:-}" "${AS_SEND:-}" "${AS_RECEIVE:-}"; do
     [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
   done
@@ -34,7 +35,7 @@ appserver_close() {
     [ -z "$pid" ] || wait "$pid" 2>/dev/null || true
   done
   [ -z "${AS_IO:-}" ] || rm -rf "$AS_IO"
-  AS_WRITER='' AS_PID='' AS_SEND='' AS_RECEIVE='' AS_IO='' AS_PARTIAL=''
+  AS_WRITER='' AS_PID='' AS_SEND='' AS_RECEIVE='' AS_IO=''
 }
 appserver_connected() {
   local pid
@@ -99,7 +100,7 @@ appserver_available() {
   ( appserver_probe ) 2>/dev/null
 }
 appserver_probe() {
-  local AS_EVENTS=0 AS_SEQ=0 AS_IO AS_PID AS_SEND AS_RECEIVE AS_REPLY AS_CLASS AS_WRITER='' AS_LINE='' AS_PARTIAL='' rc=0
+  local AS_EVENTS=0 AS_SEQ=0 AS_IO AS_PID AS_SEND AS_RECEIVE AS_REPLY AS_CLASS AS_WRITER='' AS_LINE='' rc=0
   appserver_open || return 1
   trap appserver_close EXIT
   appserver_handshake || rc=$?
@@ -174,19 +175,22 @@ appserver_questions() {
   done
 }
 appserver_read_line() {
-  # Read one complete JSON-RPC line from fd 8 within $1 seconds. Bash `read`
-  # returns partial input on timeout; keep it and continue, so a multi-MB
-  # thread/read reply is assembled instead of dropped one second at a time.
-  # Bash 3.2 reports both timeout and EOF as status 1, so a non-zero status
-  # only means "no newline yet"; callers detect a dead server via kill -0.
-  local deadline=$(( $(now) + $1 )) chunk
-  AS_LINE=${AS_PARTIAL:-}; AS_PARTIAL=''
+  # Time only the wakeup. Even a one-byte read can consume its byte and then
+  # time out before Bash 3.2 assigns it. The decoder retains the full bounded
+  # record until this consumer acknowledges it; partial remote frames stay
+  # in the decoder and still obey the existing RPC deadline.
+  local deadline=$(( $(now) + $1 )) _wake
+  AS_LINE=''
   while :; do
-    chunk=''
-    if IFS= read -r -t 1 chunk <&8; then AS_LINE+=$chunk; return 0; fi
-    AS_LINE+=$chunk
+    IFS= read -r -n 1 -t 1 _wake <&8 || true
+    if [ -f "$AS_IO/receive-record" ]; then
+      AS_LINE=$(cat "$AS_IO/receive-record") || return 1
+      rm "$AS_IO/receive-record"
+      printf '.' >&5
+      return 0
+    fi
     if { [ -n "${AS_PID:-}" ] && ! appserver_connected; } || [ "$(now)" -ge "$deadline" ]; then
-      AS_PARTIAL=$AS_LINE; AS_LINE=''; return 1
+      return 1
     fi
   done
 }
@@ -415,7 +419,7 @@ cmd__appserver_run() {
   # EXIT also runs after this function returns; transport handles must survive
   # the function's local scope so cleanup can still reap every child.
   AS_IO='' AS_PID='' AS_SEND='' AS_RECEIVE='' AS_WRITER=''
-  local AS_LINE='' AS_PARTIAL=''
+  local AS_LINE=''
   local instruction params id file operation text line last_poll=0
   # bin/dv captures HEAD before sourcing the libraries.
   local client_commit=${entry_commit:-} current_commit
@@ -507,7 +511,7 @@ cmd__appserver_run() {
 }
 appserver_status() (
   load_issue "$1"
-  local receipt AS_EVENTS=0 AS_SEQ=0 AS_THREAD AS_REPLY AS_CLASS AS_SNAPSHOT AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER='' AS_LINE='' AS_PARTIAL=''
+  local receipt AS_EVENTS=0 AS_SEQ=0 AS_THREAD AS_REPLY AS_CLASS AS_SNAPSHOT AS_IO AS_PID AS_SEND AS_RECEIVE AS_WRITER='' AS_LINE=''
   if appserver_alive; then
     if receipt=$(appserver_request status); then printf '%s\n' "$receipt" | jq -c .reply; return; fi
   else

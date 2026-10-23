@@ -63,5 +63,6 @@ case "$scenario" in
   hold) while [ ! -f "$s/release" ]; do printf '{"type":"item.started","item":{"type":"command_execution","command":"working"}}\n'; sleep 0.2; done ;;
 esac
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"Finished fixture work"}}\n'
+if [ "${DV_EXEC_COMPLETION_DELAY:-0}" != 0 ]; then sleep "$DV_EXEC_COMPLETION_DELAY"; fi
 dv 'done' "$DV_ISSUE" > /dev/null
 printf '{"type":"turn.completed"}\n'

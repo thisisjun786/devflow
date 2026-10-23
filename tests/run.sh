@@ -20,14 +20,25 @@ setup() {
   printf '{"skipDangerousModePermissionPrompt":true}\n' > "$HOME/.claude/settings.json"
   export DV_CONFIG="$CASE_DIR/config.sh" DV_STATE="$CASE_DIR/state" DV_WORK="$CASE_DIR/work" DV_HOME="$CASE_DIR/home"
   export DV_KICK="$ROOT/bin/dv-kick" DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"
-  export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1 DV_START_WAIT=5
+  export DV_TMUX_SOCKET="dv-test-$$" DV_REVIEW_WAIT=0 DV_POLL_INTERVAL=1
   if [ -n "${DV_TEST_PROCESS_DIR:-}" ]; then
     printf '%s\n' "$DV_TMUX_SOCKET" > "$DV_TEST_PROCESS_DIR/tmux-socket"
   fi
   export DV_CODEX_BIN="$ROOT/tests/fixtures/codex" DV_HOST=test-host
   export DV_HERDR=0
   export DV_AUTO_UPDATE=0
-  export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5 DV_APPSERVER_TIMEOUT=1
+  export DV_CODEX_MODE=goal DV_APPSERVER_POLL=5
+  # Ordinary lifecycle tests use the product's deadlines, even on a busy host.
+  # Isolate the defaults so sourcing config cannot change other fixture values.
+  # Cases that exercise timeout behavior select their short deadline explicitly.
+  read -r DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT < <(
+    unset DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT
+    # Checked separately; avoid expanding every setting into test dataflow.
+    # shellcheck source=/dev/null
+    source "$ROOT/config.example.sh"
+    printf '%s %s %s %s %s\n' "$DV_START_WAIT" "$DV_APPSERVER_TIMEOUT" "$DV_STALL_AFTER" "$DV_BID_TIMEOUT" "$DV_AWARD_TIMEOUT"
+  )
+  export DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT
   unset DV_MODE
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF DV_CAPACITY_MAX_WAIT
   unset CODEX_HOME
@@ -41,7 +52,7 @@ setup() {
   printf '"auto"\n' > "$GH_STUB_DIR/reviews"
   printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]\n' > "$GH_STUB_DIR/checks"
   printf '# Test brief\nImplement one file.\n' > "$CASE_DIR/brief"
-  trap teardown EXIT
+  trap 'teardown "$?"' EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT
   trap 'exit 129' HUP
@@ -66,13 +77,26 @@ teardown_stop_pidfile() {
   printf 'Fixture process %s did not stop: %s\n' "$pid" "$pidfile" >&2
   return 1
 }
+# ShellCheck 0.9 does not see the exit status passed by the EXIT trap.
+# Direct fixture teardown calls intentionally default to a successful case.
+# shellcheck disable=SC2120
 teardown() {
   # Failed question assertions must not leave the deliberately held fake agent.
-  local pidfile rc=0 scan_rc=0
-  for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
+  local pidfile pane_pid rc=0 scan_rc=0 case_result=${1:-0} diagnostic
+  for pidfile in "$CASE_DIR"/heavy/*.pid "$DV_STATE"/*/appserver/client.pid "$CASE_DIR"/server/work-*.pid "$DV_STATE"/*/held.pid "$DV_STATE"/*/wrapper.pid "$CASE_DIR"/herdr/wait-*.pid "$DV_HOME/watch.pid"; do
     teardown_stop_pidfile "$pidfile" || rc=1
   done
-  if command -v tmux >/dev/null; then tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true; fi
+  if command -v tmux >/dev/null; then
+    # kill-server returns before pane shutdown handlers finish. Observe live
+    # panes on this case's private socket, stop and join them before deleting
+    # any fixture state (including the simulated remote-host state trees).
+    for pane_pid in $(tmux -L "$DV_TMUX_SOCKET" list-panes -a -F '#{pane_pid} #{pane_dead}' 2>/dev/null | awk '$2==0 {print $1}' || true); do
+      pidfile="$CASE_DIR/tmux-pane-$pane_pid.pid"
+      printf '%s\n' "$pane_pid" > "$pidfile"
+      teardown_stop_pidfile "$pidfile" || rc=1
+    done
+    tmux -L "$DV_TMUX_SOCKET" kill-server 2>/dev/null || true
+  fi
   # Fake SSH hosts keep native wrappers outside DV_STATE. tmux can return
   # before those wrappers finish writing their final receipts and logs.
   for pidfile in "$CASE_DIR"/hosts/*/state/*/agent.pid; do
@@ -81,6 +105,17 @@ teardown() {
   # Shutdown handlers can still publish receipts/exited markers after TERM.
   # Preserve their directory if termination cannot be confirmed.
   if [ "$rc" != 0 ]; then printf 'Retained live fixture: %s\n' "$CASE_DIR" >&2; return 1; fi
+  if [ "$case_result" != 0 ] && [ "$case_result" != 77 ]; then
+    # Preserve evidence for rare startup failures instead of losing it at EXIT.
+    for diagnostic in "$DV_STATE"/*/log "$DV_STATE"/*/appserver/outbox/*.receipt "$CASE_DIR/server/requests"; do
+      [ -f "$diagnostic" ] || continue
+      printf 'Failure diagnostic: %s\n' "$diagnostic" >&2
+      tail -c 8192 "$diagnostic" >&2
+      printf '\n' >&2
+    done
+    printf 'Retained failed fixture: %s\n' "$CASE_DIR" >&2
+    touch "$CASE_DIR/.test-failed"
+  fi
   # Probe errors can be swallowed by host reporting; a rejected scan still fails.
   if [ -s "$CASE_DIR/host-tmp-scans" ]; then
     printf 'Forbidden live tmp scan:\n' >&2
@@ -91,6 +126,7 @@ teardown() {
   # client.pid has disappeared. Only then may it remove this case's files.
   if [ -n "${DV_TEST_PROCESS_DIR:-}" ] &&
     [ "$(cat "$DV_TEST_PROCESS_DIR/case-dir" 2>/dev/null)" = "$CASE_DIR" ]; then return "$scan_rc"; fi
+  if [ -f "$CASE_DIR/.test-failed" ]; then return "$scan_rc"; fi
   if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$CASE_DIR"; else rm -rf "$CASE_DIR"; fi
   return "$scan_rc"
 }
@@ -150,7 +186,7 @@ tmux() {
     printf 'new-session\n' >> "$CASE_DIR/tmux-start-calls"
     return "$DV_TEST_TMUX_RC"
   fi
-  command tmux "$@"
+  env tmux "$@"
 }
 ENV
   fi
@@ -203,12 +239,12 @@ tmux_fast_completion() {
   fi
   cat > "$CASE_DIR/fast-tmux-env" <<'ENV'
 tmux() {
-  command tmux "$@" || return
+  env tmux "$@" || return
   if [ "${1:-}" = -L ] && [ "${3:-}" = new-session ]; then
     local attempt
     # Delay only the launch reply until the synthetic wrapper has exited.
     for attempt in {1..100}; do
-      if ! command tmux -L "$DV_TMUX_SOCKET" has-session -t =dv-TF-1 2>/dev/null; then return 0; fi
+      if ! env tmux -L "$DV_TMUX_SOCKET" has-session -t =dv-TF-1 2>/dev/null; then return 0; fi
       sleep 0.1
     done
     return 1
@@ -608,7 +644,18 @@ case_kick_pull() {
   remote_q="$CASE_DIR/rq/kick.q"
   event() { jq -cn --arg i "$1" --arg m "$2" '{id:("box:"+$i+":done:h"),kind:"done",issue:$i,message:$m,host:"box",head:"h",time:1}'; }
   lines() { if [ -f "$DV_HOME/kick.q" ]; then wc -l < "$DV_HOME/kick.q" | tr -d ' '; else echo 0; fi; }
-  until_lines() { for _ in {1..100}; do [ "$(lines)" = "$1" ] && return 0; sleep 0.1; done; return 1; }
+  until_lines() {
+    local checkpoint
+    for _ in {1..100}; do
+      checkpoint=''
+      if [ -f "$DV_HOME/pull-box.offset" ]; then read -r checkpoint _ < "$DV_HOME/pull-box.offset"; fi
+      # The queue append precedes the reconnect checkpoint. Killing the pull
+      # between them deliberately leaves an uncheckpointed event to replay.
+      if [ "$(lines)" = "$1" ] && [ "$checkpoint" = "${2:-$1}" ]; then return 0; fi
+      sleep 0.1
+    done
+    return 1
+  }
   # Stop only this case's pull (its EXIT trap ends ssh/tail); never pkill by pattern.
   stop_pull() { kill "$!" 2>/dev/null || true; wait "$!" 2>/dev/null || true; }
   { event P-1 ''; event P-2 'two words'; } > "$remote_q"
@@ -628,8 +675,18 @@ case_kick_pull() {
   dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 5; stop_pull
   # A replaced queue (new inode) restarts from its first line.
   event P-6 '' > "$remote_q.new"; mv "$remote_q.new" "$remote_q"
-  dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 6; stop_pull
+  dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 6 1; stop_pull
   jq -se '[.[].issue]==["P-1","P-2","P-3","P-4","P-5","P-6"]' "$DV_HOME/kick.q"
+}
+case_kick_pull_checkpoint() {
+  cat > "$CASE_DIR/delayed-checkpoint-env" <<'ENV'
+mv() {
+  if [ "${2:-}" = "$DV_HOME/pull-box.offset" ]; then env sleep 0.3; fi
+  env mv "$@"
+}
+ENV
+  export BASH_ENV="$CASE_DIR/delayed-checkpoint-env"
+  case_kick_pull
 }
 case_watch_pull() {
   export SSH_FIXTURE_EXEC=1 DV_PULL_HOSTS=box DV_PULL_RETRY=1 DV_WATCH_INTERVAL=0.1
@@ -879,11 +936,26 @@ case_question_cli_off() { case_question_cli off; }
 question_setup() {
   repo questions; herdr_setup
   export DV_BLOCKED_GRACE=1
+  if [ "${1:-codex}" = codex ]; then
+    # Use the ordinary award startup receipt. A held provider alone does not
+    # prove the goal observer has finished before the test changes its screen.
+    export DV_AWARD_TOKEN="question-$$"
+  fi
   mkdir -p "$CASE_DIR/herdr"
   touch "$CASE_DIR/herdr/question-mode"
   if [ "${QUESTION_LATE_DETECTION:-0}" = 1 ]; then touch "$CASE_DIR/herdr/late-detection"; fi
   dv start "$REPO" Q-1 questions --agent "${1:-codex}"
-  wait_file "$DV_STATE/Q-1/held.pid"
+  local marker deadline=$((SECONDS + DV_START_WAIT * 2)) markers=("$DV_STATE/Q-1/held.pid")
+  if [ "${1:-codex}" = codex ]; then markers+=("$DV_STATE/Q-1/agent.started"); fi
+  for marker in "${markers[@]}"; do
+    while [ ! -f "$marker" ]; do
+      [ "$SECONDS" -lt "$deadline" ] || { printf 'Startup did not finish: %s\n' "$marker" >&2; return 1; }
+      sleep 0.05
+    done
+  done
+  if [ -s "$DV_STATE/Q-1/events.log" ]; then
+    jq -se 'all(.[]; .kind!="failed")' "$DV_STATE/Q-1/events.log"
+  fi
   qdir="$CASE_DIR/herdr/w-Q-1"
 }
 question_state() {
@@ -1208,7 +1280,7 @@ case_herdr_cleanup_owner() (
   test ! -d "$question_tmp"; test ! -f "$S/question.pending"
 )
 case_herdr_goal_retry() {
-  repo goal-retry; herdr_setup; export DV_START_WAIT=4
+  repo goal-retry; herdr_setup
   mkdir -p "$CASE_DIR/herdr"
   printf 'retry\n' > "$CASE_DIR/herdr/goal-mode"
   dv start "$REPO" HG-1 native
@@ -1226,7 +1298,26 @@ case_herdr_goal_retry() {
 case_herdr_goal_timeout() {
   repo goal-timeout; herdr_setup; export DV_START_WAIT=2
   mkdir -p "$CASE_DIR/herdr"
+  # Complete each rejected poll before advancing the deadline. A two-second
+  # wall clock can otherwise expire before even the first prompt attempt.
+  cat > "$DV_CONFIG" <<'CONFIG'
+date() {
+  if [ "$*" = +%s ]; then cat "$CASE_DIR/goal-clock"; else command date "$@"; fi
+}
+sleep() {
+  if [ "${FUNCNAME[1]:-}" = inject_goal ] && [ "$*" = 0.2 ]; then
+    local polls
+    polls=$(cat "$CASE_DIR/goal-polls")
+    polls=$((polls + 1))
+    printf '%s\n' "$polls" > "$CASE_DIR/goal-polls"
+    # Include the first not-ready observation and multiple rejected prompts.
+    printf '%s\n' "$((1000 + polls / 2))" > "$CASE_DIR/goal-clock"
+  else command sleep "$@"; fi
+}
+CONFIG
   for mode in never-ready never-accepted; do
+    printf '1000\n' > "$CASE_DIR/goal-clock"
+    printf '0\n' > "$CASE_DIR/goal-polls"
     printf '%s\n' "$mode" > "$CASE_DIR/herdr/goal-mode"
     issue="HG-$mode"
     dv start "$REPO" "$issue" native
@@ -1238,6 +1329,7 @@ case_herdr_goal_timeout() {
     test ! -f "$DV_STATE/$issue/goal-input"
     grep -Fx 'Codex prompt not detected; use dv send to submit /goal.' "$DV_STATE/$issue/log"
     jq -se '[.[]|select(.kind=="failed" and .message=="Codex prompt not detected")]|length==1' "$DV_STATE/$issue/events.log"
+    test "$(cat "$CASE_DIR/goal-clock")" -ge 1002
     if [ "$mode" = never-ready ]; then test ! -f "$CASE_DIR/herdr/w-$issue/goal-attempts"
     else test "$(cat "$CASE_DIR/herdr/w-$issue/goal-attempts")" -gt 1; fi
     dv clean "$issue"
@@ -1519,11 +1611,19 @@ source "$ROOT/tests/codex-startup.sh"
 # shellcheck source=tests/codex-trust.sh
 source "$ROOT/tests/codex-trust.sh"
 
+failed_start_fixture() {
+  # Failed receipt tests must observe wrapper exit before start acknowledges.
+  # Preserve any outer scheduling fault injection used by a regression run.
+  {
+    if [ -n "${BASH_ENV:-}" ]; then printf 'source %q\n' "$BASH_ENV"; fi
+    printf 'source %q\n' "$ROOT/tests/fixtures/failed-start-env"
+  } > "$CASE_DIR/failed-start-env"
+  export BASH_ENV="$CASE_DIR/failed-start-env"
+}
 bidding_hosts() {
   needs_tmux; repo bidding
   export SSH_BIDDING=1 DV_MANAGER_HOST=test-host DV_HOSTS='lina-os go2-linux hx-linux'
   export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1 DV_RECONCILE_INTERVAL=99999
-  export DV_BID_TIMEOUT=2 DV_AWARD_TIMEOUT=3
   local host
   for host in hx-linux go2-linux lina-os; do
     mkdir -p "$CASE_DIR/hosts/$host"
@@ -1563,25 +1663,37 @@ case_bid_readonly() {
 }
 case_submit_spread() {
   bidding_hosts
+  local ticks expected attempt
   # Scores on these real local fake hosts differ slightly; manager is always last.
   dv submit "$REPO" BID-1 one --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-2 two --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-3 three --brief "$CASE_DIR/brief"
   dv submit "$REPO" BID-4 four --brief "$CASE_DIR/brief"
-  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  : > "$CASE_DIR/watch-ticks"
+  BASH_ENV="$ROOT/tests/fixtures/watch-tick-env" dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_task BID-1 working; wait_task BID-2 working; wait_task BID-3 working
   test "$(jq -r .host "$DV_HOME/submissions/BID-3/task.json")" = lina-os
   jq -s -e '[.[].host]|unique|length==3' "$DV_HOME"/submissions/BID-{1,2,3}/task.json
   wait_file "$DV_HOME/submissions/BID-4/bids.json"
   wait_task BID-4 submitted
-  # Repeated local ticks never rebid an all-full queue.
-  sleep 0.5; cp "$CASE_DIR/ssh.calls" "$CASE_DIR/calls.before"
-  sleep 0.5
-  # Status and App Server scans may finish asynchronously during these ticks.
-  # Only another bid would violate the all-full queue contract.
-  grep ' dv bid ' "$CASE_DIR/calls.before" > "$CASE_DIR/bids.before"
-  grep ' dv bid ' "$CASE_DIR/ssh.calls" > "$CASE_DIR/bids.after"
-  cmp "$CASE_DIR/bids.before" "$CASE_DIR/bids.after"
+  # bids.json can appear before scheduling commits its cursor. Wait until
+  # all four submissions are handled, then observe two complete idle ticks.
+  for attempt in {1..200}; do
+    [ "$(cat "$DV_HOME/cursor" 2>/dev/null)" = 4 ] && break
+    sleep 0.1
+  done
+  test "$(cat "$DV_HOME/cursor")" = 4
+  grep -E ' dv (bid|_award) ' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.before"
+  ticks=$(wc -l < "$CASE_DIR/watch-ticks"); expected=$((ticks + 2))
+  for attempt in {1..200}; do
+    ticks=$(wc -l < "$CASE_DIR/watch-ticks")
+    [ "$ticks" -ge "$expected" ] && break
+    sleep 0.1
+  done
+  test "$ticks" -ge "$expected"
+  # Status/maintenance RPCs do not constitute a new bid or award.
+  grep -E ' dv (bid|_award) ' "$CASE_DIR/ssh.calls" > "$CASE_DIR/calls.after"
+  cmp "$CASE_DIR/calls.before" "$CASE_DIR/calls.after"
   host=$(jq -r .host "$DV_HOME/submissions/BID-1/task.json")
   DV_CONFIG="$CASE_DIR/hosts/$host/config" dv 'done' BID-1
   wait_task BID-1 completed; wait_task BID-4 working
@@ -1591,7 +1703,7 @@ case_submit_spread() {
   if dv submit "$REPO" BID-1 one --brief "$CASE_DIR/brief"; then return 1; fi
 }
 case_submit_failover() {
-  bidding_hosts
+  bidding_hosts; failed_start_fixture
   touch "$CASE_DIR/hosts/hx-linux/offline"
   # A launch error (missing base) must not prevent trying another bidder.
   cat >> "$CASE_DIR/hosts/go2-linux/config" <<EOF
@@ -1658,6 +1770,7 @@ case_submit_order_amd_go2() {
 }
 case_submit_timeout() {
   bidding_hosts
+  export DV_BID_TIMEOUT=2
   touch "$CASE_DIR/hosts/hx-linux/hang-bid" "$CASE_DIR/hosts/go2-linux/drop-award"
   dv submit "$REPO" TIME-1 change --brief "$CASE_DIR/brief"
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
@@ -1678,7 +1791,7 @@ case_submit_forward() {
 case_award_capacity() {
   bidding_hosts
   request() {
-    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + 10 ))" \
+    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + DV_AWARD_TIMEOUT ))" \
       '{issue:$issue,repo:$repo,slug:"capacity",agent:"codex",mode:"goal",base:"",brief:"held fake agent",token:$issue,deadline:$deadline}'
   }
   request CAPA-1 | DV_CONFIG="$CASE_DIR/hosts/hx-linux/config" dv _award > "$CASE_DIR/a1" & a1=$!
@@ -1750,7 +1863,7 @@ case_bid_clone() {
   export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$CASE_DIR/remote.git.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/test/repo.git
   dv bid --json --repo https://github.com/test/repo.git --agent codex | jq -e '.status=="submitted" and (.repo_cloned|not)'
   test ! -e "$DV_REPO_ROOT"
-  jq -cn --argjson deadline "$(( $(date +%s) + 10 ))" \
+  jq -cn --argjson deadline "$(( $(date +%s) + DV_AWARD_TIMEOUT ))" \
     '{issue:"CLONE-1",repo:"https://github.com/test/repo.git",slug:"clone",agent:"codex",mode:"goal",base:"",brief:"held fake agent",token:"clone",deadline:$deadline}' |
     DV_AGENT_CMD_codex='exec sleep 30' dv _award | jq -e '.status=="working"'
   test -d "$DV_REPO_ROOT/repo/.git"
@@ -1811,6 +1924,7 @@ case_award_new_round() {
   # failed fake agents race cleanup while writing an unused watcher queue.
   export DV_KICK=true
   local host kind issue saved
+  failed_start_fixture
   export DV_HOSTS='hx-linux go2-linux'
   for kind in 'done' failed landed submitted; do
     issue="ROUND-$kind"
@@ -1914,12 +2028,13 @@ if [ "${1:-}" = start ] && [ -f "$CASE_DIR/delay-start" ]; then
   touch "$CASE_DIR/start-entered"
   exec sleep 30
 fi
+if [ "${1:-}" = start ] && [ "${DV_TEST_AWARD_DELAY:-0}" != 0 ]; then sleep "$DV_TEST_AWARD_DELAY"; fi
 exec "$(dirname "$0")/dv-real" "$@"
 STUB
   chmod +x "$CASE_DIR/tool/bin/dv"
   export DV_ROOT="$CASE_DIR/tool"
   award_request() {
-    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + 10 ))" \
+    jq -cn --arg issue "$1" --arg repo "$REPO" --argjson deadline "$(( $(date +%s) + DV_AWARD_TIMEOUT ))" \
       '{issue:$issue,repo:$repo,slug:"timeout",agent:"codex",mode:"goal",base:"",brief:"fake",token:$issue,deadline:$deadline}'
   }
   touch "$CASE_DIR/delay-start"
@@ -1928,7 +2043,7 @@ STUB
   test -d "$DV_STATE/.admission-lock"
   cp "$DV_STATE/.awards/LOCK-1/receipt.json" "$CASE_DIR/uncertain-receipt"
   rm "$CASE_DIR/delay-start"
-  award_request LOCK-2 | bid_limit 3 bid_rpc "$DV_HOST" _award > "$CASE_DIR/next.json"
+  award_request LOCK-2 | bid_limit "$DV_AWARD_TIMEOUT" bid_rpc "$DV_HOST" _award > "$CASE_DIR/next.json"
   jq -e '.status=="working"' "$CASE_DIR/next.json"
   cmp "$CASE_DIR/uncertain-receipt" "$DV_STATE/.awards/LOCK-1/receipt.json"
   test ! -d "$DV_STATE/.admission-lock"
@@ -1948,6 +2063,10 @@ STUB
   owned_unlock "$DV_STATE/.admission-lock" "$$"
   test ! -e "$DV_STATE/.admission-lock/owner"
   test ! -e "$DV_STATE/.admission-lock/pid-$$"
+}
+case_award_timeout_slow_success() {
+  export DV_TEST_AWARD_DELAY=4
+  case_award_timeout_lock
 }
 bid_without_tmux() {
   cat > "$CASE_DIR/no-tmux-env" <<'NO_TMUX'
@@ -2115,7 +2234,7 @@ case_task_mixed_files() {
   printf 'keep\n' > "$CASE_DIR/destination/TK-1/existing.txt"
   dv land TK-1 --checked "$head"
   landed=$(jq -r .landed_path "$s/meta")
-  test "$landed" = "$CASE_DIR/destination/TK-1-v2"
+  test "$landed" = "$(cd "$CASE_DIR/destination/TK-1-v2" && pwd -P)"
   test "$(cat "$CASE_DIR/destination/TK-1/existing.txt")" = keep
   test -f "$landed/empty.txt" && test ! -s "$landed/empty.txt"
   test -f "$landed/nested/empty.txt" && test ! -s "$landed/nested/empty.txt"
@@ -2227,6 +2346,13 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+  appserver_sender_close \
+  metrics_restart_slow_start \
+  award_timeout_slow_success \
+  capacity_appserver_slow_work \
+  question_goal_start_ack \
+  exec_send_slow_completion \
+  appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
   process_cleanup_pass process_cleanup_fail process_cleanup_timeout process_cleanup_term process_cleanup_nested heavy_descendant_slot \
   host_tmp_guard \
   tmp_reap tmp_guards tmp_agent tmp_appserver tmp_default tmp_quota tmp_reap_bash32 tmp_appserver_killed tmp_usage tmp_cache pr_body_delayed_wait \

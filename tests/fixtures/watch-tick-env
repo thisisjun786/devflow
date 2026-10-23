@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Expose completed iterations of the real watcher to tests. Other sleeps,
+# including sleeps in its children, retain their normal behavior.
+sleep() {
+  command sleep "$@" || return
+  if [ "${0##*/}" = dv-watch ] && [ "$#" = 1 ] && [ "$1" = "$DV_WATCH_INTERVAL" ]; then
+    printf '.\n' >> "$CASE_DIR/watch-ticks"
+  fi
+}

@@ -29,7 +29,7 @@ runner_remove_case_dirs() {
   done
   if [ -f "$dir/case-dir" ]; then
     case_dir=$(cat "$dir/case-dir")
-    if [ "${DV_TEST_KEEP:-0}" = 1 ]; then printf 'Retained: %s\n' "$case_dir"
+    if [ "${DV_TEST_KEEP:-0}" = 1 ] || [ -f "$case_dir/.test-failed" ]; then printf 'Retained: %s\n' "$case_dir"
     else rm -rf "$case_dir"; fi
   fi
   rm -rf "$dir"
@@ -48,6 +48,8 @@ runner_stop_tmux() {
 }
 runner_cleanup_case() {
   local rc=$? groups group _
+  # Preserve failed fixtures even when a case supplies its own EXIT handler.
+  if [ "$rc" != 0 ] && [ "$rc" != 77 ]; then DV_TEST_KEEP=1; fi
   trap - EXIT
   trap '' TERM INT HUP
   runner_stop_tmux "$DV_TEST_PROCESS_DIR"

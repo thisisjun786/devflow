@@ -128,10 +128,10 @@ date() {
 }
 sleep() {
   if [ "${0##*/}" = dv-watch ] && [ "$*" = 0.1 ]; then
-    # A loop tick can precede the background status scan. Finish that scan
-    # before the test advances its clock to the next observation interval.
-    if [ -n "${reconcile_pid:-}" ]; then wait "$reconcile_pid" 2>/dev/null || true; fi
     local tick
+    # Reconciliation now runs beside the queue. Only advance this test's
+    # synthetic clock after the scheduled scan has actually finished.
+    [ -z "${reconcile_pid:-}" ] || wait "$reconcile_pid"
     tick=$(date +%s)
     touch "$CASE_DIR/tick-$tick"
     while [ "$(date +%s)" = "$tick" ] && [ ! -e "$DV_HOME/stop" ]; do command sleep 0.02; done

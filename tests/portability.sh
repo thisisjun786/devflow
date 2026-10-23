@@ -22,6 +22,11 @@ case_symlink_exec_send() {
   printf 'set -P\n' > "$CASE_DIR/physical-cd"
   BASH_ENV="$CASE_DIR/physical-cd" symlink_tmp_case exec_send
 }
+case_symlink_send_branch_exec() {
+  printf 'set -P\n' > "$CASE_DIR/physical-cd"
+  BASH_ENV="$CASE_DIR/physical-cd" symlink_tmp_case send_branch_exec
+}
+case_symlink_task_mixed_files() { symlink_tmp_case task_mixed_files; }
 case_revive_wait_exit() {
   # Completion metadata precedes the fake terminal wrapper's final writes.
   RV_STATE="$DV_STATE/RV-1"

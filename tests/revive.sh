@@ -5,7 +5,6 @@
 revive_setup() {
   repo revive
   herdr_setup
-  export DV_START_WAIT=2
   dv start "$REPO" RV-1 followup --mode goal
   wait_native RV-1
   RV_STATE="$DV_STATE/RV-1"
@@ -180,6 +179,7 @@ case_revive_goal_no_done() {
   export DV_DEVIN_BIN="$ROOT/tests/fixtures/revived-agent" DV_REVIVE_TEST_NO_DONE=1
   dv send RV-1 'finish the current request'
   revive_wait
+  test -f "$RV_STATE/trust-enter"
   for _ in {1..100}; do
     if jq -se 'any(.[]; .kind=="blocked")' "$RV_STATE/events.log" >/dev/null; then break; fi
     sleep 0.05

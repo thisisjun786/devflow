@@ -15,7 +15,7 @@ send_branch_switch() {
 }
 send_branch_preserved() {
   jq '{issue,repo,worktree,branch,started,award_token,thread_id,herdr_pane}' "$SEND_STATE/meta" > "$CASE_DIR/send-after"
-  cmp "$CASE_DIR/send-identity" "$CASE_DIR/send-after"
+  cmp "$CASE_DIR/send-identity" "$CASE_DIR/send-after" || return
   test "$(git -C "$SEND_WT" symbolic-ref --short HEAD)" = stacked-followup
 }
 send_branch_appserver() {
@@ -42,11 +42,16 @@ case_send_branch_exec() {
     if jq -se 'length==2' "$SEND_STATE/stub-runs.jsonl" >/dev/null; then break; fi
     sleep 0.1
   done
-  jq -se --arg wt "$SEND_WT" 'length==2 and .[1].cwd==$wt and (.[1].args|index("resume")!=null and index("fixture-thread")!=null) and (.[1].args[-1]|startswith("continue the stacked change"))' "$SEND_STATE/stub-runs.jsonl"
-  send_branch_preserved
+  # macOS TMPDIR can name /var while the child reports /private/var.
+  # Release the held fixture even when a delivery assertion fails.
+  local result=0
+  jq -se 'length==2 and (.[1].args|index("resume")!=null and index("fixture-thread")!=null) and (.[1].args[-1]|startswith("continue the stacked change"))' "$SEND_STATE/stub-runs.jsonl" || result=1
+  test "$(cd "$(jq -sr '.[1].cwd' "$SEND_STATE/stub-runs.jsonl")" && pwd -P)" = "$(cd "$SEND_WT" && pwd -P)" || result=1
+  send_branch_preserved || result=1
   # Completion still guards the original branch; only delivery is relaxed.
   git -C "$SEND_WT" checkout -q "$(jq -r .branch "$SEND_STATE/meta")"
   touch "$SEND_STATE/release"; exec_wait
+  return "$result"
 }
 case_send_branch_tmux() {
   needs_tmux; send_branch_environment; repo send-terminal

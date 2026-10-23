@@ -45,15 +45,51 @@ CLIENT
   test -d "$fixture"
   rm "$fixture/state/T-1/appserver/client.pid"
 }
+case_teardown_wait_tmux() {
+  needs_tmux
+  local fixture="$CASE_DIR/teardown" launcher stopped=false
+  mkdir -p "$fixture/state" "$fixture/home"
+  cat > "$CASE_DIR/late-pane" <<'PANE'
+#!/usr/bin/env bash
+trap 'sleep 0.3; mkdir -p "$DV_STATE/late-write"; touch "$CASE_DIR/pane-stopped"; exit 0' TERM HUP
+touch "$CASE_DIR/pane-ready"
+while :; do sleep 0.1; done
+PANE
+  launcher=$(printf '%q ' env "DV_STATE=$fixture/state" "CASE_DIR=$CASE_DIR" bash "$CASE_DIR/late-pane")
+  tmux -L "$DV_TMUX_SOCKET" new-session -d -s late-pane "$launcher"
+  wait_file "$CASE_DIR/pane-ready"
+  CASE_DIR="$fixture" DV_STATE="$fixture/state" DV_HOME="$fixture/home" DV_TEST_KEEP=0 teardown
+  [ ! -f "$CASE_DIR/pane-stopped" ] || stopped=true
+  # Also join the deliberately delayed writer on a red run, before outer cleanup.
+  wait_file "$CASE_DIR/pane-stopped"
+  test "$stopped" = true
+  test ! -e "$fixture"
+}
 appserver_setup() {
   repo appserver "${1:-}"
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=appserver DV_HERDR=0
-  # Socket startup and JSON-RPC framing need scheduling slack on busy CI hosts.
-  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-5}
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=${DV_APPSERVER_TIMEOUT_CASE:-$DV_APPSERVER_TIMEOUT}
   export DV_APPSERVER_POLL=1 DV_STALL_AFTER=300
   mkdir -p "$CASE_DIR/server"
   printf 'idle\n' > "$CASE_DIR/server/status"
   dv start "$REPO" AS-1 change --brief "$CASE_DIR/brief"
+}
+appserver_wait_work() {
+  # Provider work precedes queued completion RPCs. Observe the worker's real
+  # exit using the same overall bound as appserver_request, not one RPC's time.
+  local deadline=$((SECONDS + DV_APPSERVER_TIMEOUT * 5 + 5))
+  while [ ! -f "$CASE_DIR/server/work.exit" ]; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      printf 'Timed out waiting for fake App Server work\n' >&2
+      return 1
+    fi
+    sleep 0.05
+  done
+  if [ "$(cat "$CASE_DIR/server/work.exit")" != 0 ]; then
+    tail -n 5 "$CASE_DIR/server/work.log" >&2
+    return 1
+  fi
+  test -f "$CASE_DIR/server/work.done"
 }
 appserver_checkout_setup() {
   local legacy=${1:-false}
@@ -103,7 +139,6 @@ appserver_wait_updated() {
 }
 appserver_reexec_delivery() {
   local outcome=$1 sender rc=0 state id
-  printf 'DV_APPSERVER_TIMEOUT=5\n' > "$DV_CONFIG"
   appserver_checkout_setup
   state="$DV_STATE/AS-1/appserver"
   printf '%s\n' "$outcome" > "$CASE_DIR/server/outcome"
@@ -123,7 +158,12 @@ appserver_reexec_delivery() {
   test -f "$state/outbox/$id.finished"
   if [ "$outcome" = accepted ]; then test "$rc" = 0; else test "$rc" != 0; fi
   appserver_wait_updated
-  wait_file "$state/outbox/queued.finished"
+  # queued.json sorts before the new request.*.json status request. Its reply
+  # therefore observes the queued mutation's receipt and completion marker,
+  # including an unknown RPC that legitimately consumes the full deadline.
+  dv status AS-1 --json > "$CASE_DIR/after-queue-status"
+  test -f "$state/outbox/queued.finished"
+  jq -e '.[0].alive' "$CASE_DIR/after-queue-status"
   jq -e --arg outcome "$outcome" '.outcome==$outcome' "$state/outbox/queued.receipt"
   jq -se '[.[]|select(.method=="turn/steer")]|length==2 and all(.[]; .params.threadId=="thread-1")' "$CASE_DIR/server/requests"
   jq -se '[.[]|select(.method=="thread/start" or .method=="thread/goal/set" or .method=="turn/start")]|length==3' "$CASE_DIR/server/requests"
@@ -291,23 +331,46 @@ case_appserver_states() {
 case_appserver_read_partial() {
   # A JSON-RPC line split by a pause longer than one read timeout must be
   # assembled, not dropped (devflow#139). Independent of host speed.
-  DV_ENTRY="$ROOT/bin/dv" bash -s <<'READ_PARTIAL'
+  # Keep the script off stdin: its background decoder also manages pipe input.
+  cat > "$CASE_DIR/read-partial.sh" <<'READ_PARTIAL'
 set -euo pipefail
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/appserver.sh"
-AS_PARTIAL='' AS_LINE=''
-exec 8< <(printf '{"id":"a","result":{"x":"'; sleep 2.5; printf 'tail"}}\n'; printf '{"id":"b"}\n')
+AS_LINE=''
+decoder=''
+trap 'if [ -n "$decoder" ]; then kill "$decoder" 2>/dev/null || true; wait "$decoder" 2>/dev/null || true; fi' EXIT
+AS_IO="$CASE_DIR/read-records"; mkdir "$AS_IO"
+mkfifo "$AS_IO/wake" "$AS_IO/ack"
+exec 8<> "$AS_IO/wake" 5<> "$AS_IO/ack"
+(
+  trap - EXIT
+  { printf '{"id":"a","result":{"x":"'; sleep 2.5; printf 'tail"}}'; } > "$AS_IO/pending"
+  mv "$AS_IO/pending" "$AS_IO/receive-record"; printf '.' >&8
+  IFS= read -r -n 1 ack <&5
+  printf '{"id":"b"}' > "$AS_IO/pending"
+  mv "$AS_IO/pending" "$AS_IO/receive-record"; printf '.' >&8
+  IFS= read -r -n 1 ack <&5
+) & decoder=$!
 appserver_read_line 10
 [ "$AS_LINE" = '{"id":"a","result":{"x":"tail"}}' ]
 appserver_read_line 5
 [ "$AS_LINE" = '{"id":"b"}' ]
-# A deadline that expires mid-line keeps the fragment for the next call.
-exec 8< <(printf '{"id":"c",'; sleep 2.5; printf '"ok":1}\n')
+wait "$decoder"; decoder=''
+# A remote frame split across the deadline is buffered by the decoder.
+AS_IO="$CASE_DIR/partial-frame"; mkdir "$AS_IO"
+# Bash 3.2 cannot wait for a process substitution. Use an explicit child so
+# teardown waits until the decoder has consumed the close frame as well.
+mkfifo "$AS_IO/decoded" "$AS_IO/ack"
+exec 8<> "$AS_IO/decoded" 5<> "$AS_IO/ack"
+{ printf '\201\021{"id":"c",'; sleep 2.5; printf '"ok":1}\210\000'; } | appserver_ws_receive 0 "$AS_IO/receive-record" > "$AS_IO/decoded" &
+decoder=$!
 if appserver_read_line 1; then exit 1; fi
-[ -n "$AS_PARTIAL" ]
+[ -z "$AS_LINE" ]
 appserver_read_line 10
 [ "$AS_LINE" = '{"id":"c","ok":1}' ]
+wait "$decoder"; decoder=''
 READ_PARTIAL
+  DV_ENTRY="$ROOT/bin/dv" bash "$CASE_DIR/read-partial.sh"
 }
 case_appserver_large_reply() {
   # A multi-MB thread/read reply arrives over many one-second reads. It must be
@@ -386,7 +449,7 @@ case_appserver_question() {
 case_appserver_auto() {
   repo automatic
   unset DV_CODEX_MODE
-  export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/appserver" DV_APPSERVER_TIMEOUT=2
+  export DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/appserver"
   mkdir -p "$CASE_DIR/server"
   printf 'idle\n' > "$CASE_DIR/server/status"
   dv start "$REPO" AS-1 automatic
@@ -428,7 +491,7 @@ case_appserver_close_unset() {
   )
 }
 case_appserver_daemon_restart() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  appserver_setup
   local state="$DV_STATE/AS-1/appserver" client attempts
   client=$(cat "$state/client.pid")
   touch "$CASE_DIR/server/offline"
@@ -464,11 +527,15 @@ appserver_wait_reconnected() {
   return 1
 }
 case_appserver_watch_dead_client() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
-  local state="$DV_STATE/AS-1/appserver" client replacement watcher
+  appserver_setup
+  local state="$DV_STATE/AS-1/appserver" client replacement watcher proxy_file proxy_pid
+  cp "$CASE_DIR/server/proxy.pid" "$CASE_DIR/initial-proxy.pid"
   client=$(cat "$state/client.pid")
   cp "$DV_STATE/AS-1/meta" "$CASE_DIR/meta.before"
   kill -KILL "$client"
+  # nc does not close its socket at stdin EOF on every platform. This fake
+  # proxy belongs to the killed client, not to the daemon being recovered.
+  teardown_stop_pidfile "$CASE_DIR/server/proxy.pid"
   export DV_HOSTS=test-host DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.1
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   appserver_wait_reconnected
@@ -481,13 +548,20 @@ case_appserver_watch_dead_client() {
   test ! -f "$state/recoveries.json"
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
   kill -KILL "$replacement"
+  teardown_stop_pidfile "$CASE_DIR/server/proxy.pid"
   dv _appserver-watch
   dv _appserver-watch
   jq -se '[.[]|select(.method=="thread/resume")]|length==1' "$CASE_DIR/server/requests"
   ! grep -q 'unbound variable' "$DV_STATE/AS-1/log"
+  for proxy_file in "$CASE_DIR/initial-proxy.pid" "$CASE_DIR/server/proxy.pid"; do
+    proxy_pid=$(cat "$proxy_file")
+    if kill -0 "$proxy_pid" 2>/dev/null; then
+      printf 'Fixture proxy %s outlived its client\n' "$proxy_pid"; return 1
+    fi
+  done
 }
 case_appserver_daemon_lost_turn() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  appserver_setup
   local state="$DV_STATE/AS-1/appserver"
   dv status AS-1 --json | jq -e '.[0].appserver.turn_id=="turn-1"'
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-1","status":"interrupted","items":[]}]}}' > "$CASE_DIR/server/thread.json"
@@ -507,7 +581,7 @@ case_appserver_daemon_lost_turn() {
   test "$(cat "$CASE_DIR/server/turn-count")" = 2
 }
 case_appserver_reconnect_stall_clock() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  appserver_setup
   printf '0\n' > "$DV_STATE/AS-1/appserver/activity"
   kill "$(cat "$CASE_DIR/server/daemon.pid")"
   appserver_wait_reconnected
@@ -516,7 +590,7 @@ case_appserver_reconnect_stall_clock() {
   jq -se '[.[]|select(.method=="turn/start")]|length==1' "$CASE_DIR/server/requests"
 }
 case_appserver_disconnect_unknown() {
-  DV_APPSERVER_TIMEOUT_CASE=5 appserver_setup
+  appserver_setup
   local sender rc=0
   touch "$CASE_DIR/server/hold-mutation"
   dv send AS-1 once > "$CASE_DIR/receipt" & sender=$!
@@ -646,7 +720,7 @@ case_appserver_exec() {
 case_appserver_pipeline() {
   export DV_APP_TEST_WORK=1
   appserver_setup remote
-  wait_file "$CASE_DIR/server/work.done"
+  appserver_wait_work
   jq -e '.files==1' "$DV_STATE/AS-1/done.json"
   dv status AS-1 --json | jq -e '.[0] | .status=="ready" and .agent_status=="goal-complete" and .backend=="appserver" and (.tmux|not)'
   printf 'Exercise synthetic App Server delivery.\n' > "$DV_STATE/AS-1/pr.md"
@@ -735,20 +809,121 @@ case_appserver_sender_partial() {
 }
 appserver_sender_legacy() (
   # Exercise Bash 3.2's timeout contract on Linux CI's newer Bash too.
-  read() {
-    local read_name=${!#} read_before read_rc=0
-    read_before=${!read_name-}
-    builtin read "$@" || read_rc=$?
-    if [ "$read_rc" -gt 128 ]; then
-      printf -v "$read_name" '%s' "$read_before"
-      return 1
-    fi
-    return "$read_rc"
-  }
+  # shellcheck source=tests/fixtures/legacy-read-env
+  source "$ROOT/tests/fixtures/legacy-read-env"
   "case_appserver_sender_$1"
 )
 case_appserver_sender_legacy_idle() { appserver_sender_legacy idle; }
 case_appserver_sender_legacy_partial() { appserver_sender_legacy partial; }
+case_appserver_sender_close() (
+  DV_ROOT=$ROOT
+  source "$ROOT/lib/appserver.sh"
+  AS_IO="$CASE_DIR/sender-close"; mkdir "$AS_IO"
+  mkfifo "$AS_IO/input"
+  exec 9<> "$AS_IO/input"
+  mkdir() {
+    env mkdir "$@" || return
+    if [ "$1" = "$AS_IO/send-channel" ]; then
+      sh -c 'printf "%s\n" "$PPID"' > "$CASE_DIR/sender.pid"
+    fi
+  }
+  touch() {
+    if [ "$1" = "$AS_IO/send-channel/eof" ]; then sleep 1; fi
+    env touch "$@"
+  }
+  AS_PID='' AS_RECEIVE='' AS_WRITER=''
+  appserver_ws_send 0 < "$AS_IO/input" > "$CASE_DIR/frames" & AS_SEND=$!
+  wait_file "$CASE_DIR/sender.pid"
+  local sender recorded=$AS_SEND rc=0
+  sender=$(cat "$CASE_DIR/sender.pid")
+  trap 'teardown_stop_pidfile "$CASE_DIR/sender.pid"' EXIT
+  # The recorded child must own the sender's reader and EXIT cleanup directly.
+  printf 'recorded=%s sender=%s\n' "$recorded" "$sender"
+  appserver_close || rc=$?
+  test "$rc" = 0
+  test "$recorded" = "$sender"
+  if kill -0 "$sender" 2>/dev/null; then return 1; fi
+  test ! -d "$CASE_DIR/sender-close"
+)
+case_appserver_reader_preempt() {
+  export BASH_ENV="$ROOT/tests/fixtures/legacy-read-env" DV_TEST_READ_PREEMPT=appserver_read_line
+  appserver_setup
+  test -f "$CASE_DIR/read-preempted"
+  dv status AS-1 --json | jq -e '.[0].appserver.thread.id=="thread-1"'
+}
+case_appserver_sender_preempt() (
+  source "$ROOT/tests/fixtures/legacy-read-env"
+  export DV_TEST_READ_PREEMPT=appserver_ws_send
+  case_appserver_sender_partial
+  test -f "$CASE_DIR/read-preempted"
+)
+case_appserver_upgrade_partial() {
+  cat > "$CASE_DIR/partial-upgrade-env" <<'ENV'
+printf() {
+  case "$1" in
+    'HTTP/1.1 101 '*)
+      local header
+      # shellcheck disable=SC2059
+      builtin printf -v header "$@"
+      builtin printf '%s' "${header:0:6}"
+      sleep 2
+      builtin printf '%s' "${header:6}"
+      touch "$CASE_DIR/upgrade-split" ;;
+    *)
+      # shellcheck disable=SC2059
+      builtin printf "$@" ;;
+  esac
+}
+ENV
+  export BASH_ENV="$CASE_DIR/partial-upgrade-env"
+  appserver_setup
+  test -f "$CASE_DIR/upgrade-split"
+}
+case_appserver_rpc_timeout() (
+  # Isolate the short RPC deadline from socket/thread startup. The peer stays
+  # connected and consumes the request, but deliberately never sends a reply.
+  DV_ROOT=$ROOT
+  source "$ROOT/lib/appserver.sh"
+  now() { date +%s; }
+  AS_IO="$CASE_DIR/rpc-timeout"; mkdir "$AS_IO"
+  mkfifo "$AS_IO/request" "$AS_IO/wake" "$AS_IO/hold"
+  exec 9<> "$AS_IO/request" 8<> "$AS_IO/wake" 7<> "$AS_IO/hold"
+  local peer started elapsed
+  (
+    IFS= read -r request <&9
+    printf '%s\n' "$request" > "$CASE_DIR/timeout-request"
+    IFS= read -r _hold <&7
+  ) & peer=$!
+  trap 'kill "$peer" 2>/dev/null || true; wait "$peer" 2>/dev/null || true' EXIT
+  AS_PID=$peer AS_SEND=$peer AS_RECEIVE=$peer AS_SEQ=0 AS_EVENTS=0 AS_WRITER=''
+  DV_APPSERVER_TIMEOUT=1
+  started=$(now)
+  appserver_rpc thread/read '{"threadId":"thread-1"}'
+  elapsed=$(( $(now) - started ))
+  printf 'RPC timeout: elapsed=%s budget=%s outcome=%s\n' "$elapsed" "$DV_APPSERVER_TIMEOUT" "$AS_CLASS"
+  test "$elapsed" -ge "$DV_APPSERVER_TIMEOUT"
+  test "$AS_CLASS" = unknown
+  test "$AS_REPLY" = '{}'
+  wait_file "$CASE_DIR/timeout-request"
+  jq -e '.method=="thread/read" and .params.threadId=="thread-1"' "$CASE_DIR/timeout-request"
+  kill -0 "$peer"
+)
+case_appserver_upgrade_timeout() (
+  source "$ROOT/lib/appserver-transport.sh"
+  AS_IO="$CASE_DIR/upgrade"; mkdir "$AS_IO"
+  mkfifo "$AS_IO/response"
+  exec 6<> "$AS_IO/response" 7> "$AS_IO/request"
+  DV_APPSERVER_TIMEOUT=1
+  appserver_ws_upgrade_headers() {
+    sh -c 'printf "%s\n" "$PPID"' > "$CASE_DIR/header-reader.pid"
+    IFS= read -r _unfinished <&6
+  }
+  if appserver_ws_upgrade; then return 1; fi
+  # A stalled header must not leave an untimed reader behind after the deadline.
+  if [ -f "$CASE_DIR/header-reader.pid" ]; then
+    ! kill -0 "$(cat "$CASE_DIR/header-reader.pid")" 2>/dev/null
+  fi
+)
 case_appserver_active_error_send() {
   appserver_setup
   printf '%s\n' '{"thread":{"id":"thread-1","status":{"type":"active"},"turns":[{"id":"turn-1","status":"inProgress","items":[],"error":{"message":"transient capacity error"}}]}}' > "$CASE_DIR/server/thread.json"
@@ -893,7 +1068,7 @@ appserver_idle_done() {
   appserver_age
   dv _appserver-watch
   jq -se 'any(.[]; .method=="turn/start" and (.params.input[0].text|contains("You stopped without dv done") and contains("dv done AS-1") and contains("dv kick blocked AS-1")))' "$CASE_DIR/server/requests"
-  wait_file "$CASE_DIR/server/work.done"
+  appserver_wait_work
   jq -e '.files==1' "$DV_STATE/AS-1/done.json"
   appserver_age
   dv _appserver-watch
@@ -1109,3 +1284,8 @@ case_appserver_stale_done_recover() {
   dv _appserver-watch
   jq -se '[.[]|select(.method=="turn/start")]|length==2' "$CASE_DIR/server/requests"
 }
+
+case_appserver_reader_legacy() (
+  export BASH_ENV="$ROOT/tests/fixtures/legacy-read-env"
+  case_appserver_read_partial
+)

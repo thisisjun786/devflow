@@ -4,6 +4,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: Consecutive full-suite runs per OS
+        type: choice
+        default: '5'
+        options: ['1', '5', '10']
   schedule:
     - cron: '23 3 * * *'
 permissions:
@@ -65,7 +72,8 @@ jobs:
         os: ${{ fromJSON(needs.plan.outputs.os) }}
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    # Manual validation repeats each shard and retains every run's full log.
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && (inputs.repetitions == '10' && 135 || 75) || 12 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,7 +92,14 @@ jobs:
           SHARD: ${{ matrix.shard }}
           CASE_COUNT: ${{ needs.plan.outputs.count }}
           DV_AUTO_UPDATE: '0'
+          REPETITIONS: ${{ inputs.repetitions || '1' }}
         run: |
+          # Use the system Bash in children too, including macOS Bash 3.2.
+          export PATH="/bin:/usr/bin:/sbin:/usr/sbin:$PATH"
+          mkdir -p "$RUNNER_TEMP/devflow-ci"
+          bash --version > "$RUNNER_TEMP/devflow-ci/bash-version.txt"
+          git rev-parse HEAD > "$RUNNER_TEMP/devflow-ci/head.txt"
+          case "$REPETITIONS" in 1|5|10) ;; *) exit 1 ;; esac
           if [ "$CASE_COUNT" = 0 ]; then
             echo 'Documentation-only change: pass=0 skip=0 fail=0'
             exit 0
@@ -94,7 +109,23 @@ jobs:
             git diff --name-only -z --no-renames "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changes"
             args=(--changed-files "$RUNNER_TEMP/changes")
           fi
-          ./bin/dv heavy -- bash tests/run.sh --shard "$SHARD/6" "${args[@]}"
+          bash tests/run.sh --list --shard "$SHARD/6" "${args[@]}" > "$RUNNER_TEMP/devflow-ci/cases.txt"
+          for ((run=1; run<=REPETITIONS; run++)); do
+            log="$RUNNER_TEMP/devflow-ci/run-$run.log"
+            if ./bin/dv heavy -- bash tests/run.sh --shard "$SHARD/6" "${args[@]}" > "$log" 2>&1; then
+              printf 'Run %s/%s: ' "$run" "$REPETITIONS"
+              tail -n 1 "$log" | tee -a "$RUNNER_TEMP/devflow-ci/results.txt"
+            else
+              tail -n 100 "$log"
+              exit 1
+            fi
+          done
+      - name: Full test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.os }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/devflow-ci/
   # Branch protection requires only "ci". Matrix jobs stay independent so
   # gh run rerun --failed reruns failed shards without repeating successful ones.
   ci:
