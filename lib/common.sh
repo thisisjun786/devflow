@@ -10,6 +10,8 @@ fi
 source "$DV_ROOT/config.example.sh"
 # shellcheck source=lib/capacity.sh
 source "$DV_ROOT/lib/capacity.sh"
+# shellcheck source=lib/portable.sh
+source "$DV_ROOT/lib/portable.sh"
 # shellcheck source=lib/heavy.sh
 source "$DV_ROOT/lib/heavy.sh"
 # shellcheck source=lib/claude.sh

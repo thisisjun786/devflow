@@ -16,7 +16,7 @@ heavy_locked() (
   # waiter may leave a file, but only a live kernel lock counts as waiting.
   local rc=0
   exec 9< "$1" || return 2
-  flock -n 9 || rc=$?
+  portable_flock -n 9 || rc=$?
   case "$rc" in 0) return 1 ;; 1) return 0 ;; *) return 2 ;; esac
 )
 heavy_snapshot() {
@@ -39,7 +39,7 @@ cmd_heavy() {
     fail 'usage: dv heavy -- command [args...]'
   fi
   shift
-  need flock; need nice
+  portable_flock_ready || fail 'missing dependency: flock (or perl)'; need nice
   local slots dir="$DV_STATE/.heavy" slot rc waiter=''
   slots=$(heavy_slots) || return
   mkdir -p "$dir"
@@ -53,7 +53,7 @@ cmd_heavy() {
     slot=1
     while [ "$slot" -le "$slots" ]; do
       exec 9>> "$dir/slot-$slot.lock"
-      rc=0; flock -n 9 || rc=$?
+      rc=0; portable_flock -n 9 || rc=$?
       if [ "$rc" = 0 ]; then
         if [ -n "$waiter" ]; then rm -f "$waiter"; exec 8>&-; fi
         trap - EXIT INT TERM HUP
@@ -74,7 +74,7 @@ cmd_heavy() {
       exec 8>> "$waiter"
       # A read-only status probe can briefly hold this newly created marker.
       # Wait for that probe instead of turning harmless contention into failure.
-      flock 8 || fail 'cannot register heavy waiter'
+      portable_flock 8 || fail 'cannot register heavy waiter'
       printf 'waiting for heavy slot 1/%s\n' "$slots" >&2
     fi
     sleep 0.2 8>&-

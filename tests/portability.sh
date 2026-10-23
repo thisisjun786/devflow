@@ -63,3 +63,59 @@ case_host_darwin_shells() (
   uname() { if [ "$1" = -s ]; then echo Darwin; else command uname "$@"; fi; }
   case_host_real_shells
 )
+portable_hide() {
+  # macOS ships neither flock(1) nor, on some installs, perl in PATH.
+  printf 'command() { case "${1:-} ${2:-}" in %s) return 1 ;; esac; builtin command "$@"; }\n' "$1" > "$CASE_DIR/hide-tools"
+}
+case_portable_heavy_perl() {
+  export DV_HEAVY_SLOTS=1
+  local holder waiter
+  portable_hide '"-v flock"'
+  # perl's flock(2) and flock(1) take the same slot lock in both directions.
+  BASH_ENV="$CASE_DIR/hide-tools" heavy_launch perl-holder bash -c 'touch "$CASE_DIR/perl-started"; exec sleep 30'
+  holder=$HEAVY_PID
+  wait_file "$CASE_DIR/perl-started"
+  heavy_launch flock-waiter bash -c 'touch "$CASE_DIR/flock-next"'
+  waiter=$HEAVY_PID
+  heavy_waiting flock-waiter
+  BASH_ENV="$CASE_DIR/hide-tools" dv bid --json | jq -e '.heavy=={slots:1,in_use:1,waiting:1}'
+  test ! -e "$CASE_DIR/flock-next"
+  kill "$holder"; wait "$holder" 2>/dev/null || true
+  wait_file "$CASE_DIR/flock-next"; wait "$waiter"
+  heavy_launch flock-holder bash -c 'touch "$CASE_DIR/flock-started"; exec sleep 30'
+  holder=$HEAVY_PID
+  wait_file "$CASE_DIR/flock-started"
+  BASH_ENV="$CASE_DIR/hide-tools" heavy_launch perl-waiter bash -c 'touch "$CASE_DIR/perl-next"'
+  waiter=$HEAVY_PID
+  heavy_waiting perl-waiter
+  test ! -e "$CASE_DIR/perl-next"
+  kill "$holder"; wait "$holder" 2>/dev/null || true
+  wait_file "$CASE_DIR/perl-next"; wait "$waiter"
+  BASH_ENV="$CASE_DIR/hide-tools" dv bid --json | jq -e '.heavy=={slots:1,in_use:0,waiting:0}'
+  local rc=0
+  BASH_ENV="$CASE_DIR/hide-tools" dv heavy -- bash -c 'exit 23' || rc=$?
+  test "$rc" = 23
+  portable_hide '"-v flock"|"-v perl"'
+  if BASH_ENV="$CASE_DIR/hide-tools" dv heavy -- touch "$CASE_DIR/unlocked" 2> "$CASE_DIR/missing.err"; then return 1; fi
+  grep -F 'missing dependency: flock (or perl)' "$CASE_DIR/missing.err"
+  test ! -e "$CASE_DIR/unlocked"
+}
+case_portable_darwin_resources() (
+  export DV_ENTRY="$ROOT/bin/dv"
+  # shellcheck source=lib/common.sh
+  source "$ROOT/lib/common.sh"
+  # shellcheck source=lib/bidding.sh
+  source "$ROOT/lib/bidding.sh"
+  uname() { if [ "$1" = -s ]; then echo Darwin; else command uname "$@"; fi; }
+  sysctl() { case "$*" in '-n vm.loadavg') echo '{ 1.50 2.25 3.00 }' ;; '-n hw.pagesize') echo 16384 ;; *) return 1 ;; esac; }
+  vm_stat() {
+    printf '%s\n' 'Mach Virtual Memory Statistics: (page size of 16384 bytes)' \
+      'Pages free:                               65536.' 'Pages active:                            900000.' \
+      'Pages inactive:                          131072.' 'Pages speculative:                        65536.' \
+      'Pages throttled:                              0.' 'Pages wired down:                        200000.'
+  }
+  test "$(portable_load5)" = 2.25
+  # (free + inactive + speculative) pages of 16 KiB.
+  test "$(portable_memory_mb)" = 4096
+  bid_resources | jq -e '.load5==2.25 and .memory_available_mb==4096'
+)
