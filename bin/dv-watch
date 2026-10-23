@@ -24,6 +24,8 @@ source "$DV_ROOT/lib/stack.sh"
 source "$DV_ROOT/lib/qa.sh"
 # shellcheck source=lib/self-update.sh
 source "$DV_ROOT/lib/self-update.sh"
+# shellcheck source=lib/reconcile.sh
+source "$DV_ROOT/lib/reconcile.sh"
 watch_auto_update=$DV_AUTO_UPDATE
 # Child CLI calls must not pull while their parent is dispatching an event.
 export DV_AUTO_UPDATE=0
@@ -33,6 +35,7 @@ disk_settings
 [[ "$DV_WORKER_RETRY" =~ ^[0-9]+$ ]] || fail 'DV_WORKER_RETRY must be nonnegative seconds'
 [[ "$DV_METRICS_INTERVAL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_METRICS_INTERVAL must be positive seconds'
 [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be a positive integer'
+[[ "$DV_STATUS_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STATUS_TIMEOUT must be positive seconds'
 # Share the existing status safety net; do not leave a ten-minute stall waiting
 # for the old thirty-minute reconciliation interval. No extra process needed.
 stall_scan_interval=60
@@ -65,13 +68,13 @@ finish() {
   local pid
   metrics_stop
   disk_stop
+  reconcile_stop
   for pid in $pull_pids; do if is_pull "$pid"; then kill "$pid" 2>/dev/null || true; fi; done
   for pid in $pids $manager_pids; do
     # After exec, bash no longer has the old child job table.
     while qa_alive "$pid"; do sleep 0.1; done
     wait "$pid" 2>/dev/null || true
   done
-  [ -z "$reconcile_pid" ] || wait "$reconcile_pid" 2>/dev/null || true
   reap
   rm -f "$DV_HOME/watch.pid"
   rmdir "$DV_HOME/.watch-lock"
@@ -82,11 +85,8 @@ cursor=0
 [ ! -f "$DV_HOME/cursor" ] || cursor=$(cat "$DV_HOME/cursor")
 touch "$DV_HOME/kick.q" "$DV_HOME/seen"
 last_scan=${DV_WATCH_LAST_SCAN:-0}
-last_stall_scan=${DV_WATCH_LAST_STALL_SCAN:-$last_scan}
 unset DV_WATCH_LAST_SCAN DV_WATCH_LAST_STALL_SCAN
 update_requested=0
-last_appserver_scan=0
-reconcile_pid=''
 last_metrics=0
 last_disk=0
 # Host-local clocks own the 30-minute cadence. Check due hosts more often so
@@ -217,47 +217,6 @@ pending_event() {
   done
   return 1
 }
-reconcile() {
-  local host rows row issue head id remote event_host token recovered
-  for host in $(printf '%s\n' "$DV_HOST $DV_HOSTS" | tr ' ' '\n' | sort -u); do
-    # The watcher's own host needs no ssh (and may have no key to itself).
-    if [ "$host" = "$DV_HOST" ]; then
-      rows=$(dv status --json 2>> "$DV_HOME/reconcile.log") || continue
-    else
-      rows=$(ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" 'dv status --json' 2>> "$DV_HOME/reconcile.log") || continue
-    fi
-    if true; then
-      if ! printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null 2>&1; then continue; fi
-      stall_reconcile "$host" "$rows" "$stall_scan_interval" >> "$DV_HOME/reconcile.log" 2>&1 || true
-      stack_queue_host "$host" "$rows"
-      # Liveness is checked on the issue's host; a PID from another host is
-      # meaningless locally. The helper preserves a healthy waiter's lock/log.
-      while IFS= read -r issue; do
-        [[ "$issue" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || continue
-        if [ "$host" = "$DV_HOST" ]; then
-          dv _pr-wait-start "$issue" >> "$DV_HOME/reconcile.log" 2>&1 || true
-        else
-          remote=$(shell_join dv _pr-wait-start "$issue")
-          ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$remote" >> "$DV_HOME/reconcile.log" 2>&1 || true
-        fi
-      done < <(printf '%s\n' "$rows" | jq -r '.[] | select(.status=="pr") | .issue')
-      while IFS= read -r row; do
-        issue=$(printf '%s' "$row" | jq -r .issue)
-        head=$(printf '%s' "$row" | jq -r '.head // .start_head // ""')
-        # Use the source's identity, not the SSH alias used to reach it.
-        event_host=$(printf '%s' "$row" | jq -r --arg host "$host" '.host // $host')
-        token=$(printf '%s' "$row" | jq -r '.award_token // ""')
-        recovered=$(event_json 'done' "$issue" 'Recovered by status safety net' "$event_host" "$head" '' "$token")
-        id=$(printf '%s' "$recovered" | jq -r .id)
-        if ! jq -se --arg id "$id" 'any(.[]; .id==$id)' "$DV_HOME/kick.q" >/dev/null 2>&1; then
-          "$DV_ROOT/bin/dv-kick" 'done' "$issue" 'Recovered by status safety net' "$event_host" "$head" "$id" "$token"
-        fi
-      done < <(printf '%s\n' "$rows" | jq -c '.[] | select(.status=="done" or
-        ((.status=="pr" or .status=="ready") and .done_at!=null and
-         .head!=null and .head!="" and .done_head==.head))')
-    fi
-  done
-}
 stall_cursor=''; stall_started=0; stall_reported=0
 watch_stall() {
   local reason=$1 stalled_event=$2 issue message time
@@ -288,35 +247,18 @@ while [ ! -e "$DV_HOME/stop" ]; do
     disk_start
     last_disk=$(now)
   fi
-  if [ $(( $(now) - last_appserver_scan )) -ge "$DV_APPSERVER_POLL" ]; then
-    for appserver_host in $DV_HOSTS; do
-      if [ "$appserver_host" = "$DV_HOST" ]; then
-        dv _appserver-watch >> "$DV_HOME/reconcile.log" 2>&1 || true
-      else
-        bid_limit "$DV_BID_TIMEOUT" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$appserver_host" 'dv _appserver-watch' >> "$DV_HOME/reconcile.log" 2>&1 || true
-      fi
-    done
-    last_appserver_scan=$(now)
-  fi
   if [ $(( $(now) - last_metrics )) -ge "$DV_METRICS_INTERVAL" ]; then
     metrics_start
     last_metrics=$(now)
   fi
-  if [ $(( $(now) - last_stall_scan )) -ge "$stall_scan_interval" ]; then
-    # Remote status can take tens of seconds per host. Run the safety net in
-    # the background, one at a time, so it never delays queue dispatch.
-    if [ -z "$reconcile_pid" ] || ! kill -0 "$reconcile_pid" 2>/dev/null; then
-      [ -z "$reconcile_pid" ] || wait "$reconcile_pid" 2>/dev/null || true
-      reconcile & reconcile_pid=$!
-      last_stall_scan=$(now)
-    fi
-  fi
+  reconcile_start
   # Frequent stall scans must not shorten the self-update safety interval.
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then
     last_scan=$(now); update_requested=1; autofill_sweep=1
   fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
   available=$(wc -l < "$DV_HOME/kick.q")
+  reconcile_requested=0
   stall_reason=''; line=''
   while [ "$cursor" -lt "$available" ] && [ ! -e "$DV_HOME/stop" ]; do
     if [ "$cursor" -ge "$(wc -l < "$DV_HOME/kick.q")" ]; then stall_reason='queue shortened before read'; break; fi
@@ -331,7 +273,9 @@ while [ ! -e "$DV_HOME/stop" ]; do
         if ! qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1; then stall_reason='qa_enqueue failed'; break; fi
       fi
       autofill_event "$line" >> "$DV_HOME/autofill.log" 2>&1 || true
-      if ! stack_landed_event "$line" >> "$DV_HOME/stack.log" 2>&1; then stall_reason='stack_landed_event failed'; break; fi
+      # Stack candidates are discovered by the bounded host reconciliation.
+      # Never repeat an inline fleet status scan for each done/landed event.
+      case "$(printf '%s\n' "$line" | jq -r .kind)" in done|landed) reconcile_requested=1 ;; esac
       case "$(jq -r .kind <<< "$line")" in
       submitted|bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|issue-labeled|issue-unlabeled|pr-opened|pr-closed)
         metrics_handled "$line"
@@ -369,6 +313,9 @@ while [ ! -e "$DV_HOME/stop" ]; do
     if self_update_landed "$line"; then update_requested=1; fi
   done
   watch_stall "$stall_reason" "$line"
+  # Coalesce a batch of landed/done wakeups, including events arriving while
+  # a host is busy, into one following pass through the same host slot.
+  if [ "$reconcile_requested" = 1 ]; then reconcile_request; fi
   # Resolve legacy slot conflicts before handing fallback records to workers.
   manager_conflict_recover
   manager_fallback_recover
@@ -383,12 +330,9 @@ while [ ! -e "$DV_HOME/stop" ]; do
   if [ ! -e "$DV_HOME/stop" ]; then
     if [ "$update_requested" = 1 ]; then DV_AUTO_UPDATE=$watch_auto_update self_update 0; update_requested=0; fi
     if [ "$(self_update_head)" != "$watch_commit" ]; then
-      # exec drops the job table; let an in-flight safety net finish first.
-      [ -z "$reconcile_pid" ] || wait "$reconcile_pid" 2>/dev/null || true
       metrics_stop
       export DV_WATCH_REEXEC_PID=$$ DV_WATCH_REEXEC_PIDS=$pids DV_WATCH_LAST_SCAN=$last_scan
       export DV_WATCH_REEXEC_MANAGER_PIDS=$manager_pids
-      export DV_WATCH_LAST_STALL_SCAN=$last_stall_scan
       export DV_AUTO_UPDATE=$watch_auto_update
       exec "$DV_ROOT/bin/dv-watch" "$@"
     fi
