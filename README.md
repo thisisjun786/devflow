@@ -36,7 +36,27 @@ App Server task의 done은 산출물 검사 후 goal 완료 응답을 확인합�
 
 감시 호스트는 Hermes의 sion 프로필로 작업자를 띄우므로 Hermes가 도는 호스트(10-19부터 lina-os)여야 합니다. 리눅스 감시는 로그아웃 뒤에도 돌도록 `loginctl enable-linger $USER`가 켜져 있어야 합니다(설치가 상태를 알려 줍니다). 모든 dv 호스트의 `DV_KICK_HOST`는 감시 호스트로 둡니다(기본 lina-os). 감시 호스트 자신은 ssh 없이 로컬 큐에 씁니다. git, gh, tmux, jq가 필요합니다. 설치는 `~/.local/bin`에 링크하고 기존 `~/.config/devflow/config.sh`를 보존합니다. 저장소는 링크 대상이므로 이동하지 마세요. `~/.local/bin`을 로컬과 SSH 비대화형 PATH에 추가하고 `gh auth login`은 사람이 준비합니다.
 
-[config.example.sh](config.example.sh)에 모든 기본값이 있습니다. Codex 경로는 호스트에 따라 `~/node/bin/codex` 또는 `~/.opencodex/bin/codex`로 설정하세요. 기본 모델은 gpt-6-astra/xhigh이고, hooks와 crw 플러그인을 해당 실행에서만 끕니다. `DV_CODEX_DISABLE_HOOKS=0`, `DV_CODEX_DISABLE_CRW=0`으로 바꿀 수 있습니다. Claude는 opus/xhigh, Devin은 fusion-gpt-6-astra-xhigh-sidekick-swe-2-high입니다.
+[config.example.sh](config.example.sh)에 모든 기본값이 있습니다. Codex 경로는 호스트에 따라 `~/node/bin/codex` 또는 `~/.opencodex/bin/codex`로 설정하세요. 기본 모델은 gpt-6-astra/xhigh이고, hooks와 crw 플러그인을 해당 실행에서만 끕니다. `DV_CODEX_DISABLE_HOOKS=0`, `DV_CODEX_DISABLE_CRW=0`으로 바꿀 수 있습니다. Claude는 opus/xhigh, Devin은 fusion-gpt-6-astra-xhigh-sidekick-swe-2-high입니다. 다른 에이전트는 아래 표를 보세요.
+
+## 에이전트
+
+작업 하나는 에이전트 하나가 맡습니다. 같은 작업을 여러 에이전트에 나란히 돌려 비교하지 않고, 결과가 나쁘면 새 작업으로 고칩니다. 모든 에이전트는 `--agent`로 고르고, `DV_<AGENT>_BIN`·`DV_<AGENT>_MODEL`(Codex·Claude는 effort도)로 실행 파일과 모델을 바꿉니다.
+
+| `--agent` | 용도 | CLI | 실행(지시는 첫 입력) | 기본 모델 | 준비 확인(기본) | 폴더 신뢰 | 세션 기록 |
+|---|---|---|---|---|---|---|---|
+| `codex` | 기본, 큰 작업 | `codex` | App Server·exec·goal(TUI) | gpt-6-astra/xhigh | `codex login status` | 신뢰 항목 기록 | `DV_CODEX_SESSIONS`(날짜별) |
+| `claude` | 큰 작업 | `claude` | `--dangerously-skip-permissions -- 지시` | opus/xhigh | `claude auth status` | `.claude.json` 기록 | `DV_CLAUDE_SESSIONS/<경로>` |
+| `devin` | 코드 | `~/.local/bin/devin` | `--permission-mode dangerous -- 지시` | fusion-gpt-6-astra-… | `devin auth status` | 화면에서 Enter | 없음 |
+| `omp` | 작은 코드(주 작업자) | `omp` | `--approval-mode=yolo -- 지시`, `OMP_SKIP_SETUP=1` | `inferhub/deepseek-v4.1-flash` | provider·키 설정 | 묻지 않음 | `DV_OMP_SESSIONS/--<경로>--` |
+| `agy` | 문서·이슈·PR 글·조사 | `agy` | `--dangerously-skip-permissions -i 지시` | `gemini-4-argon`(medium) | `agy models` | 화면에서 Enter | `DV_AGY_SESSIONS`(대화별) |
+| `grok` | 작은 코드 수정 | `grok` | `--always-approve -- 지시` | CLI 기본 | `grok models` | 화면에서 Enter | `DV_GROK_SESSIONS/<URL 인코딩 경로>` |
+| `cursor` | 작은 코드 수정 | `cursor-agent` | `--yolo --trust -- 지시` | CLI 기본 | `cursor-agent models` | `--trust` | `DV_CURSOR_SESSIONS/<경로>/agent-transcripts` |
+
+omp·agy·grok·cursor는 Claude·Devin처럼 herdr pane(없으면 tmux)에서 대화형으로 띄우고 goal 모드만 씁니다. 처음 보는 폴더에서 agy·grok·Devin이 띄우는 신뢰 창은 기본 선택(신뢰)에 Enter를 한 번 보냅니다. omp는 대화형 첫 실행의 provider 설정 마법사가 지시를 가리므로 dv 실행에만 `OMP_SKIP_SETUP=1`을 줍니다. 사용자 설정은 바꾸지 않습니다. agy TUI는 `gemini-4-argon-medium`을 모르는 모델로 보고 무시하므로 기본값은 medium에 해당하는 `gemini-4-argon`입니다. 화면의 usage limit·rate limit·HTTP 429·overloaded·RESOURCE_EXHAUSTED는 다른 에이전트와 같이 같은 worktree에서 기다린 뒤 이어서 하라고 입력합니다.
+
+준비 확인은 읽기 전용입니다. agy·grok·cursor는 인증이 있어야 성공하는 `models`를 씁니다. cursor-agent `status`는 낡은 로그인을 성공으로 보여 주고 실제 요청은 "Authentication required"로 실패할 수 있기 때문입니다. 이때는 운영자가 `cursor-agent login`을 다시 하거나 pane 환경에 `CURSOR_API_KEY`를 둡니다. omp에는 인증 조회 명령이 없어 `DV_OMP_MODEL`의 provider가 `~/.omp/agent/models.yml`에 있고, `apiKey`가 변수 이름이면 그 값이 환경이나 `~/.omp/agent/.env`에 있는지 확인합니다. 키 값은 출력하지 않습니다. 내장 provider 로그인을 쓰면 `DV_AGENT_READY_omp`에 확인 명령을 지정합니다.
+
+`dv status --json`의 `transcript`는 worktree가 남아 있는 작업의 세션 기록 위치입니다. 해당 worktree의 기록 폴더가 있으면 그 경로, 없으면 에이전트의 기록 루트이며, 시온이 지금 무엇을 하는지 확인할 때 읽습니다. 자동 재시작 지시에는 같은 worktree의 이전 기록 폴더가 있으면 그 경로를 읽기 전용 참고로 넣습니다. dv는 기록을 읽기만 합니다.
 
 ## 무거운 명령의 호스트 슬롯
 
@@ -92,7 +112,7 @@ ionice가 없으면 nice만 적용합니다. `dv status`와 `dv bid`는 `heavy=�
 # 준비가 끝나면 관리자 config.sh의 DV_HOSTS, 감시 호스트의 DV_PULL_HOSTS에 추가
 ```
 
-[`hosts/tools.tsv`](hosts/tools.tsv)의 열은 이름, 버전, 설치 방식, 적용 호스트(`all` 또는 `DV_HOST` 값)입니다. `system`은 배포판 버전을 허용하고 `bundled`는 고정된 Node 배포본의 npm을 뜻합니다. `agy`는 lina-os에서만 조회합니다. Go는 `~/.local/go/go`(GOROOT), GOPATH는 `~/.local/go`, Node와 npm global은 `~/node`, 나머지 설치 대상은 `~/.local/bin`입니다. Codex와 Devin은 조회만 합니다. apt 도구도 설치하지 않고 없으면 운영자가 실행할 `sudo apt-get install ...`을 출력합니다.
+[`hosts/tools.tsv`](hosts/tools.tsv)의 열은 이름, 버전, 설치 방식, 적용 호스트(`all` 또는 `DV_HOST` 값)입니다. `system`은 배포판 버전을 허용하고 `bundled`는 고정된 Node 배포본의 npm을 뜻합니다. omp·agy·grok·cursor-agent는 스스로 업데이트하므로 버전을 고정하지 않고 모든 호스트에서 조회만 합니다. 설치는 운영자가 공식 설치 스크립트로 합니다(`curl -fsSL https://omp.sh/install | sh -s -- --binary`, `curl -fsSL https://antigravity.google/cli/install.sh | bash`, `curl -fsSL https://x.ai/cli/install.sh | bash`, `curl https://cursor.com/install -fsS | bash`). `dv host check`의 `auth`에 각 에이전트의 준비 확인 결과가 나옵니다. Go는 `~/.local/go/go`(GOROOT), GOPATH는 `~/.local/go`, Node와 npm global은 `~/node`, 나머지 설치 대상은 `~/.local/bin`입니다. Codex와 Devin은 조회만 합니다. apt 도구도 설치하지 않고 없으면 운영자가 실행할 `sudo apt-get install ...`을 출력합니다.
 
 `check`는 각 도구의 `ok` / `missing` / `wrong-version`, 실제 버전과 실행 경로, gh·codex·claude·devin 로그인 상태를 보여 줍니다. `--json`은 `tools[].login/ssh`, `auth`, `codex` 객체로 같은 결과를 냅니다. `watcher`에는 살아 있는 로컬 감시자가 시작할 때 읽은 `commit`, 그 체크아웃의 `origin_main`, `current` / `outdated` / `unknown` / `not-running` 상태가 나옵니다. Git 비교는 마지막 fetch 기준입니다. 조회는 사용자 설정을 바꾸지 않으며 drift가 있어도 종료 코드 0입니다. 모든 `dv` 호출에 적용되는 아래 자동 갱신은 실행될 수 있습니다. 조회 자체 실패나 요청한 probe 실패는 1입니다. 오래된 체크아웃을 가리킬 수 있는 gitleaks 심볼릭 링크는 버전이 같아도 `wrong-version`과 `reason=symlink`로 표시합니다.
 
@@ -135,7 +155,7 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 업데이트 충돌은 worktree에 남기고 해당 에이전트에 `dv send`를 한 번 요청합니다. 요청은 `stack-conflict.sent`, 전달 결과는 `stack-conflict.log`에 보존합니다. 에이전트가 충돌을 해결·커밋·push하면 큐가 새 head의 CI를 확인하여 이어갑니다. 전달 실패는 자동으로 중복 전송하지 않으므로 로그를 확인해야 합니다. dirty worktree, API 오류, 비어 있거나 실패한 CI는 병합하지 않으며 기존 완료·리뷰 기록과 원격 브랜치를 보존합니다.
 
-Codex 기본 모드는 `DV_CODEX_MODE=auto`입니다. 실행 호스트에 연결 가능한 App Server가 있으면 사용하고, 없으면 exec를 선택합니다. `DV_CODEX_MODE=exec` 또는 `--mode exec`는 `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal`/`tui` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Claude·Devin 기본값은 goal입니다. auto 제출은 큐에서도 auto를 보존해 실제 실행 호스트에서 backend를 선택합니다.
+Codex 기본 모드는 `DV_CODEX_MODE=auto`입니다. 실행 호스트에 연결 가능한 App Server가 있으면 사용하고, 없으면 exec를 선택합니다. `DV_CODEX_MODE=exec` 또는 `--mode exec`는 `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal`/`tui` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Codex 외 에이전트는 goal만 씁니다. auto 제출은 큐에서도 auto를 보존해 실제 실행 호스트에서 backend를 선택합니다.
 
 goal과 사용자 지정 실행기는 herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 포커스를 바꾸지 않고 `dv-<ISSUE>` workspace에서 실행합니다(Codex hooks 유지). send·status·clean/land는 기록된 backend를 따르며 herdr 로그는 done/clean 시 화면을 저장합니다. 미설치 또는 `DV_HERDR=0`이면 tmux를 사용하고, 기존 backend 없는 이슈도 tmux로 처리합니다. herdr 시작 오류는 상태를 보존하고 실패를 알립니다.
 
@@ -155,7 +175,7 @@ Claude 기본 실행은 먼저 `~/.claude.json`의 `projects[worktree 경로].ha
 
 선택한 프로필의 `.claude.json`에서 `hasCompletedOnboarding`, `settings.json`에서 `skipDangerousModePermissionPrompt`가 모두 true여야 Claude를 띄웁니다. 환경 변수가 없거나 비어 있으면 각각 `~/.claude.json`과 `~/.claude/settings.json`을 읽습니다. 남은 온보딩이 있으면 `start-failed` 상태와 실패 이벤트를 남기며 화면에 키를 보내지 않습니다. 같은 `CLAUDE_CONFIG_DIR` 환경에서 `claude --dangerously-skip-permissions`를 한 번 대화형으로 실행해 테마·보안 안내·바이패스 경고를 끝내고 `dv host check`로 확인하세요. dv는 온보딩 플래그를 대신 설정하지 않습니다. `DV_AGENT_CMD_claude`로 전체 명령을 지정하면 이 준비 절차도 해당 명령에서 관리합니다.
 
-`DV_AGENT_QUESTIONS=sion`이 기본값이며 herdr에서 Codex goal의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 켜 둡니다. `DV_AGENT_QUESTIONS=off`이면 두 에이전트의 질문 도구를 끕니다. 질문 감시자가 없는 tmux와 백그라운드 exec에서는 항상 질문 도구를 끕니다. exec는 브리프의 지침에 따라 결정과 이유를 보고서에 기록합니다. `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 질문 도구 설정도 해당 명령에서 정합니다.
+`DV_AGENT_QUESTIONS=sion`이 기본값이며 herdr에서 Codex goal의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 켜 둡니다. `DV_AGENT_QUESTIONS=off`이면 두 에이전트의 질문 도구를 끕니다. 질문 감시자가 없는 tmux와 백그라운드 exec에서는 항상 질문 도구를 끕니다. exec는 브리프의 지침에 따라 결정과 이유를 보고서에 기록합니다. `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 질문 도구 설정도 해당 명령에서 정합니다. Devin·omp·agy·grok·cursor는 질문 도구를 끄지 않습니다. herdr에서는 아래처럼 `blocked`가 지속되면 화면으로 알리고, 감시자가 없는 tmux에서는 정체 감지로만 드러납니다.
 
 에이전트는 브리프 안의 작거나 되돌릴 수 있는 선택을 직접 결정하고 보고서의 "결정"에 이유를 남깁니다. 설계 방향·범위·사용자에게 보이는 동작·데이터 형식처럼 결과를 바꾸는 선택만 시온에게 물으며, 선택지 2–3개와 추천안을 제시합니다. Codex의 `request_user_input_async`는 질문을 열어 둔 채 작업을 계속할 수 있으므로, 답에 의존하지 않는 작업은 진행합니다.
 
@@ -168,7 +188,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv submit REPO ISSUE SLUG --brief FILE [--agent AGENT] [--base BRANCH] [--mode MODE]` | 관리자에게 제출, 호스트는 입찰로 결정 |
 | `dv bid --json [--repo REPO] [--agent AGENT]` | 수용량·부하·메모리·디스크·clone·로그인 조회, 상태 변경 없음 |
 | `dv queue [ISSUE] [--json]` / `dv cancel ISSUE` | 관리자 배정 상태 조회 / 미배정 제출 취소 |
-| `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치·상태 및 선택한 backend 생성 |
+| `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin\|omp\|agy\|grok\|cursor] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치·상태 및 선택한 backend 생성 |
 | `dv done ISSUE [--note TEXT]` | head·변경 파일 수·보고서 경로·완료 이벤트 |
 | `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작. 제목은 HEAD 커밋 제목. 상태 폴더의 `pr.md`(공개용 본문)를 그대로 쓰고, 없으면 짧은 보고서 요약으로 만든다 |
 | `dv polish ISSUE` | PR 본문 퇴고·코드/URL 보존 검증 후 본문만 갱신 |
@@ -287,7 +307,9 @@ devflow는 PR 생성, QA finding 등록, 입찰 snapshot 변경, 확인된 병�
 
 시온은 lina-os에서 `dv submit ~/code/my-app APP-42 fix-save --brief /path/brief.md`를 실행합니다. `DV_MANAGER_HOST` 기본값은 lina-os이며, 다른 호스트의 submit은 기존 SSH 연결로 관리자에게 브리프 내용을 전송합니다. 개발 호스트에 관리자 방향 SSH 키가 없어도 관리자에서 제출하면 됩니다. `DV_HOSTS`에는 배정 가능한 SSH 별칭을 적고, 모든 호스트에 같은 버전의 dv를 둡니다. 원격 저장소가 있는 로컬 경로는 origin URL로 전달합니다. 각 호스트는 `$DV_REPO_ROOT`(기본 `~/code`)의 같은 이름 clone을 확인하고, 없으면 낙찰 후 clone합니다. 이름이 같은 다른 origin은 덮어쓰지 않습니다. 원격 없는 경로는 해당 경로가 있는 호스트만 입찰합니다.
 
-`dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 학습한 상한에 적용하는 선택적 upper bound이며 기본값은 비어 있습니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`를 사용하며, 다른 CLI는 `DV_AGENT_READY_codex/claude/devin`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
+`--agent` 없이 제출하면 브리프의 줄 하나로 기본 에이전트를 고릅니다. `Route: writing`(문서·이슈·PR 글·조사처럼 글만 쓰는 작업)은 `DV_ROUTE_WRITING`(기본 agy), `Route: small`(한 패키지, 약 200줄 이하 예상)은 `DV_ROUTE_SMALL`(기본 omp)로 보냅니다. 줄이 없거나 `Route: default`이면 `DV_AGENT`입니다. `--agent`와 Codex 전용 `--mode auto|exec`가 항상 우선하며, 대상 값을 비우면(`DV_ROUTE_SMALL=`) 그 경로를 끕니다. 다른 값은 오타로 보고 제출을 거절합니다. 선택 결과는 stderr에 한 줄 남기고 제출 기록의 `agent`에 저장됩니다.
+
+`dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 학습한 상한에 적용하는 선택적 upper bound이며 기본값은 비어 있습니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`, agy·grok·cursor `models`, omp provider·키 설정을 사용하며([에이전트](#에이전트)), 다른 CLI는 `DV_AGENT_READY_<agent>`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
 
 자동 채우기를 활성화한 관리자는 기존 watcher tick마다 각 호스트의 active jobs,
 load5, available memory를 수집합니다. 호스트는 `$DV_STATE/.host-capacity/samples.jsonl`에
@@ -320,7 +342,7 @@ load5, available memory를 수집합니다. 호스트는 `$DV_STATE/.host-capaci
 learned/effective slots를 덧붙입니다. 모델이나 사용 가능한 슬롯이 바뀌면
 `bid-changed` 이벤트가 refill을 깨우며, 단순한 샘플 추가는 GitHub 재조회를 일으키지 않습니다.
 
-점수는 `100 × 빈 자리/max(1, 수용량) − 20 × load5/코어 + min(64, 남은 메모리/1024) + clone 보너스 20 − 디스크 감점`입니다. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 순으로 진행하며, 점수가 높아도 뒤 그룹이 앞 그룹을 추월하지 않습니다. 같은 그룹에서는 높은 점수가 먼저이고, 기본 관리자(lina-os)에서 동점 순서는 **hx-linux → amd-linux → go2-linux → lina-os → gos-linux**입니다(준 10-20 결정). 조회는 각 그룹 안에서 `DV_HOSTS`에 적힌 순서를 따릅니다. hx·amd·go2·gos 별칭에도 같은 우선순위를 적용합니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 쓰는 최후 후보입니다. 낙찰 호스트는 잠금 안에서 수용량과 디스크를 다시 확인하고 `dv start`를 실행합니다. 직접 `dv start`와 task 시작도 같은 admission 잠금 아래 현재 부하·메모리 슬롯을 재검사합니다.
+점수는 `100 × 빈 자리/max(1, 수용량) − 20 × load5/코어 − 100 × max(0, load5/코어 − 1.5) + min(64, 남은 메모리/1024) + clone 보너스 20 − 디스크 감점`입니다. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 순으로 진행하며, 점수가 높아도 뒤 그룹이 앞 그룹을 추월하지 않습니다. 같은 그룹에서는 높은 점수가 먼저이고, 기본 관리자(lina-os)에서 동점 순서는 **hx-linux → amd-linux → go2-linux → lina-os → gos-linux**입니다(준 10-20 결정). 조회는 각 그룹 안에서 `DV_HOSTS`에 적힌 순서를 따릅니다. hx·amd·go2·gos 별칭에도 같은 우선순위를 적용합니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 쓰는 최후 후보입니다. 낙찰 호스트는 잠금 안에서 수용량과 디스크를 다시 확인하고 `dv start`를 실행합니다. 직접 `dv start`와 task 시작도 같은 admission 잠금 아래 현재 부하·메모리 슬롯을 재검사합니다.
 
 `disk_available_gb`는 `DV_WORK`가 있는 파일시스템의 남은 GiB이며 `cache_disk_available_gb`는 Go 캐시 파일시스템의 남은 GiB입니다. 캐시 경로는 `GOCACHE`를 우선하고 비어 있으면 `go env GOCACHE`로 구합니다. 아직 없는 경로는 가장 가까운 기존 상위 디렉터리를 조회하며 생성하지 않습니다. 두 디스크 중 하나라도 `DV_MIN_DISK_GB`(기본 15) 미만이면 `low disk`, 조회 실패는 `disk unavailable`로 거절합니다. 디스크 감점은 더 작은 남은 용량을 기준으로 `max(0, 20 × (2 × 최소 용량 − 남은 용량) / 최소 용량)`이며, 기본값에서는 양쪽 모두 30GiB 이상이면 0점, 작은 쪽이 15GiB이면 20점입니다. 최소 용량 0은 용량 거절·감점을 끄지만 조회 실패는 계속 거절합니다. Go 미설치·`GOCACHE=off` 등으로 캐시 경로를 구할 수 없으면 캐시 측정은 null이고 작업 디스크만 판단합니다. `dv host check`는 두 경로·남은 용량과 Go 캐시, `~/.cache` 전체 크기를 표시합니다. JSON에는 `work_root`, `go_cache_path`, 두 디스크 측정값, `cache_sizes_kb.go_build`와 `cache_sizes_kb.total`(KiB, 각각 Go 캐시와 `~/.cache`)이 추가되며 측정 실패는 null입니다.
 
@@ -369,7 +391,7 @@ Codex 0.163의 폴더 온보딩은 CLI 신뢰 덮어쓰기만으로 생략되지
 
 비로그인 SSH와 오래된 터미널 서버에서도 인증을 준비하도록, Codex 입찰·시작·실제 에이전트 실행 때 호스트의 `DV_CODEX_ENV_FILE`을 읽습니다. 기본값은 `~/.opencodex/codex-auth-env.sh`이며 다른 인증을 쓰면 운영자가 경로를 지정하거나 빈 값으로 끌 수 있습니다. 이 파일은 신뢰할 수 있는 셸 코드여야 합니다. 활성 `model_provider`의 `env_key`가 비어 있으면 `login status`가 성공해도 입찰과 시작을 거절합니다. 파일에서 내보낸 인증 값은 에이전트에 상속하며 pane 명령이나 상태 파일에 넣지 않습니다. 터미널 서버 환경에만 의존하지 않도록 인증 변수는 이 파일에서 준비하세요.
 
-goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. `dv send`로 재시작한 goal은 이전 완료 기록과 별개로 새 `dv done`이 필요합니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리와 첫 입력인 `DV_AGENT_INSTRUCTION`을 받습니다. 사용자 지정 실행기와 이전 버전의 터미널 exec 작업은 기존 실행·완료·revive 동작을 유지합니다.
+goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. `dv send`로 재시작한 goal은 이전 완료 기록과 별개로 새 `dv done`이 필요합니다. `DV_AGENT_CMD_<agent>`(codex·claude·devin·omp·agy·grok·cursor)는 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리와 첫 입력인 `DV_AGENT_INSTRUCTION`을 받습니다. 사용자 지정 실행기와 이전 버전의 터미널 exec 작업은 기존 실행·완료·revive 동작을 유지합니다.
 
 ## Codex App Server
 

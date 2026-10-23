@@ -9,7 +9,7 @@ Linear 이슈를 정리한 뒤 개발 호스트의 로컬 저장소에서 이슈
 
 herdr가 설치되어 있으면 `dv start`는 포커스를 유지하며 `dv-<ISSUE>` workspace에서 에이전트를 직접 실행하고(Codex hooks 유지), send·status·clean/land는 meta의 backend를 따릅니다(로그는 done/clean 화면 저장, `DV_HERDR=0`·미설치·backend 없는 기존 이슈는 tmux, herdr 시작 실패 시 상태 보존).
 
-1. 구체적인 요구와 완료 기준을 brief 파일로 쓰고 `dv start <repo> <ISSUE> <slug> --brief FILE`로 시작합니다. Codex 기본은 goal입니다. 필요하면 `--agent claude|devin` 또는 Codex `--mode exec`, `--base BRANCH`를 선택합니다.
+1. 구체적인 요구와 완료 기준을 brief 파일로 쓰고 `dv start <repo> <ISSUE> <slug> --brief FILE`로 시작합니다. Codex 기본은 goal입니다. 필요하면 `--agent claude|devin|omp|agy|grok|cursor` 또는 Codex `--mode exec`, `--base BRANCH`를 선택합니다. `dv submit`은 `--agent` 없이 brief의 `Route: writing`이면 agy, `Route: small`이면 omp로 보냅니다(`DV_ROUTE_WRITING`·`DV_ROUTE_SMALL`, 비우면 끔).
 2. 에이전트는 실패 시험을 먼저 남기고 개발·관련 시험·커밋·보고서를 마칩니다. GitHub면 `dv pr`, 마지막에 `dv done`을 호출합니다.
 3. 감시 호스트의 `dv-kick`은 이벤트를 파일에 쓰기만 합니다. `dv-watch`가 3초마다 로컬 큐를 읽고 시온 작업자를 최대 4개 실행합니다. 30분마다 상태 조회로 유실된 done 이벤트만 보완합니다(자기 호스트는 ssh 없이). 모델 폴링을 하지 않습니다. 10-19부터 감시 호스트는 lina-os(systemd user `dev.devflow.watch.service`, `DV_KICK_HOST=lina-os`)입니다.
 4. GitHub 작업자는 `dv pr-wait <ISSUE> --foreground`의 CI와 현재 head의 최신 Codex 리뷰를 읽습니다. P0·P1을 수정·시험·커밋·push하고 새 리뷰를 기다리는 루프를 반복합니다. 첫 리뷰는 PR-open 자동 트리거, 이후는 devflow의 `@codex review` 댓글입니다. `DV_REVIEW_BOTS=codex`, `DV_REVIEW_ROUNDS=4`가 기본입니다.
