@@ -71,6 +71,7 @@ fi
 : "${DV_LAND_METHOD:=}" # GitHub: empty = auto; squash, merge or rebase
 : "${DV_TEST_CMD:=}" # required for local land; .devflow may supply it
 : "${DV_REVIEW_WAIT:=300}" # maximum seconds after checks for bot reviews
+: "${DV_LAND_CHECK:=}" # optional executable run before a GitHub merge: <owner/repo> <pr> <head>; non-zero refuses land
 : "${DV_REVIEW_BOTS:=codex}" # Codex review author regex
 : "${DV_REVIEW_ROUNDS:=4}" # maximum reviewed heads before unresolved P0/P1 block
 : "${DV_POLL_INTERVAL:=10}" # PR review interval
