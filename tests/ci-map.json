@@ -4,7 +4,7 @@
     "lib/appserver-transport.sh": ["appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*"],
     "lib/appserver.sh": ["appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*", "status_cached_many", "status_cache_*", "recovery_sweep_progress"],
     "lib/autofill.sh": ["autofill_*"],
-    "lib/bidding.sh": ["bid_*", "award_*", "submit_*", "goal_exit_*", "admission_*", "disk_bid", "disk_award", "manager_*", "watch_stuck*", "watch_status_*", "recovery_sweep_progress", "capacity_*", "learned_*", "autofill_*"],
+    "lib/bidding.sh": ["bid_*", "award_*", "submit_*", "goal_exit_*", "admission_*", "disk_bid", "disk_award", "manager_*", "watch_stuck*", "watch_status_*", "recovery_sweep_progress", "qa_*", "capacity_*", "learned_*", "autofill_*"],
     "lib/capacity.sh": ["capacity_*", "appserver_*capacity*", "exec_capacity", "exec_rate", "task_capacity", "revive_*capacity*", "qa_recovered_capacity"],
     "lib/claude.sh": ["claude_*", "question_claude*", "symlink_claude*", "capacity_claude", "task_claude", "qa_fresh_claude"],
     "lib/codex-exec.sh": ["exec_*", "capacity_exec_*", "task_exec_*", "send_branch_exec", "symlink_exec_send", "clean_resume_*exec", "pr_worker_*exec*", "revive_*"],

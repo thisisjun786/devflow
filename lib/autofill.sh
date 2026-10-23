@@ -273,7 +273,7 @@ autofill_tick() (
 )
 autofill_event() {
   case "$(jq -r .kind <<< "$1")" in
-    done|landed|failed|canceled|cancelled|bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|issue-labeled|issue-unlabeled|pr-opened|pr-closed)
+    done|landed|merged|qa-repository|failed|canceled|cancelled|bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|issue-labeled|issue-unlabeled|pr-opened|pr-closed)
       autofill_tick ;;
   esac
 }

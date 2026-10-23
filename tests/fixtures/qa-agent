@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-mkdir "$CASE_DIR/qa-active" || { touch "$CASE_DIR/qa-overlap"; exit 1; }
-trap 'rmdir "$CASE_DIR/qa-active"' EXIT
+qa_active_dir="$CASE_DIR/qa-active-$(jq -r .repository "$DV_STATE/$DV_ISSUE/meta" | tr / -)"
+mkdir "$qa_active_dir" || { touch "$CASE_DIR/qa-overlap"; exit 1; }
+trap 'rmdir "$qa_active_dir"' EXIT
 jq -cn --args '{args:$ARGS.positional}' -- "$@" > "$CASE_DIR/qa-command"
 jq -c '{head,issue,worktree}' "$DV_STATE/$DV_ISSUE/meta" >> "$CASE_DIR/qa-runs"
 if [ "${DV_QA_CAPACITY:-0}" = always ] || { [ "${DV_QA_CAPACITY:-0}" = 1 ] && [ ! -f "$CASE_DIR/qa-capacity-seen" ]; }; then

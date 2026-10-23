@@ -83,7 +83,7 @@ fi
 : "${DV_WATCH_INTERVAL:=3}" # local queue read interval, seconds
 : "${DV_STATUS_TIMEOUT:=10}" # background per-host status/reconcile deadline, seconds
 : "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
-: "${DV_MAX_WORKERS:=4}" # 1..8 ordinary/fallback/QA workers; managers have separate slots
+: "${DV_MAX_WORKERS:=4}" # 1..8 ordinary/fallback workers; QA uses host DV_MAX_JOBS slots
 : "${DV_RECONCILE_INTERVAL:=1800}" # status safety net seconds; capped at min(DV_STALL_AFTER, 60)
 : "${DV_METRICS_INTERVAL:=60}" # file/event activity sampling by dv-watch, seconds
 : "${DV_PULL_HOSTS=}" # watcher only: remote dev hosts whose kick queue it follows (dv-kick-pull)
@@ -115,7 +115,9 @@ fi
 : "${DV_AGENT_READY_cursor:=}"
 # DV_CONFIG: config file override (default ~/.config/devflow/config.sh).
 # DV_TEST_TMP: test temporary root (default TMPDIR or /tmp); no live agents/network.
-: "${DV_QA:=0}" # 1: real-use QA after landed; .devflow on merged base may opt in/out
+: "${DV_QA:=0}" # 1: poll enabled manager repositories for base merges; literal .devflow overrides
 : "${DV_QA_AGENT:=codex}" # codex exec or claude (fresh session)
 : "${DV_QA_AGENT_CMD:=}" # optional command receiving the QA prompt path
+: "${DV_QA_COALESCE:=600}" # quiet seconds before bidding one QA for accumulated merges
+: "${DV_QA_BASE:=}" # QA base; empty uses the registered repository's remote default
 : "${DV_MANAGER_LAST=1}" # 1: the manager host (lina-os) bids only after work hosts; 0: it competes on score like the others

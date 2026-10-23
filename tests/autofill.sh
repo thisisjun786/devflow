@@ -259,6 +259,15 @@ case_autofill_event_cadence() {
   autofill_event '{"kind":"issue-closed"}'
   test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 4
 }
+case_autofill_repository_events() {
+  autofill_fixture; autofill_issues
+  # The shared GitHub feed wakes both QA and autofill after repository changes.
+  autofill_event '{"kind":"qa-repository"}'
+  test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 2
+  printf '1\n' > "$CASE_DIR/autofill/free"
+  autofill_event '{"kind":"merged"}'
+  test "$(wc -l < "$CASE_DIR/autofill/awards" | tr -d ' ')" = 3
+}
 case_autofill_cancel_event() {
   autofill_fixture; autofill_issues
   touch "$CASE_DIR/autofill/reject"

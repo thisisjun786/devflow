@@ -2461,6 +2461,8 @@ source "$ROOT/tests/codex-exec-review.sh"
 source "$ROOT/tests/portability.sh"
 # shellcheck source=tests/qa.sh
 source "$ROOT/tests/qa.sh"
+# shellcheck source=tests/qa-merge.sh
+source "$ROOT/tests/qa-merge.sh"
 # shellcheck source=tests/metrics.sh
 source "$ROOT/tests/metrics.sh"
 # shellcheck source=tests/pr-worker.sh
@@ -2690,7 +2692,7 @@ registered_cases() {
   printf '%s\n' \
   learned_percentile learned_active_floor learned_window learned_readonly learned_idle learned_seeds learned_unknown_resources \
   capacity_load capacity_memory capacity_award capacity_start capacity_headroom capacity_task capacity_launch_reservation capacity_probe_cleanup \
-  autofill_submit autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence autofill_cancel_event autofill_label_event qa_merge_commit_event \
+  autofill_submit autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence autofill_repository_events autofill_cancel_event autofill_label_event qa_merge_commit_event \
   status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
   task_tmux_done_failed_status task_herdr_done_failed_status task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
   config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
@@ -2734,6 +2736,8 @@ registered_cases() {
   land_squash_only land_merge_only land_rebase_only land_prefer_squash land_prefer_merge land_override_env land_override_repo land_config_stdout land_policy_gh_repo land_policy_pr_url land_override_precedence land_no_methods land_invalid_method land_disallowed_method land_repo_failure land_config_failure land_head_mismatch land_unconfirmed \
   pr_fallback_body pr_fallback_summary pr_fallback_private_paths pr_fallback_private_hosts pr_fallback_public_tokens pr_fallback_missing pr_fallback_bounded pr_fallback_private_only pr_head_title pr_prepared_body pr_legacy_body pr_patch_title pr_patch_body polish_unreachable polish_unreachable_timeout \
   runner_contract runner_selection runner_mapping
+  printf '%s\n' \
+    qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter
 }
 
 runner_error() { printf 'tests/run.sh: %s\n' "$*" >&2; return 2; }

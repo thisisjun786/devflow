@@ -36,6 +36,7 @@ disk_settings
 [[ "$DV_METRICS_INTERVAL" =~ ^[1-9][0-9]*$ ]] || fail 'DV_METRICS_INTERVAL must be positive seconds'
 [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be a positive integer'
 [[ "$DV_STATUS_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STATUS_TIMEOUT must be positive seconds'
+[[ "$DV_QA_COALESCE" =~ ^[0-9]+$ ]] || fail 'DV_QA_COALESCE must be nonnegative seconds'
 # Share the existing status safety net; do not leave a ten-minute stall waiting
 # for the old thirty-minute reconciliation interval. No extra process needed.
 stall_scan_interval=60
@@ -243,6 +244,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   qa_recover
   pulls
   host_capacity_tick >> "$DV_HOME/autofill.log" 2>&1 || true
+  qa_github_events >> "$DV_HOME/qa.log" 2>&1
   if [ $(( $(now) - last_disk )) -ge "$disk_tick" ]; then
     disk_start
     last_disk=$(now)
@@ -254,6 +256,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
   reconcile_start
   # Frequent stall scans must not shorten the self-update safety interval.
   if [ $(( $(now) - last_scan )) -ge "$DV_RECONCILE_INTERVAL" ]; then
+    qa_scan >> "$DV_HOME/qa.log" 2>&1
     last_scan=$(now); update_requested=1; autofill_sweep=1
   fi
   # Read one complete line at a time. Cursor advances only after dispatch or deduplication.
@@ -267,17 +270,18 @@ while [ ! -e "$DV_HOME/stop" ]; do
     if ! id=$(printf '%s\n' "$line" | jq -er '.id | select(type=="string")'); then
       printf 'invalid queue line %s\n' "$((cursor + 1))" >> "$DV_HOME/watch.log"
     elif ! grep -Fxq -- "$id" "$DV_HOME/seen" && ! pending_event "$id"; then
+      case "$(jq -r .kind <<< "$line")" in
+        qa-repository|merged|landed|done|failed|submitted|bid-changed|issue-opened|issue-closed)
+          if ! qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1; then stall_reason='qa_enqueue failed'; break; fi ;;
+      esac
       # Existing queue receipts release slots before filling them again.
       if ! bid_event "$line" >> "$DV_HOME/schedule.log" 2>&1; then stall_reason='bid_event failed'; break; fi
-      if [ "$(jq -r .kind <<< "$line")" = landed ]; then
-        if ! qa_enqueue "$line" >> "$DV_HOME/qa.log" 2>&1; then stall_reason='qa_enqueue failed'; break; fi
-      fi
       autofill_event "$line" >> "$DV_HOME/autofill.log" 2>&1 || true
       # Stack candidates are discovered by the bounded host reconciliation.
       # Never repeat an inline fleet status scan for each done/landed event.
       case "$(printf '%s\n' "$line" | jq -r .kind)" in done|landed) reconcile_requested=1 ;; esac
       case "$(jq -r .kind <<< "$line")" in
-      submitted|bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|issue-labeled|issue-unlabeled|pr-opened|pr-closed)
+      qa-repository|submitted|bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|issue-labeled|issue-unlabeled|pr-opened|pr-closed)
         metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
         cursor=$((cursor + 1)); printf '%s\n' "$cursor" > "$DV_HOME/cursor"

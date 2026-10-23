@@ -20,4 +20,4 @@
 - base 직접 push·force push·원격 브랜치 삭제 금지. 개발 단계 리뷰 루프와 추가 하네스를 만들지 마세요.
 - meta.kind가 qa인 작업은 개발 PR을 만들거나 review/land/send하지 마세요. done이면 QA 보고서와 merged PR의 요약을 확인하세요. `DV_AUTOFILL_REPOS`에 포함된 저장소의 qa 이슈는 watcher가 자동 제출하므로 중복 제출하지 마세요. 비활성 저장소의 현재 milestone에서 열린 qa 이슈는 정상 개발 queue에 넣으세요. blocked이면 로그와 보존된 증거를 확인하세요. 같은 QA를 자동 재실행하지 마세요.
 - 현재 milestone의 열린 qa 이슈를 새 작업보다 먼저 선택하세요. qa 이슈가 열려 있거나 해당 milestone QA가 실행/대기 중이면 milestone 완료 처리를 보류하되, 의존성이 없는 다음 milestone 코드의 시작은 막지 마세요. GitHub에서 label과 milestone을 다시 읽고 판단하세요. `stalled`의 reason이 `fleet-underused`이면 관리자가 `dv queue --summary`와 host 입찰을 확인해 처리하고 owner에게 알리지 마세요.
-- QA 대기는 `dv qa status --json`으로 확인하세요. 출력에서 해당 저장소만 사용하세요. QA worker는 watcher 호스트에서 실행되며 다음 milestone 판단에는 `dv status --json`의 qa 작업 보고서도 읽으세요.
+- QA 대기는 `dv qa status --json`으로 확인하세요. 출력에서 해당 저장소만 사용하세요. QA worker는 `dv queue --json`에 기록된 낙찰 호스트에서 실행됩니다. 다음 milestone 판단에는 해당 호스트의 `dv status --json`과 qa 작업 보고서도 읽으세요.
