@@ -290,6 +290,7 @@ case_pr_public_body() {
   needs_tmux; repo remote remote; start T-41; wait_done T-41
   printf 'Adds the thing.\n\nCloses #41\n' > "$DV_STATE/T-41/pr.md"
   DV_POLISH=0 dv pr T-41
+  wait_pr_ready T-41
   cmp "$DV_STATE/T-41/pr.md" "$GH_STUB_DIR/live-body"
   if grep -q -- "$DV_STATE" "$GH_STUB_DIR/live-body"; then return 1; fi
 }
