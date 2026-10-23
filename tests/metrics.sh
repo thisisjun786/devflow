@@ -237,9 +237,17 @@ metrics_slow_fixture() {
   wait_file "$CASE_DIR/metrics-ssh.started"
 }
 metrics_fast_event() {
-  local id=$1
+  local id=$1 held deadline=$((SECONDS + DV_BID_TIMEOUT)) state
+  held=$(head -n 1 "$CASE_DIR/metrics-ssh.started")
   dv-kick question FAST-1 progress test-host h "$id"
-  for _ in {1..20}; do
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    # Prove the queue advances while the original SSH call is still held.
+    # A fixed two-second wait also measured watcher restart and host load.
+    state=$(ps -p "$held" -o stat= 2>/dev/null | tr -d ' ') || state=''
+    if [ -z "$state" ] || [[ "$state" = Z* ]] || [ -f "$CASE_DIR/metrics-release" ]; then
+      printf 'Metrics request ended before queue progress was observed\n' >&2
+      return 1
+    fi
     if grep -Fxq "$id" "$DV_HOME/seen" 2>/dev/null; then return 0; fi
     sleep 0.1
   done
@@ -278,6 +286,13 @@ case_metrics_collector_restart() {
   test "$(cat "$DV_HOME/metrics.pid")" = "$collector"
   test "$(wc -l < "$CASE_DIR/metrics-ssh.started" | tr -d ' ')" = 1
   metrics_stop_watch
+}
+case_metrics_restart_slow_start() {
+  cat > "$CASE_DIR/metrics-start-env" <<'ENV'
+case "${0##*/}" in dv-watch) sleep 3 ;; esac
+ENV
+  export BASH_ENV="$CASE_DIR/metrics-start-env"
+  case_metrics_collector_restart
 }
 case_metrics_exec() {
   case_exec_retry

@@ -2320,6 +2320,7 @@ case_runner_mapping() {
 }
 registered_cases() {
   printf '%s\n' \
+  metrics_restart_slow_start \
   award_timeout_slow_success \
   capacity_appserver_slow_work \
   question_goal_start_ack \
