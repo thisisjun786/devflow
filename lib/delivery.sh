@@ -638,6 +638,12 @@ cmd_land() {
     jq -e --arg head "$head" --arg base "$BASE" '.headRefOid==$head and .baseRefName==$base and .state=="OPEN"' "$S/land-checks.json" >/dev/null || fail 'PR head/base/state mismatch'
     checks_green "$S/land-checks.json" || fail 'all PR checks must be successful (empty, skipped, pending and failed checks refuse land)'
     review_require_clean "$pr" "$S/land-checks.json" "$head"
+    # Optional operator gate (e.g. "did the PR do what its issue asks").
+    # Called as: $DV_LAND_CHECK <owner/repo> <pr-number> <head>; non-zero refuses land.
+    if [ -n "${DV_LAND_CHECK:-}" ]; then
+      local land_repo=${pr#https://github.com/}; land_repo=${land_repo%/pull/*}
+      "$DV_LAND_CHECK" "$land_repo" "${pr##*/}" "$head" || fail 'land check refused this PR; see the PR comment'
+    fi
     method=$(github_land_method) || return 1
     (cd "$WT" && gh pr merge "$pr" "--$method" --match-head-commit "$head")
     (cd "$WT" && gh pr view "$pr" --json state,headRefOid) > "$S/land-result.json"
