@@ -270,6 +270,56 @@ case_code_tmux_failed_status() { terminal_failed_status code tmux; }
 case_code_herdr_failed_status() { terminal_failed_status code herdr; }
 case_code_tmux_failed_stall() { terminal_failed_status code tmux stall; }
 case_code_herdr_failed_stall() { terminal_failed_status code herdr stall; }
+task_done_failed_status() {
+  local backend=$1 s="$DV_STATE/TK-1" head wt exit_code file
+  if [ "$backend" = tmux ]; then needs_tmux; else export DV_HERDR=1; fi
+  task_setup
+  export DV_TASK_TEST_WAIT_AFTER_DONE=1 DV_TASK_TEST_EXIT_AFTER_DONE=7
+  task_start
+  wait_file "$s/after-done"
+  head=$(jq -r .head "$s/done.json")
+  wt=$(jq -r .worktree "$s/meta")
+  cp "$s/done.json" "$CASE_DIR/saved-done"
+  cp -R "$s/task-snapshots/$head" "$CASE_DIR/saved-snapshot"
+  # A stale exit marker must not override the still-running terminal.
+  printf '7\n' > "$s/agent.exit"
+  dv status TK-1 --json | jq -e '.[0] | .status=="done" and .alive and .agent_status=="unknown" and (.agent_dead|not) and .agent_exit_code==null'
+  rm "$s/agent.exit"
+  touch "$s/release"
+  task_terminal_wait "$backend"
+  test "$(cat "$s/agent.exit")" = 7
+  for file in meta events.log report.md; do cp "$s/$file" "$CASE_DIR/saved-$file"; done
+  dv status TK-1 --json > "$CASE_DIR/failed-status.json"
+  cat "$CASE_DIR/failed-status.json"
+  jq -e --arg head "$head" '.[0] | .status=="done" and .done_head==$head and .agent_status=="failed" and .agent_dead and .agent_exit_code==7' "$CASE_DIR/failed-status.json"
+  dv status TK-1 | awk -F '\t' '$2=="done" && $8=="agent=failed" && $10=="exit=7" { found=1 } END { exit !found }'
+  if [ "$backend" = herdr ]; then
+    jq -e '.[0].alive' "$CASE_DIR/failed-status.json"
+    touch "$CASE_DIR/herdr/w-TK-1/missing-pane"
+    dv status TK-1 --json | jq -e '.[0] | (.alive|not) and .agent_status=="failed" and .agent_exit_code==7'
+    rm "$CASE_DIR/herdr/w-TK-1/missing-pane"
+    printf 'agent get\n' > "$CASE_DIR/herdr/fail"
+    dv status TK-1 --json | jq -e '.[0] | .status=="done" and .agent_status=="unknown" and (.agent_dead|not) and .agent_exit_code==null'
+    rm "$CASE_DIR/herdr/fail"
+  else
+    jq -e '.[0] | (.alive|not) and (.tmux|not)' "$CASE_DIR/failed-status.json"
+  fi
+  if dv land TK-1 --checked "$head" > "$CASE_DIR/land.log" 2>&1; then return 1; fi
+  grep -F 'task terminal agent did not exit successfully' "$CASE_DIR/land.log"
+  test ! -e "$CASE_DIR/destination/TK-1"
+  cmp "$s/done.json" "$CASE_DIR/saved-done"
+  diff -r "$s/task-snapshots/$head" "$CASE_DIR/saved-snapshot"
+  diff -r "$wt/out" "$CASE_DIR/saved-snapshot/out"
+  for file in meta events.log report.md; do cmp "$s/$file" "$CASE_DIR/saved-$file"; done
+  # Absent, malformed and successful exits are not failed executions.
+  for exit_code in missing '' invalid 0; do
+    if [ "$exit_code" = missing ]; then rm "$s/agent.exit"
+    else printf '%s\n' "$exit_code" > "$s/agent.exit"; fi
+    dv status TK-1 --json | jq -e '.[0] | .status=="done" and .agent_status=="unknown" and (.agent_dead|not) and .agent_exit_code==null'
+  done
+}
+case_task_tmux_done_failed_status() { task_done_failed_status tmux; }
+case_task_herdr_done_failed_status() { task_done_failed_status herdr; }
 tmux_start_failure() {
   local kind=$1 failure=$2 issue=TS-1 socket=$DV_TMUX_SOCKET rc=0 next_rc=0
   needs_tmux; task_setup
@@ -2390,6 +2440,8 @@ source "$ROOT/tests/codex-exec-review.sh"
 source "$ROOT/tests/portability.sh"
 # shellcheck source=tests/qa.sh
 source "$ROOT/tests/qa.sh"
+# shellcheck source=tests/qa-merge.sh
+source "$ROOT/tests/qa-merge.sh"
 # shellcheck source=tests/metrics.sh
 source "$ROOT/tests/metrics.sh"
 # shellcheck source=tests/pr-worker.sh
@@ -2618,7 +2670,7 @@ case_runner_mapping() {
 registered_cases() {
   printf '%s\n' \
    status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
-  task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
+  task_tmux_done_failed_status task_herdr_done_failed_status task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
   config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
   appserver_sender_close \
   metrics_restart_slow_start \
@@ -2626,7 +2678,7 @@ registered_cases() {
   capacity_appserver_slow_work \
   question_goal_start_ack \
   exec_send_slow_completion \
-  appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
+  appserver_reader_legacy appserver_reader_preempt appserver_sender_preempt appserver_upgrade_partial appserver_upgrade_timeout appserver_rpc_timeout appserver_proxy_exit kick_pull_checkpoint question_wait_pid_cleanup symlink_send_branch_exec symlink_task_mixed_files teardown_wait_tmux \
   process_cleanup_pass process_cleanup_fail process_cleanup_timeout process_cleanup_term process_cleanup_nested heavy_descendant_slot \
   host_tmp_guard \
   tmp_reap tmp_guards tmp_agent tmp_appserver tmp_default tmp_quota tmp_reap_bash32 tmp_appserver_killed tmp_usage tmp_cache pr_body_delayed_wait \
@@ -2661,6 +2713,8 @@ registered_cases() {
   land_squash_only land_merge_only land_rebase_only land_prefer_squash land_prefer_merge land_override_env land_override_repo land_config_stdout land_policy_gh_repo land_policy_pr_url land_override_precedence land_no_methods land_invalid_method land_disallowed_method land_repo_failure land_config_failure land_head_mismatch land_unconfirmed \
   pr_fallback_body pr_fallback_summary pr_fallback_private_paths pr_fallback_private_hosts pr_fallback_public_tokens pr_fallback_missing pr_fallback_bounded pr_fallback_private_only pr_head_title pr_prepared_body pr_legacy_body pr_patch_title pr_patch_body polish_unreachable polish_unreachable_timeout \
   runner_contract runner_selection runner_mapping
+  printf '%s\n' \
+    qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter
 }
 
 runner_error() { printf 'tests/run.sh: %s\n' "$*" >&2; return 2; }

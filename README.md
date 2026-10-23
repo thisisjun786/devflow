@@ -263,7 +263,7 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 관리자는 GitHub와 dv의 현재 상태에서 의존 이슈가 닫힌 작업을 milestone 순으로 골라 brief와 `dv submit`을 준비하고 빈 호스트 자리를 채웁니다. `templates/manager-prompt.md`가 참조하는 `templates/worker-prompt.md`를 초기 입력에 원문 그대로 포함합니다. 이후 입력에도 기존 worker 규칙을 포함하고, 해당 저장소의 대기 이벤트 전부를 한 배치로 보냅니다. 이슈별 최신 이벤트를 처리하며 이전 이벤트는 `superseded`와 `superseded_by`로 표시해 문맥으로만 읽습니다. 최신 순서는 이벤트의 `time`, 같은 시간이면 큐 순서로 정합니다. 실행 도중 도착한 이벤트는 다음 배치에 포함합니다.
 
-등록과 세션 ID는 `$DV_HOME/managers/<저장소 키>/meta.json`, 대기 이벤트는 `pending/`, 실행 결과는 `events.log`와 각 실행의 `.out`/`.err`에 남습니다. 저장소는 submission 또는 이슈 meta에서 찾으며 GitHub HTTPS/SSH URL을 같은 식별자로 정규화합니다. 원격 이슈는 설정된 `DV_HOSTS`에서만 상태와 origin을 조회하고 저장소 이름만으로 매칭하지 않습니다. 같은 저장소의 관리자 배치는 디스크 큐와 실행 잠금으로 한 번에 하나씩 처리합니다. 활성 관리자는 저장소마다 별도 실행 자리 하나를 가지며, 일반·fallback·QA worker는 `DV_MAX_WORKERS`(기본 4, 범위 1–8)를 공유합니다. 관리자가 실행 중이거나 watcher가 재시작해도 일반 worker 자리를 차지하지 않습니다.
+등록과 세션 ID는 `$DV_HOME/managers/<저장소 키>/meta.json`, 대기 이벤트는 `pending/`, 실행 결과는 `events.log`와 각 실행의 `.out`/`.err`에 남습니다. 저장소는 submission 또는 이슈 meta에서 찾으며 GitHub HTTPS/SSH URL을 같은 식별자로 정규화합니다. 원격 이슈는 설정된 `DV_HOSTS`에서만 상태와 origin을 조회하고 저장소 이름만으로 매칭하지 않습니다. 같은 저장소의 관리자 배치는 디스크 큐와 실행 잠금으로 한 번에 하나씩 처리합니다. 활성 관리자는 저장소마다 별도 실행 자리 하나를 가지며, 일반·fallback worker는 `DV_MAX_WORKERS`(기본 4, 범위 1–8)를 공유합니다. QA는 일반 입찰 작업처럼 실행 호스트의 `DV_MAX_JOBS` 슬롯을 사용합니다. 관리자가 실행 중이거나 watcher가 재시작해도 일반 worker 자리를 차지하지 않습니다.
 
 대기 파일명은 `<cursor>-<event ID checksum>-<ID 길이>.json`입니다. 기존 숫자 슬롯과 새 슬롯 모두 실제 이벤트 ID를 비교해 재실행을 막습니다. 다른 이벤트가 차지한 슬롯은 `conflict/`에 보존하고 `queue_conflict`를 `events.log`와 `manager.log`에 기록합니다. 이미 실행 중인 배치나 fallback이 참조하는 파일은 사본을 보존하고 원래 경로에서 완료할 수 있게 둡니다. 새 이벤트는 다른 이름으로 계속 수신합니다. 운영자 메모는 큐 파일을 직접 만들지 않고 `dv manager note REPO FILE`로 넣습니다. `notices/note-*.json`에 파일 내용을 그대로 저장하며, 실행 중 도착한 메모는 다음 배치에서 fallback 처리 결과와 구분해 읽습니다.
 
@@ -472,26 +472,45 @@ App Server 시험은 임시 Unix 소켓과 Bash JSON-RPC 스텁을 사용합니�
 
 ## 병합 후 실사용 QA
 
-`DV_QA=1`을 호스트 설정 또는 저장소의 `.devflow`에 두면 `landed` 뒤에
-새 QA 작업이 실행됩니다. 기본값은 `0`입니다. QA는 최신 merged base를 별도
-임시 clone으로 가져와 그 revision의 `.devflow`를 읽습니다. 소유자의 checkout과
-설정은 바꾸지 않습니다. QA 설정은 `DV_QA=1`, `DV_QA_AGENT=claude` 같은
-literal 대입만 읽으며 `.devflow`의 shell 코드를 실행하지 않습니다.
-`DV_QA_AGENT=codex`는 새 Codex exec 세션,
-`claude`는 새 Claude Code 세션입니다. `DV_QA_AGENT_CMD`는 prompt 파일을
-받는 명령으로 시험 또는 별도 실행기에 쓸 수 있습니다.
+`dv manager start <repo>`로 활성화한 GitHub 저장소 중 호스트 설정 또는 그
+checkout의 `.devflow`에 `DV_QA=1`인 저장소를 감시합니다(기본값 `0`).
+`DV_QA_BASE`로 대상 base를 지정하며, 비어 있으면 원격 기본 브랜치를 씁니다.
+설정은 `DV_QA=1`, `DV_QA_AGENT=claude`, `DV_QA_BASE=main` 같은 literal
+대입만 읽고 `.devflow`의 shell 코드는 실행하지 않습니다.
 
-QA 저장소의 승인 기준은 watcher가 보관한 작업 기록입니다. 로컬 landed meta
-또는 원래 제출의 repo·host·head·발급 token과 맞는 이벤트만 받으며, 원격 호스트의
-status/origin 응답으로 저장소를 선택하지 않습니다. 기록 없는 원격 수동 작업은
-QA를 시작하지 않으므로 해당 watcher를 통해 `dv submit`으로 배정하세요.
+watcher는 기존 큐의 `merged`·`landed`·`done`·`failed`·`submitted`·`bid-changed`·
+`issue-opened`·`issue-closed` 이벤트가 처리될 때 GitHub의 병합
+PR을 조회하고, 각 병합 커밋이 설정한 base에 포함됐는지 확인합니다.
+외부 병합도 기존 watcher tick에서 읽는 GitHub 저장소 이벤트 피드로 자동 입력됩니다.
+조건부 ETag 요청으로 바뀌지 않은 피드는 다시 처리하지 않습니다. base의 Push/병합 PR과
+issue opened/closed 이벤트가 도착하면 기존 큐에 식별자가 고정된 알림을 저장한 뒤
+cursor를 갱신합니다. 큐 전달이 실패하면 cursor를 유지하며 재시도합니다. 이벤트 피드는
+알림 역할만 하고, QA 승인은 활성 목록과 실제 base 포함 여부 검사로 결정합니다.
+GitHub 이벤트 공개 지연이나 최근 100개 feed 범위를 넘는 누락은 시작 시 복구와 공용
+`DV_RECONCILE_INTERVAL`(기본 30분) sweep으로 보완합니다. 별도 타이머·데몬·webhook
+배포는 없으며, 기존 연결의 `dv kick merged <ISSUE>`도 계속 사용할 수 있습니다.
+GitHub UI나 `gh pr merge`로 직접 병합해도 QA를 등록합니다. 승인 기준은 활성 저장소와 base이며,
+개발 작업의 완료 상태나 award token은 필요하지 않습니다. 이벤트나 원격 status가
+새 저장소를 승인할 수 없습니다. API 조회가 실패하면 관측 지점을 보존하고 재시도합니다.
 
-watcher가 저장소마다 한 작업만 실행하고, 실행 중 들어온 병합은 다음 최신
-head 작업 하나로 합칩니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이고
-repo identifier에는 owner, 안전한 repo 이름과 구분용 checksum이 들어갑니다.
-같은 head는 다시 실행하지 않습니다. 개발 task backend와 독립적인 로컬 작업이며
-watcher의 worker 슬롯을 씁니다. `dv qa status --json`은 저장소별 pending/running을,
-`dv status`는 시작한 QA 작업과 결과를 보여 줍니다.
+`DV_QA_COALESCE`(기본 600초) 동안 새 병합이 없으면 모인 PR 전부를 나열한
+QA 하나를 최신 관측 base head에 제출합니다. 실행 중 추가 병합은 다음 요청으로
+보존합니다. 재시작할 때 저장된 관측 지점 이후의 병합을 따라잡으며, 기존 방식으로
+완료한 QA 기록도 초기 관측 지점으로 사용합니다. 첫 QA 기록이 없으면 현재 base의
+병합 이력을 함께 검사합니다. 비활성화한 저장소의 대기 요청은 실행하지 않고 보존합니다.
+
+QA도 일반 작업과 같은 호스트 입찰·admission·`DV_MAX_JOBS` 슬롯을 사용하므로
+서로 다른 저장소는 여러 호스트에서 병렬 실행됩니다. 준비 중인 clone과
+`waiting-capacity`도 자리를 유지합니다. 저장소별 실행 요청은 고정하고, 같은 head의
+작업을 중복 제출하지 않습니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이며
+repo identifier에는 owner, 안전한 repo 이름과 checksum이 들어갑니다.
+`dv qa status --json`은 scheduler의 저장소별 pending/running을,
+각 실행 호스트의 `dv status`는 QA 작업과 결과를 보여 줍니다.
+
+QA는 관측한 head를 별도 임시 clone에 checkout합니다. `DV_QA_AGENT=codex`는
+새 Codex exec 세션, `claude`는 새 Claude Code 세션입니다. `DV_QA_AGENT_CMD`는
+prompt 파일을 받는 시험용 또는 별도 실행기입니다. 소유자의 checkout과 설정은
+바꾸지 않습니다.
 
 QA는 `docs/qa.md`, 없으면 AGENTS.md의 QA 절, README·milestone·설계 문서에서
 여정을 읽습니다. 제품 실행은 임시 HOME·상태 디렉터리와 합성 자료·provider stub만
@@ -518,12 +537,17 @@ finding JSON에는 `title`, `kind` (`bug`/`feature`), `steps`, `expected`, `actu
 manager는 현재 milestone의 열린 `qa` 이슈를 먼저 제출하고, 이들이 닫히고
 pending/running QA가 끝나기 전까지 milestone 완료와 다음 milestone 시작을 보류합니다.
 
-예약·로그는 `$DV_HOME/qa/`, 작업 meta·발견 영수증·보고서는 `$DV_STATE/QA-*/`에
-남습니다. watcher 재시작은 살아 있는 QA를 중복 실행하지 않습니다. 실패한 QA는
-자동 재실행하지 않으며 로그와 임시 clone을 보존합니다. 관리자는 blocked 원인을
-확인해야 합니다. 다음 병합은 새 head를 대상으로 실행할 수 있습니다. QA prompt는
-데이터 격리를 지시하지만 OS sandbox는 아닙니다. 실제 agent/provider QA 품질은
-stub 시험이 보증하지 않습니다.
+관측 지점·대기 요청은 scheduler의 `$DV_HOME/qa/`, 입찰 기록은
+`$DV_HOME/submissions/`, 실행 예약·로그는 실행 호스트의 `$DV_STATE/.qa/`,
+작업 meta·발견 영수증·보고서는 `$DV_STATE/QA-*/`에 남습니다. watcher 재시작은
+살아 있는 QA를 중복 실행하지 않습니다. provider usage limit/capacity 오류는
+#170의 공통 대기 경로로 같은 clone/session에서 재시도하며 정상 복구 횟수를
+소비하지 않습니다. 기본 2분·5분·15분 이후 15분 간격이며,
+`DV_CAPACITY_MAX_WAIT`(기본 6시간)를 넘으면 이유와 함께 blocked로 남습니다.
+다른 실패는 로그와 clone을 보존하여 확인할 수 있고 다음 병합은 새 head를 실행합니다.
+QA prompt는 데이터 격리를 지시하지만 OS sandbox는 아닙니다. 실제 agent/provider
+QA 품질은 stub 시험이 보증하지 않습니다. 독립 QA clone의 `dv clean` 지원은 별도
+후속 과제이며, dirty clone을 자동 삭제하지 않습니다.
 
 임시 파일은 호스트 설정 `DV_TMP`(기본 `$HOME/.cache/dv/tmp`)에 둡니다. dv와 새 작업·에이전트의 `TMPDIR`에 이 경로를 전달하며, 기존 tmux/herdr 서버와 App Server를 쓰는 새 스레드에도 명시적으로 전달합니다. Go test와 pytest의 기본 임시 파일도 이 환경을 따릅니다. 작업 시작 시 `GOCACHE`(미지정이면 `go env GOCACHE`)가 `/tmp` 또는 macOS의 `/private/tmp` 아래이면 `$DV_TMP/go-build`로 바꿉니다. 다른 캐시 설정과 `GOCACHE=off`는 유지하며, 기존 캐시 파일을 이동하거나 지우지는 않습니다. `DV_TMP`는 디스크에 있는 절대 경로로 지정해야 합니다. 이미 실행 중인 에이전트의 환경이나 도구에 직접 지정한 임시 경로는 변경하지 않습니다.
 

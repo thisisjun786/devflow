@@ -505,7 +505,7 @@ cmd_status() {
   heavy=$(heavy_snapshot)
   local selected='' json=0 live=0 time path row alive last live_last elapsed backend pane info agent_status tmux_alive question_pending pending record done_head
   local goal_stalled goal_active goal_state screen agent_state_seq agent_session agent_dead provider_capacity
-  local row_agent row_worktree transcript
+  local row_agent row_worktree transcript terminal_exit agent_exit_code
   for path in "$@"; do case "$path" in --json) json=1 ;; --live) live=1 ;; *) [ -z "$selected" ] || fail 'one issue only'; valid_issue "$path"; selected=$path ;; esac; done
   if [ -n "$selected" ]; then [ -f "$DV_STATE/$selected/meta" ] || fail 'unknown issue'; fi
   time=$(now)
@@ -517,7 +517,7 @@ cmd_status() {
       [ -f "$path" ] || continue
       [ -z "$selected" ] || [ "$path" = "$DV_STATE/$selected/meta" ] || continue
       alive=false; tmux_alive=false; agent_status=unknown; question_pending=false
-      agent_dead=false
+      agent_dead=false; agent_exit_code=null
       goal_stalled=false; goal_active=false; agent_state_seq=null; agent_session=null
       provider_capacity=false
       backend=$(jq -r '.backend // "tmux"' "$path")
@@ -577,12 +577,20 @@ cmd_status() {
       elif command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then
         alive=true; tmux_alive=true
       fi
-      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$agent_status" = unknown ] && jq -e '.status=="running"' "$path" >/dev/null &&
-        (load_issue "$(jq -r .issue "$path")"; agent_gone); then
-        agent_dead=true
-        # Process absence alone can be a recoverable interruption. A recorded
-        # nonzero exit confirms failure; keep metadata intact for revival.
-        if [[ "$(cat "$(dirname "$path")/agent.exit" 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then agent_status=failed; fi
+      if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$agent_status" = unknown ]; then
+        terminal_exit=$(cat "$(dirname "$path")/agent.exit" 2>/dev/null) || terminal_exit=''
+        # A task can record done before its terminal exits unsuccessfully.
+        # Keep its completion snapshot while exposing the confirmed failure.
+        if jq -e --arg exit "$terminal_exit" '.status=="running" or
+          (.kind=="task" and .status=="done" and ($exit|test("^[1-9][0-9]*$")))' "$path" >/dev/null &&
+          (load_issue "$(jq -r .issue "$path")"; agent_gone); then
+          agent_dead=true
+          # Process absence alone can be a recoverable interruption. A recorded
+          # nonzero exit confirms failure; keep metadata intact for revival.
+          if [[ "$terminal_exit" =~ ^[1-9][0-9]*$ ]]; then
+            agent_status=failed; agent_exit_code=$terminal_exit
+          fi
+        fi
       fi
       if { [ "$backend" = tmux ] || [ "$backend" = herdr ]; } && [ "$alive" = true ] && [ "$agent_dead" = false ] && jq -e '.status=="running" or .status=="waiting-capacity"' "$path" >/dev/null; then
         screen=''
@@ -615,10 +623,13 @@ cmd_status() {
         { [ "$agent_dead" = true ] || { [ "$backend" = exec ] && [ "$alive" = false ]; }; }; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
       fi
+      if [ "$agent_exit_code" != null ]; then
+        row=$(printf '%s\n' "$row" | jq -c --argjson code "$agent_exit_code" '.agent_exit_code=$code')
+      fi
       printf '%s\n' "$row"
     done
   } | if [ "$json" = 1 ]; then jq -s --argjson heavy "$heavy" 'map(.+{heavy:$heavy})'
-    else jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none"),"status_age="+(if .status_age_seconds==null then "unknown" else (.status_age_seconds|tostring)+"s" end) else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
+    else jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .agent_exit_code!=null then "exit="+(.agent_exit_code|tostring) else empty end),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none"),"status_age="+(if .status_age_seconds==null then "unknown" else (.status_age_seconds|tostring)+"s" end) else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
 }
 agent_gone() {
   local reply pane pid unknown=0
