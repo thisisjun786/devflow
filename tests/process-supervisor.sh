@@ -14,7 +14,8 @@ runner_group_ids() {
 }
 runner_live_groups() {
   local groups
-  groups=$(runner_group_ids "$DV_TEST_PROCESS_DIR")
+  # BSD awk (macOS) rejects a newline inside an -v value: pass one line.
+  groups=$(runner_group_ids "$DV_TEST_PROCESS_DIR" | tr '\n' ' ')
   "$DV_TEST_PS" -eo pgid=,stat= | awk -v groups="$groups" '
     BEGIN {n=split(groups,a," "); for(i=1;i<=n;i++) owned[a[i]]=1}
     owned[$1] && $2 !~ /^Z/ {live[$1]=1}

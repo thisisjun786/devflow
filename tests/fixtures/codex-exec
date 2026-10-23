@@ -44,6 +44,12 @@ case "$scenario" in
           sleep 30; exit 0 ;;
       esac
     done ;;
+  park)
+    printf 'wip\n' > wip.txt
+    git add wip.txt; git commit -qm "$DV_ISSUE: WIP"
+    dv park "$DV_ISSUE" --on 12 --note 'waiting for #12' > /dev/null
+    printf '{"type":"turn.completed"}\n'
+    exit 0 ;;
   nonzero) exit 7 ;;
   retry) if [ "$n" = 1 ]; then exit 7; fi ;;
   capacity-once)

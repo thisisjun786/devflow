@@ -1,16 +1,17 @@
 ## Summary
 
-- What changed and why, for users or maintainers.
+- What changed for the person or the maintainer, and why.
 
 Closes #
 
 ## Verification
 
-- Commands or checks you ran, each with its result.
-- For screen changes, attach a capture of the change.
+- Commands and checks you ran, with results.
+- Screen changes: attach a capture.
 
 ## Checklist
 
-- [ ] Scope stays focused and avoids unrelated cleanup.
-- [ ] README, templates or skill were updated when behavior changed.
-- [ ] No secrets, private paths, host names or brief text in the code or this description.
+- [ ] Scope stays on the linked issue; no unrelated cleanup.
+- [ ] Docs updated where behaviour or contracts changed.
+- [ ] Secrets, auth and unsafe defaults reviewed.
+- [ ] No private paths, host names or brief text in this description.

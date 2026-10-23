@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$@" | jq -R . | jq -s . > "$DV_STATE/$DV_ISSUE/args.json"
-if [ "$(jq -r .agent "$DV_STATE/$DV_ISSUE/meta")" = devin ]; then
+agent=$(jq -r .agent "$DV_STATE/$DV_ISSUE/meta")
+if [ "$agent" = omp ]; then printf '%s\n' "${OMP_SKIP_SETUP:-}" > "$DV_STATE/$DV_ISSUE/omp-skip-setup"; fi
+if [ "$agent" = devin ] || [ "$agent" = agy ] || [ "$agent" = grok ]; then
   printf 'Do you trust this folder?\n'
   IFS= read -r line
   printf '%s\n' "$line" > "$DV_STATE/$DV_ISSUE/trust-enter"

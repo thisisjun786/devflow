@@ -10,6 +10,8 @@ fi
 source "$DV_ROOT/config.example.sh"
 # shellcheck source=lib/capacity.sh
 source "$DV_ROOT/lib/capacity.sh"
+# shellcheck source=lib/portable.sh
+source "$DV_ROOT/lib/portable.sh"
 # shellcheck source=lib/heavy.sh
 source "$DV_ROOT/lib/heavy.sh"
 # shellcheck source=lib/claude.sh
@@ -26,6 +28,68 @@ fail() { printf 'dv: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "missing dependency: $1"; }
 valid_issue() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || fail 'invalid issue identifier'; }
 now() { date +%s; }
+# Terminal agents dv can launch. Only Codex also has exec/App Server modes.
+known_agent() { case "$1" in codex|claude|devin|omp|agy|grok|cursor) ;; *) return 1 ;; esac; }
+agent_bin() {
+  case "$1" in
+    codex) printf '%s\n' "$DV_CODEX_BIN" ;; claude) printf '%s\n' "$DV_CLAUDE_BIN" ;;
+    devin) printf '%s\n' "$DV_DEVIN_BIN" ;; omp) printf '%s\n' "$DV_OMP_BIN" ;;
+    agy) printf '%s\n' "$DV_AGY_BIN" ;; grok) printf '%s\n' "$DV_GROK_BIN" ;;
+    cursor) printf '%s\n' "$DV_CURSOR_BIN" ;; *) return 1 ;;
+  esac
+}
+# Default read-only login probe. agy, grok and cursor list models only with
+# working authentication; cursor-agent status can report a stale login.
+agent_auth_probe() {
+  case "$1" in
+    codex) "$2" login status ;;
+    agy|grok|cursor) "$2" models ;;
+    omp) omp_provider_ready ;;
+    *) "$2" auth status ;;
+  esac
+}
+# omp has no auth status. Require DV_OMP_MODEL's custom provider in models.yml
+# and, when its apiKey names a variable, a value for it. Never print the key.
+omp_provider_ready() {
+  local dir="$HOME/.omp/agent" provider=${DV_OMP_MODEL%%/*} key
+  [ -n "$provider" ] && [ "$provider" != "$DV_OMP_MODEL" ] || return 1
+  key=$(awk -v provider="$provider" '
+    /^[^[:space:]#]/ { inside=($0 ~ /^providers:[[:space:]]*$/); found=0; next }
+    inside && match($0, /^  [^[:space:]#][^:]*:/) { found=(substr($0, 3, RLENGTH - 3)==provider); if (found) seen=1; next }
+    found && $1=="apiKey:" { gsub(/["\047]/, "", $2); print $2; exit }
+    END { if (!seen) exit 1 }' "$dir/models.yml" 2>/dev/null) || return 1
+  [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || return 0
+  [ -n "${!key:-}" ] || grep -Eq "^(export[[:space:]]+)?$key=[^[:space:]]" "$dir/.env" 2>/dev/null
+}
+# Where an agent keeps session transcripts: evidence of what it is doing in a
+# worktree and context for a revival. dv only reads these paths.
+agent_transcript_root() {
+  local root=''
+  case "$1" in
+    codex) root=$DV_CODEX_SESSIONS ;; claude) root=$DV_CLAUDE_SESSIONS ;; omp) root=$DV_OMP_SESSIONS ;;
+    agy) root=$DV_AGY_SESSIONS ;; grok) root=$DV_GROK_SESSIONS ;; cursor) root=$DV_CURSOR_SESSIONS ;;
+  esac
+  [ -n "$root" ] || return 1
+  printf '%s\n' "$root"
+}
+# Each CLI names its per-directory store from the physical working directory.
+agent_transcript_dir() {
+  local root name
+  root=$(agent_transcript_root "$1") || return 1
+  case "$1" in
+    omp) name="--$(printf '%s' "${2#/}" | tr '/\\:' '---')--" ;;
+    claude) name=$(printf '%s' "$2" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g') ;;
+    grok) name=$(jq -rn --arg dir "$2" '$dir|@uri') ;;
+    cursor) name="$(printf '%s' "$2" | LC_ALL=C sed -E 's/[^A-Za-z0-9]+/-/g; s/^-//; s/-$//')/agent-transcripts" ;;
+    *) return 1 ;;
+  esac
+  printf '%s/%s\n' "$root" "$name"
+}
+agent_transcript() {
+  local dir
+  if dir=$(agent_transcript_dir "$1" "$2") && [ -d "$dir" ]; then printf '%s\n' "$dir"; return; fi
+  agent_transcript_root "$1"
+}
 tmux_dv() {
   if [ -n "$DV_TMUX_SOCKET" ]; then tmux -L "$DV_TMUX_SOCKET" "$@"; else tmux "$@"; fi
 }
@@ -127,6 +191,12 @@ event_json() {
     # PR is open). Without the reason in the ID the later event is dropped as
     # already seen. Identical retransmissions still share one ID.
     if [ "$1" = blocked ]; then id="$id:m$(printf '%s' "$3" | cksum | cut -d' ' -f1)"; fi
+    case "$1" in
+      bid-changed|issue-opened|issue-closed|issue-reopened|issue-edited|issue-labeled|issue-unlabeled|pr-opened|pr-closed)
+        # Several findings or open/close episodes can share a job/head. A
+        # receipt carries this ID through retries; subsequent mutations differ.
+        id="$id:$(now):$$:$RANDOM" ;;
+    esac
   fi
   jq -cn --arg kind "$1" --arg issue "$2" --arg message "$3" --arg host "$4" --arg head "$5" \
     --arg id "$id" --arg token "$token" --argjson time "${9:-$(now)}" \

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Called only by disposable test wrappers named gh/ssh.
+set -euo pipefail
+kind=$1; shift
+if [ "$kind" = gh ]; then
+  printf '%s\n' "$*" >> "$CASE_DIR/autofill/calls"
+  case "$*" in
+    'api --paginate repos/test/repo/issues?state=open&per_page=100') cat "$CASE_DIR/autofill/issues" ;;
+    'api graphql '*) cat "$CASE_DIR/autofill/prs" ;;
+    *) printf 'Unexpected gh: %s\n' "$*" >&2; exit 1 ;;
+  esac
+  exit
+fi
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac
+done
+host=$1; shift
+case "$*" in
+  'dv _host-capacity-sample '*)
+    free=$(cat "$CASE_DIR/autofill/free")
+    jq -cn --argjson free "$free" '{learned_cap:2,effective_slots:2,free_slots:$free,capacity_reason:""}' ;;
+  'dv bid '*)
+    free=$(cat "$CASE_DIR/autofill/free")
+    jq -cn --arg host "$host" --argjson free "$free" \
+      '{host:$host,status:(if $free>0 then "submitted" else "rejected" end),capacity:2,effective_slots:2,active:(2-$free),free_slots:$free,score:100,reason:""}' ;;
+  'dv _award '*)
+    request=$(cat)
+    jq -r .issue <<< "$request" >> "$CASE_DIR/autofill/awards"
+    free=$(cat "$CASE_DIR/autofill/free"); printf '%s\n' "$((free-1))" > "$CASE_DIR/autofill/free"
+    jq '{token,status:"working",head:"fake-head"}' <<< "$request" ;;
+  *'status --json'*) printf '[]\n' ;;
+  *'_appserver-watch'*|*'_disk-'*|*'_metrics-'*) : ;;
+  *) printf 'Unexpected ssh: %s\n' "$*" >&2; exit 1 ;;
+esac

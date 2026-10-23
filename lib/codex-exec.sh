@@ -145,6 +145,14 @@ codex_exec_run() {
       codex_exec_events
     fi
     printf '%s\n' "$rc" > "$S/exec/$run/exit"
+    # dv park released the slot on purpose: neither a retry nor a failure.
+    if jq -e '.status=="parked"' "$S/meta" >/dev/null; then
+      capacity_clear
+      meta_set '.exec_status="parked" | del(.failure_reason)'
+      printf '%s\n' "$rc" > "$S/agent.exit"
+      codex_exec_cleanup
+      return 0
+    fi
     if [ -z "$exec_reason" ]; then
       if [ "$rc" -ne 0 ]; then exec_reason="codex exec exited $rc"
       elif [ ! -f "$S/exec/$run/done" ]; then exec_reason='failed-to-finish: codex exec exited 0 without dv done'; fi

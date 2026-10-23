@@ -36,7 +36,27 @@ App Server task의 done은 산출물 검사 후 goal 완료 응답을 확인합�
 
 감시 호스트는 Hermes의 sion 프로필로 작업자를 띄우므로 Hermes가 도는 호스트(10-19부터 lina-os)여야 합니다. 리눅스 감시는 로그아웃 뒤에도 돌도록 `loginctl enable-linger $USER`가 켜져 있어야 합니다(설치가 상태를 알려 줍니다). 모든 dv 호스트의 `DV_KICK_HOST`는 감시 호스트로 둡니다(기본 lina-os). 감시 호스트 자신은 ssh 없이 로컬 큐에 씁니다. git, gh, tmux, jq가 필요합니다. 설치는 `~/.local/bin`에 링크하고 기존 `~/.config/devflow/config.sh`를 보존합니다. 저장소는 링크 대상이므로 이동하지 마세요. `~/.local/bin`을 로컬과 SSH 비대화형 PATH에 추가하고 `gh auth login`은 사람이 준비합니다.
 
-[config.example.sh](config.example.sh)에 모든 기본값이 있습니다. Codex 경로는 호스트에 따라 `~/node/bin/codex` 또는 `~/.opencodex/bin/codex`로 설정하세요. 기본 모델은 gpt-6-astra/xhigh이고, hooks와 crw 플러그인을 해당 실행에서만 끕니다. `DV_CODEX_DISABLE_HOOKS=0`, `DV_CODEX_DISABLE_CRW=0`으로 바꿀 수 있습니다. Claude는 opus/xhigh, Devin은 fusion-gpt-6-astra-xhigh-sidekick-swe-2-high입니다.
+[config.example.sh](config.example.sh)에 모든 기본값이 있습니다. Codex 경로는 호스트에 따라 `~/node/bin/codex` 또는 `~/.opencodex/bin/codex`로 설정하세요. 기본 모델은 gpt-6-astra/xhigh이고, hooks와 crw 플러그인을 해당 실행에서만 끕니다. `DV_CODEX_DISABLE_HOOKS=0`, `DV_CODEX_DISABLE_CRW=0`으로 바꿀 수 있습니다. Claude는 opus/xhigh, Devin은 fusion-gpt-6-astra-xhigh-sidekick-swe-2-high입니다. 다른 에이전트는 아래 표를 보세요.
+
+## 에이전트
+
+작업 하나는 에이전트 하나가 맡습니다. 같은 작업을 여러 에이전트에 나란히 돌려 비교하지 않고, 결과가 나쁘면 새 작업으로 고칩니다. 모든 에이전트는 `--agent`로 고르고, `DV_<AGENT>_BIN`·`DV_<AGENT>_MODEL`(Codex·Claude는 effort도)로 실행 파일과 모델을 바꿉니다.
+
+| `--agent` | 용도 | CLI | 실행(지시는 첫 입력) | 기본 모델 | 준비 확인(기본) | 폴더 신뢰 | 세션 기록 |
+|---|---|---|---|---|---|---|---|
+| `codex` | 기본, 큰 작업 | `codex` | App Server·exec·goal(TUI) | gpt-6-astra/xhigh | `codex login status` | 신뢰 항목 기록 | `DV_CODEX_SESSIONS`(날짜별) |
+| `claude` | 큰 작업 | `claude` | `--dangerously-skip-permissions -- 지시` | opus/xhigh | `claude auth status` | `.claude.json` 기록 | `DV_CLAUDE_SESSIONS/<경로>` |
+| `devin` | 코드 | `~/.local/bin/devin` | `--permission-mode dangerous -- 지시` | fusion-gpt-6-astra-… | `devin auth status` | 화면에서 Enter | 없음 |
+| `omp` | 작은 코드(주 작업자) | `omp` | `--approval-mode=yolo -- 지시`, `OMP_SKIP_SETUP=1` | `inferhub/deepseek-v4.1-flash` | provider·키 설정 | 묻지 않음 | `DV_OMP_SESSIONS/--<경로>--` |
+| `agy` | 문서·이슈·PR 글·조사 | `agy` | `--dangerously-skip-permissions -i 지시` | `gemini-4-argon`(medium) | `agy models` | 화면에서 Enter | `DV_AGY_SESSIONS`(대화별) |
+| `grok` | 작은 코드 수정 | `grok` | `--always-approve -- 지시` | CLI 기본 | `grok models` | 화면에서 Enter | `DV_GROK_SESSIONS/<URL 인코딩 경로>` |
+| `cursor` | 작은 코드 수정 | `cursor-agent` | `--yolo --trust -- 지시` | CLI 기본 | `cursor-agent models` | `--trust` | `DV_CURSOR_SESSIONS/<경로>/agent-transcripts` |
+
+omp·agy·grok·cursor는 Claude·Devin처럼 herdr pane(없으면 tmux)에서 대화형으로 띄우고 goal 모드만 씁니다. 처음 보는 폴더에서 agy·grok·Devin이 띄우는 신뢰 창은 기본 선택(신뢰)에 Enter를 한 번 보냅니다. omp는 대화형 첫 실행의 provider 설정 마법사가 지시를 가리므로 dv 실행에만 `OMP_SKIP_SETUP=1`을 줍니다. 사용자 설정은 바꾸지 않습니다. agy TUI는 `gemini-4-argon-medium`을 모르는 모델로 보고 무시하므로 기본값은 medium에 해당하는 `gemini-4-argon`입니다. 화면의 usage limit·rate limit·HTTP 429·overloaded·RESOURCE_EXHAUSTED는 다른 에이전트와 같이 같은 worktree에서 기다린 뒤 이어서 하라고 입력합니다.
+
+준비 확인은 읽기 전용입니다. agy·grok·cursor는 인증이 있어야 성공하는 `models`를 씁니다. cursor-agent `status`는 낡은 로그인을 성공으로 보여 주고 실제 요청은 "Authentication required"로 실패할 수 있기 때문입니다. 이때는 운영자가 `cursor-agent login`을 다시 하거나 pane 환경에 `CURSOR_API_KEY`를 둡니다. omp에는 인증 조회 명령이 없어 `DV_OMP_MODEL`의 provider가 `~/.omp/agent/models.yml`에 있고, `apiKey`가 변수 이름이면 그 값이 환경이나 `~/.omp/agent/.env`에 있는지 확인합니다. 키 값은 출력하지 않습니다. 내장 provider 로그인을 쓰면 `DV_AGENT_READY_omp`에 확인 명령을 지정합니다.
+
+`dv status --json`의 `transcript`는 worktree가 남아 있는 작업의 세션 기록 위치입니다. 해당 worktree의 기록 폴더가 있으면 그 경로, 없으면 에이전트의 기록 루트이며, 시온이 지금 무엇을 하는지 확인할 때 읽습니다. 자동 재시작 지시에는 같은 worktree의 이전 기록 폴더가 있으면 그 경로를 읽기 전용 참고로 넣습니다. dv는 기록을 읽기만 합니다.
 
 ## 무거운 명령의 호스트 슬롯
 
@@ -81,7 +101,7 @@ ionice가 없으면 nice만 적용합니다. `dv status`와 `dv bid`는 `heavy=�
 
 ## 개발 호스트 도구 맞추기
 
-새 Linux 호스트에서는 다음 순서로 준비합니다. `sync`는 x86_64/aarch64 Linux를 지원하고, 셸 코드는 macOS 기본 bash 3.2에서도 읽을 수 있습니다.
+새 Linux 호스트에서는 다음 순서로 준비합니다. `sync`는 x86_64/aarch64 Linux와 macOS([macOS 개발 호스트](#macos-개발-호스트))를 지원하고, 셸 코드는 macOS 기본 bash 3.2에서도 실행됩니다.
 
 ```bash
 ./install.sh --host
@@ -92,7 +112,7 @@ ionice가 없으면 nice만 적용합니다. `dv status`와 `dv bid`는 `heavy=�
 # 준비가 끝나면 관리자 config.sh의 DV_HOSTS, 감시 호스트의 DV_PULL_HOSTS에 추가
 ```
 
-[`hosts/tools.tsv`](hosts/tools.tsv)의 열은 이름, 버전, 설치 방식, 적용 호스트(`all` 또는 `DV_HOST` 값)입니다. `system`은 배포판 버전을 허용하고 `bundled`는 고정된 Node 배포본의 npm을 뜻합니다. `agy`는 lina-os에서만 조회합니다. Go는 `~/.local/go/go`(GOROOT), GOPATH는 `~/.local/go`, Node와 npm global은 `~/node`, 나머지 설치 대상은 `~/.local/bin`입니다. Codex와 Devin은 조회만 합니다. apt 도구도 설치하지 않고 없으면 운영자가 실행할 `sudo apt-get install ...`을 출력합니다.
+[`hosts/tools.tsv`](hosts/tools.tsv)의 열은 이름, 버전, 설치 방식, 적용 호스트(`all` 또는 `DV_HOST` 값)입니다. `system`은 배포판 버전을 허용하고 `bundled`는 고정된 Node 배포본의 npm을 뜻합니다. omp·agy·grok·cursor-agent는 스스로 업데이트하므로 버전을 고정하지 않고 모든 호스트에서 조회만 합니다. 설치는 운영자가 공식 설치 스크립트로 합니다(`curl -fsSL https://omp.sh/install | sh -s -- --binary`, `curl -fsSL https://antigravity.google/cli/install.sh | bash`, `curl -fsSL https://x.ai/cli/install.sh | bash`, `curl https://cursor.com/install -fsS | bash`). `dv host check`의 `auth`에 각 에이전트의 준비 확인 결과가 나옵니다. Go는 `~/.local/go/go`(GOROOT), GOPATH는 `~/.local/go`, Node와 npm global은 `~/node`, 나머지 설치 대상은 `~/.local/bin`입니다. Codex와 Devin은 조회만 합니다. apt 도구도 설치하지 않고 없으면 운영자가 실행할 `sudo apt-get install ...`을, macOS에서는 `brew install ...`을 출력합니다.
 
 `check`는 각 도구의 `ok` / `missing` / `wrong-version`, 실제 버전과 실행 경로, gh·codex·claude·devin 로그인 상태를 보여 줍니다. `--json`은 `tools[].login/ssh`, `auth`, `codex` 객체로 같은 결과를 냅니다. `watcher`에는 살아 있는 로컬 감시자가 시작할 때 읽은 `commit`, 그 체크아웃의 `origin_main`, `current` / `outdated` / `unknown` / `not-running` 상태가 나옵니다. Git 비교는 마지막 fetch 기준입니다. 조회는 사용자 설정을 바꾸지 않으며 drift가 있어도 종료 코드 0입니다. 모든 `dv` 호출에 적용되는 아래 자동 갱신은 실행될 수 있습니다. 조회 자체 실패나 요청한 probe 실패는 1입니다. 오래된 체크아웃을 가리킬 수 있는 gitleaks 심볼릭 링크는 버전이 같아도 `wrong-version`과 `reason=symlink`로 표시합니다.
 
@@ -109,6 +129,35 @@ Claude 온보딩은 `check`의 텍스트 출력과 JSON의 `claude.onboarding`�
 `codex` 항목은 PATH상의 도구 검사와 별도로 **실제 `DV_CODEX_BIN`**의 두 모드 실행 경로를 보여 줍니다. `~/.opencodex` 디렉터리, OpenCodex 토큰 환경 변수 또는 Codex 설정의 OpenCodex 표기가 있으면 프록시 호스트로 판단하고 `~/.opencodex/bin/codex`로 연결되지 않는 실행기를 `wrong-launcher`로 표시합니다. 설정은 바꾸지 않으므로 운영자가 `DV_CODEX_BIN="$HOME/.opencodex/bin/codex"`를 지정해야 합니다. 로그인 성공만으로 공급자 준비를 보장하지 않습니다.
 
 `--probe-codex`는 SSH 모드에서 선택된 실행기로 기존 공급자에 `OK` 응답을 요청합니다. 기본 조회에는 이 요청이 없습니다. 임시 작업 폴더·읽기 전용 sandbox·승인 거절·ephemeral 실행을 사용하고 hooks와 shell tool을 끕니다. 프록시 자동 시작도 요청하지 않습니다. 최대 60초 후 실패로 보고하며 공급자 출력·토큰은 결과에 담지 않습니다. **실제 모델 요청이므로 사용량이 발생하며 비용 0을 보장하지 않습니다.** `sync`는 로그인, 토큰, SSH 키, 네트워크 설정을 다루지 않습니다.
+
+## macOS 개발 호스트
+
+Mac(Apple Silicon·Intel)도 Linux 호스트와 같은 dv로 작업을 받습니다. 책상 Mac은 tailnet 이름 `juns-desk-mac`을 씁니다. MagicDNS로 모든 호스트가 같은 이름에 접속하므로 별도 SSH 별칭이나 IP 설정이 필요 없습니다. Mac에서 한 번 준비합니다.
+
+```bash
+# Homebrew(https://brew.sh)를 먼저 설치합니다. git·zsh·sqlite3는 macOS에 있습니다.
+brew install jq tmux shellcheck flock
+git clone https://github.com/thisisjun786/devflow.git ~/code/devflow
+cd ~/code/devflow && ./install.sh --host
+# ~/.config/devflow/config.sh: hostname -s는 tailnet 이름과 다를 수 있으니 직접 지정
+#   : "${DV_HOST:=juns-desk-mac}"
+#   : "${DV_KICK_HOST:=juns-desk-mac}" # 로컬 큐, 감시 호스트가 dv-kick-pull로 가져감
+~/.local/bin/dv host sync
+# 새 셸에서
+~/.local/bin/dv host check
+```
+
+`sync`는 Linux와 같은 고정 버전을 각 배포자의 macOS 자산(`go…darwin-arm64.tar.gz`, `node-v…-darwin-arm64.tar.gz`, `uv-aarch64-apple-darwin.tar.gz`, `gh_…_macOS_arm64.zip`, `gitleaks_…_darwin_arm64.tar.gz`, `herdr-macos-aarch64`)에서 받고 같은 SHA-256 검증을 거칩니다. Homebrew 버전으로 바뀌지 않으므로 `check`의 기대 버전도 Linux와 같습니다. tmux·shellcheck·flock 같은 시스템 도구는 설치하지 않고, 없으면 `Operator action (not executed): brew install ...`을 출력합니다. macOS의 PATH 블록은 devflow 디렉터리 뒤에 Homebrew의 `bin`·`sbin`(Apple Silicon 기본 `/opt/homebrew`)을 넣어, `.zshenv`만 읽는 비대화형 SSH 셸에서도 tmux·flock을 찾습니다. 로그인 zsh는 `/etc/zprofile`의 `path_helper`가 시스템 경로를 앞에 둡니다.
+
+dv는 macOS 기본 bash 3.2에서 실행되며 Homebrew bash가 PATH 앞에 있으면 그것을 씁니다. `dv heavy`의 슬롯 잠금은 Linux와 같은 `flock`을 쓰며, macOS에는 없으므로 Homebrew의 `flock`이 필요합니다. `check`는 다른 시스템 도구처럼 `flock`을 보여 줍니다. 입찰의 load5·남은 메모리는 `lib/portable.sh`가 `/proc` 대신 `sysctl -n vm.loadavg`와 `vm_stat`(free·inactive·speculative 페이지)로 읽습니다. App Server 클라이언트와 PR 대기자는 `setsid`가 없으면 job control로 분리합니다. `timeout` 명령은 사용하지 않습니다. 작업 중 잠들지 않도록 `sudo pmset -a sleep 0` 같은 전원 설정을 운영자가 정합니다.
+
+macOS의 `gh`와 Claude Code는 로그인 정보를 login 키체인에 둡니다. 데스크에서 로그인되어 있어도 SSH 세션은 잠긴 키체인을 읽지 못하므로, 입찰(`dv bid`)과 SSH로 시작한 tmux·herdr의 에이전트가 로그아웃 상태로 보일 수 있습니다. 로컬 `check`의 `ssh` 열은 PATH만 재현하므로 실제 세션은 감시 호스트에서 `ssh juns-desk-mac dv host check`로 확인합니다. dv는 토큰을 읽거나 출력하지 않으며, 운영자가 Mac에서 한 번 키체인 밖의 저장소를 준비합니다.
+
+- gh: `gh auth login --insecure-storage`. 토큰은 사용자만 읽을 수 있는 `~/.config/gh/hosts.yml`에 저장되어 SSH 세션에서도 읽힙니다.
+- Claude Code: `claude setup-token`이 출력한 토큰을 운영자가 권한 600 파일에 두고 `~/.zshenv`에서 `CLAUDE_CODE_OAUTH_TOKEN`으로 읽게 합니다. 준비 전에는 Claude 입찰이 로그아웃으로 거절됩니다. Codex도 같은 `ssh juns-desk-mac dv host check`의 `auth codex`로 확인합니다.
+- 확인만 할 때는 그 SSH 세션에서 `security unlock-keychain ~/Library/Keychains/login.keychain-db`로 잠금을 풀 수 있지만(비밀번호 입력) 이후 세션에 이어진다고 가정하지 않습니다.
+
+`check`에 누락이 없고 SSH 로그인 상태가 확인되면 감시 호스트(lina-os)에서 `ssh juns-desk-mac true`로 호스트 키를 한 번 받아 두고, 관리자 config.sh의 `DV_HOSTS`와 감시 호스트의 `DV_PULL_HOSTS`에 `juns-desk-mac`을 추가합니다. 배정 순서에서는 작업 호스트 그룹에 속하고, 같은 점수일 때 이름이 정해진 Linux 호스트 다음입니다.
 
 ## 하루 흐름
 
@@ -129,7 +178,11 @@ PR 제목은 HEAD 커밋 제목이며 영어 Conventional Commits `type(scope): 
 
 GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고 squash → merge commit → rebase 순으로 선택합니다. `DV_LAND_METHOD=squash|merge|rebase`를 환경변수 또는 작업 worktree의 `.devflow`에 지정하면 해당 방식을 사용합니다(비어 있지 않은 환경변수가 우선). 예: `DV_LAND_METHOD=merge dv land APP-42`. 잘못된 값, 저장소가 허용하지 않는 지정값, 허용 방식 없음, 조회 실패 시 병합하지 않고 worktree를 보존합니다. 현재 PR head 고정과 병합 후 MERGED 확인은 그대로 적용됩니다. 로컬 저장소는 기존 `DV_LAND_MODE`를 사용합니다.
 
-쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
+다른 PR로 이미 합쳐진 작업은 `dv done ISSUE --already-merged <PR 번호·PR URL·커밋>`으로 끝냅니다. 숫자만 쓰면 PR 번호입니다. PR은 MERGED이고 같은 base에 병합됐는지 확인해 병합 커밋을 씁니다. 그 커밋이 fetch한 `origin/<BASE>`(원격이 없으면 로컬 base)의 조상이고, 이 브랜치를 base에 병합해도 tree가 바뀌지 않아야 합니다. 같은 수정을 다시 만든 커밋은 통과하며 base에 없는 변경이 남으면 거절합니다. 작업 자신의 PR이 열려 있어도 거절합니다. 결과는 done.json의 `merged_via`에 남고 상태는 ready입니다. 관리자의 `dv land`는 병합하지 않고 같은 확인을 반복한 뒤 landed 기록·worktree 정리·`landed` 이벤트를 처리합니다.
+
+열린 선행 이슈 때문에 진행할 수 없는 running 작업은 `dv park ISSUE --on 12,13 [--note TEXT]`로 보류합니다. 깨끗한 worktree와 선행 이슈가 열려 있는지 확인하고, force 없이 브랜치를 push하고, 작업 이슈(meta의 `source_issue`, 없으면 ISSUE 끝 번호)에 head별 마커가 있는 댓글을 한 번 남긴 뒤 상태를 `parked`로 바꾸고 `parked` 이벤트를 보냅니다. parked 작업은 입찰 슬롯을 차지하지 않고 정체 복구 대상도 아니며, 에이전트가 끝나도 failed를 보내지 않습니다. worktree는 보존하고 `dv send`가 상태를 running으로 되돌려 같은 worktree에서 재개합니다.
+
+쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 줄 끝의 `.`·`,`·`;`는 무시하고 `Depends on #1, #2`처럼 한 줄에 여러 번호를 적어도 됩니다. 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
 
 선행 PR의 landed 이벤트를 받으면 `dv-watch`는 자신과 `DV_HOSTS`의 모든 `waiting-base` 작업을 기존 재시도 큐에 넣습니다. `stack_head`가 없는 과거 기록도 포함합니다. 주기적 상태 안전망도 같은 호스트들을 조회하므로 대기에 들어오기 전에 병합된 기반과 놓친 이벤트를 복구합니다. 선행 PR이 모두 병합되고 병합 결과가 실제 `origin/<BASE>`에 포함되면, 해당 작업자에게 `dv send`로 base 병합·필요한 시험 재실행·일반 push·현재 head의 초록 CI·`dv done`을 요청합니다. 기존 land 승인(`stack_head`)이 있는 작업은 새 done 뒤 자동 병합을 이어가고, 승인 기록이 없으면 완료를 관리자에게 전달합니다. 미병합 기반은 다음 이벤트나 안전망까지 유예하며 `DV_MAX_WORKERS`의 동시 실행 한도를 공유합니다.
 
@@ -139,7 +192,7 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 업데이트 충돌은 worktree에 남기고 해당 에이전트에 `dv send`를 한 번 요청합니다. 요청은 `stack-conflict.sent`, 전달 결과는 `stack-conflict.log`에 보존합니다. 에이전트가 충돌을 해결·커밋·push하면 큐가 새 head의 CI를 확인하여 이어갑니다. 전달 실패는 자동으로 중복 전송하지 않으므로 로그를 확인해야 합니다. dirty worktree, API 오류, 비어 있거나 실패한 CI는 병합하지 않으며 기존 완료·리뷰 기록과 원격 브랜치를 보존합니다.
 
-Codex 기본 모드는 `DV_CODEX_MODE=auto`입니다. 실행 호스트에 연결 가능한 App Server가 있으면 사용하고, 없으면 exec를 선택합니다. `DV_CODEX_MODE=exec` 또는 `--mode exec`는 `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal`/`tui` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Claude·Devin 기본값은 goal입니다. auto 제출은 큐에서도 auto를 보존해 실제 실행 호스트에서 backend를 선택합니다.
+Codex 기본 모드는 `DV_CODEX_MODE=auto`입니다. 실행 호스트에 연결 가능한 App Server가 있으면 사용하고, 없으면 exec를 선택합니다. `DV_CODEX_MODE=exec` 또는 `--mode exec`는 `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal`/`tui` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Codex 외 에이전트는 goal만 씁니다. auto 제출은 큐에서도 auto를 보존해 실제 실행 호스트에서 backend를 선택합니다.
 
 goal과 사용자 지정 실행기는 herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 포커스를 바꾸지 않고 `dv-<ISSUE>` workspace에서 실행합니다(Codex hooks 유지). send·status·clean/land는 기록된 backend를 따르며 herdr 로그는 done/clean 시 화면을 저장합니다. 미설치 또는 `DV_HERDR=0`이면 tmux를 사용하고, 기존 backend 없는 이슈도 tmux로 처리합니다. herdr 시작 오류는 상태를 보존하고 실패를 알립니다.
 
@@ -159,7 +212,7 @@ Claude 기본 실행은 먼저 `~/.claude.json`의 `projects[worktree 경로].ha
 
 선택한 프로필의 `.claude.json`에서 `hasCompletedOnboarding`, `settings.json`에서 `skipDangerousModePermissionPrompt`가 모두 true여야 Claude를 띄웁니다. 환경 변수가 없거나 비어 있으면 각각 `~/.claude.json`과 `~/.claude/settings.json`을 읽습니다. 남은 온보딩이 있으면 `start-failed` 상태와 실패 이벤트를 남기며 화면에 키를 보내지 않습니다. 같은 `CLAUDE_CONFIG_DIR` 환경에서 `claude --dangerously-skip-permissions`를 한 번 대화형으로 실행해 테마·보안 안내·바이패스 경고를 끝내고 `dv host check`로 확인하세요. dv는 온보딩 플래그를 대신 설정하지 않습니다. `DV_AGENT_CMD_claude`로 전체 명령을 지정하면 이 준비 절차도 해당 명령에서 관리합니다.
 
-`DV_AGENT_QUESTIONS=sion`이 기본값이며 herdr에서 Codex goal의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 켜 둡니다. `DV_AGENT_QUESTIONS=off`이면 두 에이전트의 질문 도구를 끕니다. 질문 감시자가 없는 tmux와 백그라운드 exec에서는 항상 질문 도구를 끕니다. exec는 브리프의 지침에 따라 결정과 이유를 보고서에 기록합니다. `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 질문 도구 설정도 해당 명령에서 정합니다.
+`DV_AGENT_QUESTIONS=sion`이 기본값이며 herdr에서 Codex goal의 `request_user_input*`와 Claude의 `AskUserQuestion` 도구를 켜 둡니다. `DV_AGENT_QUESTIONS=off`이면 두 에이전트의 질문 도구를 끕니다. 질문 감시자가 없는 tmux와 백그라운드 exec에서는 항상 질문 도구를 끕니다. exec는 브리프의 지침에 따라 결정과 이유를 보고서에 기록합니다. `DV_AGENT_CMD_*`로 전체 명령을 지정한 경우에는 CLI 인자를 추가하지 않으므로 질문 도구 설정도 해당 명령에서 정합니다. Devin·omp·agy·grok·cursor는 질문 도구를 끄지 않습니다. herdr에서는 아래처럼 `blocked`가 지속되면 화면으로 알리고, 감시자가 없는 tmux에서는 정체 감지로만 드러납니다.
 
 에이전트는 브리프 안의 작거나 되돌릴 수 있는 선택을 직접 결정하고 보고서의 "결정"에 이유를 남깁니다. 설계 방향·범위·사용자에게 보이는 동작·데이터 형식처럼 결과를 바꾸는 선택만 시온에게 물으며, 선택지 2–3개와 추천안을 제시합니다. Codex의 `request_user_input_async`는 질문을 열어 둔 채 작업을 계속할 수 있으므로, 답에 의존하지 않는 작업은 진행합니다.
 
@@ -172,8 +225,9 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv submit REPO ISSUE SLUG --brief FILE [--agent AGENT] [--base BRANCH] [--mode MODE]` | 관리자에게 제출, 호스트는 입찰로 결정 |
 | `dv bid --json [--repo REPO] [--agent AGENT]` | 수용량·부하·메모리·디스크·clone·로그인 조회, 상태 변경 없음 |
 | `dv queue [ISSUE] [--json]` / `dv cancel ISSUE` | 관리자 배정 상태 조회 / 미배정 제출 취소 |
-| `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치(`<type>/<n>-<slug>`)·상태 및 선택한 backend 생성 |
-| `dv done ISSUE [--note TEXT]` | head·변경 파일 수·보고서 경로·완료 이벤트 |
+| `dv start REPO ISSUE SLUG [--agent codex\|claude\|devin\|omp\|agy\|grok\|cursor] [--brief FILE] [--base BRANCH] [--mode auto\|goal\|exec]` | worktree·브랜치(`<type>/<n>-<slug>`)·상태 및 선택한 backend 생성 |
+| `dv done ISSUE [--note TEXT] [--already-merged PR\|COMMIT]` | head·변경 파일 수·보고서 경로·완료 이벤트. `--already-merged`는 다른 PR로 이미 base에 들어간 작업을 ready로 기록 |
+| `dv park ISSUE --on N[,N...] [--note TEXT]` | 열린 선행 이슈를 기다리는 running 작업 보류: 브랜치 push·이슈 댓글·슬롯 반환, `dv send`로 재개 |
 | `dv pr ISSUE` | force 없이 push, PR 생성/기존 PR 갱신, 대기 시작. 제목은 HEAD 커밋 제목(`type(scope): subject`). 상태 폴더의 `pr.md`(PR 템플릿 형식 공개용 본문)를 그대로 쓰고, 이전 형식 브랜치에서 없으면 짧은 보고서 요약으로 만든다 |
 | `dv polish ISSUE` | PR 본문 퇴고·코드/URL 보존 검증 후 본문만 갱신 |
 | `dv pr-wait ISSUE [--foreground [--review-handled]]` | foreground는 CI·리뷰·인라인 지적 JSON 반환. 현재 head의 최신 Codex 리뷰에 P0/P1이 없으면 처리 완료. 기본 모드는 조기 종료 작업자 재개 안전망 |
@@ -182,7 +236,7 @@ herdr에서는 에이전트와 함께 실행되는 작은 감시자가 `agent wa
 | `dv status [ISSUE] [--json]` | 상태, 에이전트, 호스트, 경과, backend·생존·에이전트 상태, 마지막 로그 |
 | `dv metrics [--since 6h] [--json]` | 작업별 유휴 분, 이벤트 처리 지연, 완료→병합 지연, revive/resume 횟수 |
 | `dv send ISSUE 'text'` | 실행 중이면 입력 전달; 종료가 확인되면 같은 작업을 한 번 자동 재시작 |
-| `dv clean ISSUE` | 깨끗한 worktree·herdr/tmux 정리; 병합된 로컬 브랜치만 삭제 |
+| `dv clean ISSUE` | 깨끗한 worktree·herdr/tmux 정리; 병합된 로컬 브랜치만 삭제. QA 작업은 멈춘 깨끗한 임시 clone을 정리 |
 | `dv kick KIND ISSUE [msg]` | 완료 알림 전송, 실패 로그 보관 |
 | `dv-kick KIND ISSUE [msg [host [head]]]` | 감시 호스트 로컬 큐와 로그에 이벤트 추가 |
 | `dv-watch` | 로컬 큐 소비, 최대 4개 시온 작업자, 느린 상태 점검 |
@@ -212,13 +266,15 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 감시자는 작업자가 성공 종료한 이벤트만 `seen`에 기록합니다. 실패한 이벤트는 `$DV_HOME/pending/`에 보존하고 `DV_WORKER_RETRY`초(기본 15) 후 다시 실행하며, 재시작 후에도 이어집니다. 실행 중인 중복 이벤트는 한 작업자로 묶습니다. 작업자가 외부 작업을 끝내고 성공 기록 전에 죽으면 다시 실행될 수 있으므로 작업은 재실행을 견딜 수 있어야 합니다. 상태 안전망은 `done`과, `done_at`이 있고 완료 head가 현재 head와 같은 `pr/ready`의 완료 이벤트를 복구합니다. `dv status --json`의 `done_head`는 기존 `done.json`에서 읽으며, 완료 기록을 읽을 수 없으면 `null`입니다. 이전 완료 시각은 보존하므로 수정본의 `dv pr`이 작업 중 슬롯 계산을 바꾸지 않습니다.
 
+같은 안전망은 `pr`·`ready`·`waiting-base` 작업의 PR을 작업 호스트에서 `dv _pr-reconcile`로 확인합니다. 살아 있는 pr-wait가 지켜보는 `pr` 작업은 건너뜁니다. GitHub에서 병합된 PR은 `dv land`와 같은 조건(base·head 일치, 체크 전부 성공, 깨끗한 worktree)을 확인한 뒤 landed로 기록하고 worktree를 정리하며 `landed` 이벤트를 한 번 보냅니다. 조건이 맞지 않으면 아무것도 지우지 않고 같은 head·이유마다 한 번 `blocked`로 알립니다. 병합 없이 닫힌 PR은 `closed` 상태와 `closed` 이벤트로 남기며 worktree와 브랜치는 보존합니다. 다시 진행하려면 PR을 다시 열고 `dv pr`을 실행합니다. parked·closed 이벤트도 done·landed처럼 대기 중인 제출의 배정을 다시 시도합니다.
+
 ## 프로젝트 관리자
 
 `DV_MANAGER_HOST`(기본 lina-os)에서 `dv manager start ~/code/devflow`를 실행합니다. `DV_MANAGER_AGENT` 기본값과 지원 에이전트는 `hermes`입니다. start는 로그인된 `DV_HERMES_BIN`의 sion 프로필로 초기 역할 프롬프트를 한 번 실행하고 stderr의 `session_id:`를 저장합니다. 이후 같은 저장소의 이벤트는 `hermes -p sion chat -Q --yolo -t terminal,connections -s devflow --resume ID --query-file FILE`로 같은 대화를 이어갑니다. 매 배치마다 프로세스는 종료되며 대화 세션만 유지합니다.
 
 관리자는 GitHub와 dv의 현재 상태에서 의존 이슈가 닫힌 작업을 milestone 순으로 골라 brief와 `dv submit`을 준비하고 빈 호스트 자리를 채웁니다. `templates/manager-prompt.md`가 참조하는 `templates/worker-prompt.md`를 초기 입력에 원문 그대로 포함합니다. 이후 입력에도 기존 worker 규칙을 포함하고, 해당 저장소의 대기 이벤트 전부를 한 배치로 보냅니다. 이슈별 최신 이벤트를 처리하며 이전 이벤트는 `superseded`와 `superseded_by`로 표시해 문맥으로만 읽습니다. 최신 순서는 이벤트의 `time`, 같은 시간이면 큐 순서로 정합니다. 실행 도중 도착한 이벤트는 다음 배치에 포함합니다.
 
-등록과 세션 ID는 `$DV_HOME/managers/<저장소 키>/meta.json`, 대기 이벤트는 `pending/`, 실행 결과는 `events.log`와 각 실행의 `.out`/`.err`에 남습니다. 저장소는 submission 또는 이슈 meta에서 찾으며 GitHub HTTPS/SSH URL을 같은 식별자로 정규화합니다. 원격 이슈는 설정된 `DV_HOSTS`에서만 상태와 origin을 조회하고 저장소 이름만으로 매칭하지 않습니다. 같은 저장소의 관리자 배치는 디스크 큐와 실행 잠금으로 한 번에 하나씩 처리합니다. 활성 관리자는 저장소마다 별도 실행 자리 하나를 가지며, 일반·fallback·QA worker는 `DV_MAX_WORKERS`(기본 4, 범위 1–8)를 공유합니다. 관리자가 실행 중이거나 watcher가 재시작해도 일반 worker 자리를 차지하지 않습니다.
+등록과 세션 ID는 `$DV_HOME/managers/<저장소 키>/meta.json`, 대기 이벤트는 `pending/`, 실행 결과는 `events.log`와 각 실행의 `.out`/`.err`에 남습니다. 저장소는 submission 또는 이슈 meta에서 찾으며 GitHub HTTPS/SSH URL을 같은 식별자로 정규화합니다. 원격 이슈는 설정된 `DV_HOSTS`에서만 상태와 origin을 조회하고 저장소 이름만으로 매칭하지 않습니다. 같은 저장소의 관리자 배치는 디스크 큐와 실행 잠금으로 한 번에 하나씩 처리합니다. 활성 관리자는 저장소마다 별도 실행 자리 하나를 가지며, 일반·fallback worker는 `DV_MAX_WORKERS`(기본 4, 범위 1–8)를 공유합니다. QA는 일반 입찰 작업처럼 실행 호스트의 `DV_MAX_JOBS` 슬롯을 사용합니다. 관리자가 실행 중이거나 watcher가 재시작해도 일반 worker 자리를 차지하지 않습니다.
 
 대기 파일명은 `<cursor>-<event ID checksum>-<ID 길이>.json`입니다. 기존 숫자 슬롯과 새 슬롯 모두 실제 이벤트 ID를 비교해 재실행을 막습니다. 다른 이벤트가 차지한 슬롯은 `conflict/`에 보존하고 `queue_conflict`를 `events.log`와 `manager.log`에 기록합니다. 이미 실행 중인 배치나 fallback이 참조하는 파일은 사본을 보존하고 원래 경로에서 완료할 수 있게 둡니다. 새 이벤트는 다른 이름으로 계속 수신합니다. 운영자 메모는 큐 파일을 직접 만들지 않고 `dv manager note REPO FILE`로 넣습니다. `notices/note-*.json`에 파일 내용을 그대로 저장하며, 실행 중 도착한 메모는 다음 배치에서 fallback 처리 결과와 구분해 읽습니다.
 
@@ -234,11 +290,99 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 ## 기기 자동 배정
 
+### 준비된 이슈 자동 채우기
+
+관리자 설정에 저장소를 한 번 등록하면 기존 `dv-watch`가 커밋된
+`done`/`landed`/`failed`/`canceled`, `bid-changed`, 이슈 열림·닫힘·label 변경 이벤트에서 빈 호스트 자리를
+채웁니다. idle tick에는 GitHub 준비 이슈를 조회하지 않습니다. 시작 시와 기존
+`DV_RECONCILE_INTERVAL`(기본 1800초) 안전 점검만 누락 이벤트를 보완하며,
+체크별 timer나 daemon을 추가하지 않습니다. 예:
+
+```bash
+DV_AUTOFILL_REPOS='example/app example/library'
+DV_AUTOFILL_BRIEF_example_app='/path/to/app-brief.md'
+```
+
+기본값은 빈 목록(비활성)입니다. 목록은 공백으로 구분한 GitHub `owner/repo`이며,
+brief override 변수는 소문자로 바꾼 `owner/repo`의 `/`, `.`, `-`를 `_`로
+치환합니다. override가 없으면 해당 저장소 기본 branch의 `.devflow/brief.md`를
+읽습니다. template은 shell로 실행하지 않습니다. 이슈 URL, 댓글 조회 명령,
+stacked 의존 PR, `Closes`와 `dv done` 지시를 덧붙여 기존 submit 경로로 전달합니다.
+template에는 저장소별 검증·승인·전달 규칙을 적으세요. 자동 ID는
+`AF-<owner>-<repo>-<repo checksum>-<issue number>`입니다.
+
+준비된 이슈는 열려 있고, 열린 sub-issue가 없고, 모든 `Depends on #N`이
+닫혔거나 열린 closing PR이 있으며, `needs-owner` label과 기존 제출·열린 PR이
+없는 이슈입니다. `Depends on owner/repo#N`과 GitHub issue URL도 읽습니다.
+열린 PR 의존성은 작업 전에 그 PR head를 fetch/merge하도록 brief에 남기며,
+같은 저장소에서는 PR 본문에 `Depends on #<PR 번호>`를 넣어 기존 stack landing
+gate를 사용합니다. 기존 수동 제출은 저장소 identity와 ID의 마지막 이슈 번호로도
+중복을 확인합니다. 이미 취소·실패한 제출은 자동으로 새 작업으로 덮어쓰지 않습니다.
+
+가장 낮은 열린 milestone 번호부터 진행하고, 같은 milestone에서는 `qa` label이
+먼저입니다. 그 뒤 다음 milestone, 마지막으로 milestone 없는 작업을 진행합니다.
+milestone/QA 완료 gate는 의존성이 없는 다음 코드를 막지 않습니다. 이는 별도
+milestone 스크립트 `fill-m1.sh`, `start-m2-worker.sh`와 고정 12개 임계값을
+대체합니다. 기존 스크립트를 함께 실행하지 말고 allowlist, template, host 설정으로
+운영하세요. 병합 후 QA 자체는 아래 `DV_QA` 설정을 따릅니다.
+
+`dv queue --summary` 또는 `dv queue --summary --json`은 host별 effective slots,
+running, free, ready-but-not-started와 이유를 보여 줍니다. API 실패는 준비 상태로
+추측하지 않고 오류를 표시하며, 누락된 brief도 제출하지 않습니다. 마지막 제출
+시도 이유는 `last_attempt_reason`으로 구별합니다. 알림과 최근 snapshot은
+`$DV_HOME/autofill/`에 남습니다. 준비 작업과 빈 슬롯이 함께 10분을 초과하면
+`stalled`, reason=`fleet-underused`를 저장소 manager notices에 한 번 보냅니다.
+owner에게 전달하지 않으며 manager가 아직 없으면 시작될 때까지 notice를 보관합니다.
+10분 초과 여부는 다음 관련 이벤트나 안전 점검에서 판단합니다.
+
+devflow는 PR 생성, QA finding 등록, 입찰 snapshot 변경, 확인된 병합·완료·실패를
+기존 이벤트 큐에 직접 발행합니다. 병합 알림은 worktree 정리보다 먼저 발행하므로
+정리 재시도가 QA를 막지 않습니다. 외부 GitHub 이슈 변경을 전달하는 기존 hook은
+`dv kick issue-opened ISSUE URL`, `dv kick issue-closed ISSUE URL`을 사용합니다.
+재열림은 `issue-reopened`, label 변경은 `issue-labeled`/`issue-unlabeled`,
+의존성 변경은 `issue-edited`, 외부 host 입찰 변경은
+`bid-changed`로 전달할 수 있습니다. 동일 webhook 재전송은 `dv-kick`의 여섯 번째
+인자에 원래 delivery ID를 넣어 중복을 제거합니다. 별도 GitHub webhook 서버를
+설치하지 않으며 전달되지 않은 외부 변경은 느린 안전 점검에서 발견합니다.
+
 시온은 lina-os에서 `dv submit ~/code/my-app APP-42 fix-save --brief /path/brief.md`를 실행합니다. `DV_MANAGER_HOST` 기본값은 lina-os이며, 다른 호스트의 submit은 기존 SSH 연결로 관리자에게 브리프 내용을 전송합니다. 개발 호스트에 관리자 방향 SSH 키가 없어도 관리자에서 제출하면 됩니다. `DV_HOSTS`에는 배정 가능한 SSH 별칭을 적고, 모든 호스트에 같은 버전의 dv를 둡니다. 원격 저장소가 있는 로컬 경로는 origin URL로 전달합니다. 각 호스트는 `$DV_REPO_ROOT`(기본 `~/code`)의 같은 이름 clone을 확인하고, 없으면 낙찰 후 clone합니다. 이름이 같은 다른 origin은 덮어쓰지 않습니다. 원격 없는 경로는 해당 경로가 있는 호스트만 입찰합니다.
 
-`dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 호스트별 설정이고 기본값은 `max(1, floor(코어 수 / 8))`입니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 만석, 로그인 불가, 사용할 수 없는 저장소·터미널, `DV_MIN_MEMORY_MB`(기본 512) 미만이면 거절합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`를 사용하며, 다른 CLI는 `DV_AGENT_READY_codex/claude/devin`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
+`--agent` 없이 제출하면 브리프의 줄 하나로 기본 에이전트를 고릅니다. `Route: writing`(문서·이슈·PR 글·조사처럼 글만 쓰는 작업)은 `DV_ROUTE_WRITING`(기본 agy), `Route: small`(한 패키지, 약 200줄 이하 예상)은 `DV_ROUTE_SMALL`(기본 omp)로 보냅니다. 줄이 없거나 `Route: default`이면 `DV_AGENT`입니다. `--agent`와 Codex 전용 `--mode auto|exec`가 항상 우선하며, 대상 값을 비우면(`DV_ROUTE_SMALL=`) 그 경로를 끕니다. 다른 값은 오타로 보고 제출을 거절합니다. 선택 결과는 stderr에 한 줄 남기고 제출 기록의 `agent`에 저장됩니다.
 
-점수는 `100 × 빈 자리/수용량 − 20 × load5/코어 + min(64, 남은 메모리/1024) + clone 보너스 20 − 디스크 감점`입니다. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 순으로 진행하며, 점수가 높아도 뒤 그룹이 앞 그룹을 추월하지 않습니다. 같은 그룹에서는 높은 점수가 먼저이고, 기본 관리자(lina-os)에서 동점 순서는 **hx-linux → amd-linux → go2-linux → lina-os → gos-linux**입니다(준 10-20 결정). 조회는 각 그룹 안에서 `DV_HOSTS`에 적힌 순서를 따릅니다. hx·amd·go2·gos 별칭에도 같은 우선순위를 적용합니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 쓰는 최후 후보입니다. 낙찰 호스트는 잠금 안에서 수용량과 디스크를 다시 확인하고 `dv start`를 실행합니다. 직접 실행하는 `dv start`는 수동 경로이므로 자동 배정 중에는 `submit`을 사용하세요.
+`dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 학습한 상한에 적용하는 선택적 upper bound이며 기본값은 비어 있습니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`, agy·grok·cursor `models`, omp provider·키 설정을 사용하며([에이전트](#에이전트)), 다른 CLI는 `DV_AGENT_READY_<agent>`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
+
+자동 채우기를 활성화한 관리자는 기존 watcher tick마다 각 호스트의 active jobs,
+load5, available memory를 수집합니다. 호스트는 `$DV_STATE/.host-capacity/samples.jsonl`에
+샘플을 기록하고 한 시간마다 모델을 갱신합니다. 별도 timer나 daemon은 없습니다.
+최근 `DV_HOST_CAPACITY_WINDOW`초(기본 24시간, 최소 1시간)의 샘플을 작업 수별로
+묶고, 정렬한 load의 `ceil(0.75 × 샘플 수)`번째 값(p75)이
+`DV_TARGET_LOAD × cores` 이하인 가장 큰 작업 수를 `observed_cap`으로 선택합니다.
+`DV_TARGET_LOAD` 기본값은 1.2입니다. `learned_cap`은 이전 상한보다 시간당 최대
+2까지만 커지고, 현재 active 아래로 내려가지 않습니다. 줄어든 목표(`target_cap`)는
+별도로 보존해 기존 작업이 끝나는 동안 빈자리를 다시 채우지 않습니다. idle 샘플만 있으면 이전
+상한을 보존합니다. 샘플 기록은 매 tick, 비싼 집계·오래된 샘플 정리는 시간당 한 번입니다.
+
+첫 관측 시간에는 [측정된 knee](https://github.com/thisisjun786/devflow/issues/176#issuecomment-6339544059)를
+초기값으로 사용합니다: hx 24코어/14작업, amd·go2 16코어/12작업, gos 8코어/6작업.
+이름과 코어 수가 일치할 때만 적용하며, lina-os는 코어의 절반을 상한으로 남겨 둡니다.
+처음 보는 호스트는 1작업부터 관측하고 기존 실행 작업은 보존합니다. 새 샘플이
+쌓인 뒤에는 초기값 대신 p75 모델을 사용합니다. 관측한 적 없는 더 높은 작업 수를
+임의로 허용하지 않으므로, 측정 이력이 없는 구간의 상한을 스스로 추정하지 않습니다.
+
+`capacity`/`effective_slots`는 학습값, 선택적 `DV_MAX_JOBS`, 관리자 예약 상한,
+`floor(memory_available_mb / DV_MIN_MEMORY_MB)`를 함께 적용합니다. 메모리 기본값은
+슬롯당 512MiB이고 0이면 제한을 끕니다. 현재 load5/cores가 목표 이상이면 새 시작을
+막습니다. 어떤 경우에도 effective slots는 현재 active보다 작지 않으며
+`free_slots=max(0, effective_slots−active)`입니다. 자원 측정 실패는 시작을 거절합니다.
+실행 중인 작업은 종료하지 않으며 미래 CPU·메모리 사용량을 격리하는 장치는 아닙니다.
+
+`dv bid --json`과 `dv queue --summary --json`의 `learned_cap`, `capacity_model`
+(계산 시각·observed cap·p75 곡선·샘플 수), `max_jobs`, `memory_slots`,
+`capacity_reason`으로 근거를 확인합니다. 일반 bid 출력은 기존 다섯 열 뒤에
+learned/effective slots를 덧붙입니다. 모델이나 사용 가능한 슬롯이 바뀌면
+`bid-changed` 이벤트가 refill을 깨우며, 단순한 샘플 추가는 GitHub 재조회를 일으키지 않습니다.
+
+점수는 `100 × 빈 자리/max(1, 수용량) − 20 × load5/코어 − 100 × max(0, load5/코어 − 1.5) + min(64, 남은 메모리/1024) + clone 보너스 20 − 디스크 감점`입니다. 조회·배정은 작업 호스트 → 관리자와 lina-os → gos 순으로 진행하며, 점수가 높아도 뒤 그룹이 앞 그룹을 추월하지 않습니다. 같은 그룹에서는 높은 점수가 먼저이고, 기본 관리자(lina-os)에서 동점 순서는 **hx-linux → amd-linux → go2-linux → lina-os → gos-linux**입니다(준 10-20 결정). 조회는 각 그룹 안에서 `DV_HOSTS`에 적힌 순서를 따릅니다. hx·amd·go2·gos 별칭에도 같은 우선순위를 적용합니다. gos는 명시적으로 `DV_HOSTS`에 넣을 때만 쓰는 최후 후보입니다. 낙찰 호스트는 잠금 안에서 수용량과 디스크를 다시 확인하고 `dv start`를 실행합니다. 직접 `dv start`와 task 시작도 같은 admission 잠금 아래 현재 부하·메모리 슬롯을 재검사합니다.
 
 `disk_available_gb`는 `DV_WORK`가 있는 파일시스템의 남은 GiB이며 `cache_disk_available_gb`는 Go 캐시 파일시스템의 남은 GiB입니다. 캐시 경로는 `GOCACHE`를 우선하고 비어 있으면 `go env GOCACHE`로 구합니다. 아직 없는 경로는 가장 가까운 기존 상위 디렉터리를 조회하며 생성하지 않습니다. 두 디스크 중 하나라도 `DV_MIN_DISK_GB`(기본 15) 미만이면 `low disk`, 조회 실패는 `disk unavailable`로 거절합니다. 디스크 감점은 더 작은 남은 용량을 기준으로 `max(0, 20 × (2 × 최소 용량 − 남은 용량) / 최소 용량)`이며, 기본값에서는 양쪽 모두 30GiB 이상이면 0점, 작은 쪽이 15GiB이면 20점입니다. 최소 용량 0은 용량 거절·감점을 끄지만 조회 실패는 계속 거절합니다. Go 미설치·`GOCACHE=off` 등으로 캐시 경로를 구할 수 없으면 캐시 측정은 null이고 작업 디스크만 판단합니다. `dv host check`는 두 경로·남은 용량과 Go 캐시, `~/.cache` 전체 크기를 표시합니다. JSON에는 `work_root`, `go_cache_path`, 두 디스크 측정값, `cache_sizes_kb.go_build`와 `cache_sizes_kb.total`(KiB, 각각 Go 캐시와 `~/.cache`)이 추가되며 측정 실패는 null입니다.
 
@@ -287,7 +431,7 @@ Codex 0.163의 폴더 온보딩은 CLI 신뢰 덮어쓰기만으로 생략되지
 
 비로그인 SSH와 오래된 터미널 서버에서도 인증을 준비하도록, Codex 입찰·시작·실제 에이전트 실행 때 호스트의 `DV_CODEX_ENV_FILE`을 읽습니다. 기본값은 `~/.opencodex/codex-auth-env.sh`이며 다른 인증을 쓰면 운영자가 경로를 지정하거나 빈 값으로 끌 수 있습니다. 이 파일은 신뢰할 수 있는 셸 코드여야 합니다. 활성 `model_provider`의 `env_key`가 비어 있으면 `login status`가 성공해도 입찰과 시작을 거절합니다. 파일에서 내보낸 인증 값은 에이전트에 상속하며 pane 명령이나 상태 파일에 넣지 않습니다. 터미널 서버 환경에만 의존하지 않도록 인증 변수는 이 파일에서 준비하세요.
 
-goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. `dv send`로 재시작한 goal은 이전 완료 기록과 별개로 새 `dv done`이 필요합니다. `DV_AGENT_CMD_codex/claude/devin`은 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리와 첫 입력인 `DV_AGENT_INSTRUCTION`을 받습니다. 사용자 지정 실행기와 이전 버전의 터미널 exec 작업은 기존 실행·완료·revive 동작을 유지합니다.
+goal은 Codex/Claude/Devin과 사용자 지정 실행기 모두 `dv done` 없이 종료되면 종료 코드가 0이어도 기존 failed 이벤트로 알립니다. 이미 done을 기록했다면 실패 이벤트를 보내지 않습니다. `dv send`로 재시작한 goal은 이전 완료 기록과 별개로 새 `dv done`이 필요합니다. `DV_AGENT_CMD_<agent>`(codex·claude·devin·omp·agy·grok·cursor)는 전체 명령을 덮어쓰며 추가 CLI 플래그·TUI 입력을 넣지 않습니다. 해당 명령은 `DV_ISSUE`, `DV_STATE`, 작업 디렉터리와 첫 입력인 `DV_AGENT_INSTRUCTION`을 받습니다. 사용자 지정 실행기와 이전 버전의 터미널 exec 작업은 기존 실행·완료·revive 동작을 유지합니다.
 
 ## Codex App Server
 
@@ -335,16 +479,24 @@ resume하며, 이전 전송 결과가 불명확한 메시지는 재전송하지 
 `working`, `idle-with-goal-active`, `goal-complete`, `idle`, `failed`, `gone`, `unknown`으로
 표시합니다. 서버의 명시적인 thread-not-found만 gone이며 통신 장애는 unknown입니다.
 일반 오류 turn과 error item은 failed이며 용량 오류는 아래 대기 정책을 따릅니다. 화면은 읽지 않습니다.
-작업 클라이언트가 종료됐어도 상태 조회는 새 연결의 thread/read로 확인하며 turn을 시작하지 않습니다.
+기본 조회는 작업 클라이언트가 알림과 주기적 갱신 때 원자적으로 쓰는
+`appserver/status.json`만 읽습니다. JSON의 `status_age_seconds`와 텍스트의 `status_age`는
+마지막 관측 이후 초이며, 캐시가 없거나 읽을 수 없으면 unknown/null입니다.
+클라이언트가 종료되면 실행 중인 작업은 unknown, 종료된 작업은 gone으로 표시합니다.
+새 RPC가 필요할 때만 `dv status ISSUE --live [--json]`을 사용합니다. 이 경우
+`thread/read(includeTurns=true)`를 사용하므로 긴 thread의 조회 비용이 증가합니다.
+`--live` 조회는 작업 클라이언트가 종료됐어도 새 연결의 thread/read로 확인하며 turn을 시작하지 않습니다.
 연결이 끊긴 클라이언트는 같은 thread에 재접속하며 실패하면 1·2·4초부터 최대 30초 간격으로
 재시도합니다. 연결 복구는 `DV_RECOVER_MAX`를 소모하지 않습니다. 연결 전 활성 turn이 서버에서
 interrupted로 확인될 때만 continuation을 한 번 보내며, 불명확한 전달 결과는 재전송하지 않습니다.
 `running` 작업의 클라이언트가 죽으면 기존 watcher가 작업당 한 번 같은 시작 경로로 재실행합니다.
 이때 작업 상태와 복구 예산은 유지하며, done 또는 blocked가 기록된 작업은 재실행하지 않습니다.
-현재는 `thread/read(includeTurns=true)`를 사용하므로 긴 thread의 조회 비용이 증가합니다.
 `DV_APPSERVER_TIMEOUT`(10초)은 응답 제한, `DV_APPSERVER_POLL`(5초)은 상태 갱신 주기입니다.
 
 기존 `dv-watch`가 `DV_HOSTS`의 App Server 작업을 확인합니다.
+호스트별 reconcile은 백그라운드에서 하나씩 실행하며, `DV_STATUS_TIMEOUT`(10초)을
+넘기면 자식 프로세스까지 종료하고 `reconcile.log`에 기록한 뒤 해당 회차를 건너뜁니다.
+상태 조회와 후속 RPC는 이벤트·QA·작업 배정 루프를 막지 않습니다.
 `DV_STALL_AFTER`(300초) 동안 새 item이나 item delta가 없으면 stalled를 알립니다.
 `idle`, `goal-complete`, 활성 goal의 idle도 `dv done` 기록이 없으면 브리프와
 push·PR·CI·리뷰 처리를 마치고 `dv done ISSUE`를 실행하라는 continuation을 한 번 보냅니다.
@@ -417,26 +569,45 @@ App Server 시험은 임시 Unix 소켓과 Bash JSON-RPC 스텁을 사용합니�
 
 ## 병합 후 실사용 QA
 
-`DV_QA=1`을 호스트 설정 또는 저장소의 `.devflow`에 두면 `landed` 뒤에
-새 QA 작업이 실행됩니다. 기본값은 `0`입니다. QA는 최신 merged base를 별도
-임시 clone으로 가져와 그 revision의 `.devflow`를 읽습니다. 소유자의 checkout과
-설정은 바꾸지 않습니다. QA 설정은 `DV_QA=1`, `DV_QA_AGENT=claude` 같은
-literal 대입만 읽으며 `.devflow`의 shell 코드를 실행하지 않습니다.
-`DV_QA_AGENT=codex`는 새 Codex exec 세션,
-`claude`는 새 Claude Code 세션입니다. `DV_QA_AGENT_CMD`는 prompt 파일을
-받는 명령으로 시험 또는 별도 실행기에 쓸 수 있습니다.
+`dv manager start <repo>`로 활성화한 GitHub 저장소 중 호스트 설정 또는 그
+checkout의 `.devflow`에 `DV_QA=1`인 저장소를 감시합니다(기본값 `0`).
+`DV_QA_BASE`로 대상 base를 지정하며, 비어 있으면 원격 기본 브랜치를 씁니다.
+설정은 `DV_QA=1`, `DV_QA_AGENT=claude`, `DV_QA_BASE=main` 같은 literal
+대입만 읽고 `.devflow`의 shell 코드는 실행하지 않습니다.
 
-QA 저장소의 승인 기준은 watcher가 보관한 작업 기록입니다. 로컬 landed meta
-또는 원래 제출의 repo·host·head·발급 token과 맞는 이벤트만 받으며, 원격 호스트의
-status/origin 응답으로 저장소를 선택하지 않습니다. 기록 없는 원격 수동 작업은
-QA를 시작하지 않으므로 해당 watcher를 통해 `dv submit`으로 배정하세요.
+watcher는 기존 큐의 `merged`·`landed`·`done`·`failed`·`submitted`·`bid-changed`·
+`issue-opened`·`issue-closed` 이벤트가 처리될 때 GitHub의 병합
+PR을 조회하고, 각 병합 커밋이 설정한 base에 포함됐는지 확인합니다.
+외부 병합도 기존 watcher tick에서 읽는 GitHub 저장소 이벤트 피드로 자동 입력됩니다.
+조건부 ETag 요청으로 바뀌지 않은 피드는 다시 처리하지 않습니다. base의 Push/병합 PR과
+issue opened/closed 이벤트가 도착하면 기존 큐에 식별자가 고정된 알림을 저장한 뒤
+cursor를 갱신합니다. 큐 전달이 실패하면 cursor를 유지하며 재시도합니다. 이벤트 피드는
+알림 역할만 하고, QA 승인은 활성 목록과 실제 base 포함 여부 검사로 결정합니다.
+GitHub 이벤트 공개 지연이나 최근 100개 feed 범위를 넘는 누락은 시작 시 복구와 공용
+`DV_RECONCILE_INTERVAL`(기본 30분) sweep으로 보완합니다. 별도 타이머·데몬·webhook
+배포는 없으며, 기존 연결의 `dv kick merged <ISSUE>`도 계속 사용할 수 있습니다.
+GitHub UI나 `gh pr merge`로 직접 병합해도 QA를 등록합니다. 승인 기준은 활성 저장소와 base이며,
+개발 작업의 완료 상태나 award token은 필요하지 않습니다. 이벤트나 원격 status가
+새 저장소를 승인할 수 없습니다. API 조회가 실패하면 관측 지점을 보존하고 재시도합니다.
 
-watcher가 저장소마다 한 작업만 실행하고, 실행 중 들어온 병합은 다음 최신
-head 작업 하나로 합칩니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이고
-repo identifier에는 owner, 안전한 repo 이름과 구분용 checksum이 들어갑니다.
-같은 head는 다시 실행하지 않습니다. 개발 task backend와 독립적인 로컬 작업이며
-watcher의 worker 슬롯을 씁니다. `dv qa status --json`은 저장소별 pending/running을,
-`dv status`는 시작한 QA 작업과 결과를 보여 줍니다.
+`DV_QA_COALESCE`(기본 600초) 동안 새 병합이 없으면 모인 PR 전부를 나열한
+QA 하나를 최신 관측 base head에 제출합니다. 실행 중 추가 병합은 다음 요청으로
+보존합니다. 재시작할 때 저장된 관측 지점 이후의 병합을 따라잡으며, 기존 방식으로
+완료한 QA 기록도 초기 관측 지점으로 사용합니다. 첫 QA 기록이 없으면 현재 base의
+병합 이력을 함께 검사합니다. 비활성화한 저장소의 대기 요청은 실행하지 않고 보존합니다.
+
+QA도 일반 작업과 같은 호스트 입찰·admission·`DV_MAX_JOBS` 슬롯을 사용하므로
+서로 다른 저장소는 여러 호스트에서 병렬 실행됩니다. 준비 중인 clone과
+`waiting-capacity`도 자리를 유지합니다. 저장소별 실행 요청은 고정하고, 같은 head의
+작업을 중복 제출하지 않습니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이며
+repo identifier에는 owner, 안전한 repo 이름과 checksum이 들어갑니다.
+`dv qa status --json`은 scheduler의 저장소별 pending/running을,
+각 실행 호스트의 `dv status`는 QA 작업과 결과를 보여 줍니다.
+
+QA는 관측한 head를 별도 임시 clone에 checkout합니다. `DV_QA_AGENT=codex`는
+새 Codex exec 세션, `claude`는 새 Claude Code 세션입니다. `DV_QA_AGENT_CMD`는
+prompt 파일을 받는 시험용 또는 별도 실행기입니다. 소유자의 checkout과 설정은
+바꾸지 않습니다.
 
 QA는 `docs/qa.md`, 없으면 AGENTS.md의 QA 절, README·milestone·설계 문서에서
 여정을 읽습니다. 제품 실행은 임시 HOME·상태 디렉터리와 합성 자료·provider stub만
@@ -461,14 +632,22 @@ finding JSON에는 `title`, `kind` (`bug`/`feature`), `steps`, `expected`, `actu
 댓글을 달며 새 이슈를 중복 생성하지 않습니다. `report.md`를 쓴 뒤 `dv done`을
 실행하면 merged PR에 여정·발견 링크·시험 head를 요약한 댓글 하나를 남깁니다.
 manager는 현재 milestone의 열린 `qa` 이슈를 먼저 제출하고, 이들이 닫히고
-pending/running QA가 끝나기 전까지 milestone 완료와 다음 milestone 시작을 보류합니다.
+pending/running QA가 끝나기 전까지 milestone 완료를 보류합니다. 의존성이 없는
+다음 milestone 코드의 시작은 막지 않습니다.
 
-예약·로그는 `$DV_HOME/qa/`, 작업 meta·발견 영수증·보고서는 `$DV_STATE/QA-*/`에
-남습니다. watcher 재시작은 살아 있는 QA를 중복 실행하지 않습니다. 실패한 QA는
-자동 재실행하지 않으며 로그와 임시 clone을 보존합니다. 관리자는 blocked 원인을
-확인해야 합니다. 다음 병합은 새 head를 대상으로 실행할 수 있습니다. QA prompt는
-데이터 격리를 지시하지만 OS sandbox는 아닙니다. 실제 agent/provider QA 품질은
-stub 시험이 보증하지 않습니다.
+관측 지점·대기 요청은 scheduler의 `$DV_HOME/qa/`, 입찰 기록은
+`$DV_HOME/submissions/`, 실행 예약·로그는 실행 호스트의 `$DV_STATE/.qa/`,
+작업 meta·발견 영수증·보고서는 `$DV_STATE/QA-*/`에 남습니다. watcher 재시작은
+살아 있는 QA를 중복 실행하지 않습니다. provider usage limit/capacity 오류는
+#170의 공통 대기 경로로 같은 clone/session에서 재시도하며 정상 복구 횟수를
+소비하지 않습니다. 기본 2분·5분·15분 이후 15분 간격이며,
+`DV_CAPACITY_MAX_WAIT`(기본 6시간)를 넘으면 이유와 함께 blocked로 남습니다.
+다른 실패는 로그와 clone을 보존하여 확인할 수 있고 다음 병합은 새 head를 실행합니다.
+QA prompt는 데이터 격리를 지시하지만 OS sandbox는 아닙니다. 실제 agent/provider
+QA 품질은 stub 시험이 보증하지 않습니다. blocked 원인을 확인한 뒤
+`dv clean QA-...`는 QA 실행기가 멈췄고 clone이 깨끗할 때만 기록된 QA 임시
+디렉터리(clone·격리 HOME·상태·out)를 지우고 `cleaned_at`을 남깁니다. repo가 URL이므로
+소유자 checkout과 브랜치는 건드리지 않으며, dirty clone은 지우지 않습니다.
 
 임시 파일은 호스트 설정 `DV_TMP`(기본 `$HOME/.cache/dv/tmp`)에 둡니다. dv와 새 작업·에이전트의 `TMPDIR`에 이 경로를 전달하며, 기존 tmux/herdr 서버와 App Server를 쓰는 새 스레드에도 명시적으로 전달합니다. Go test와 pytest의 기본 임시 파일도 이 환경을 따릅니다. 작업 시작 시 `GOCACHE`(미지정이면 `go env GOCACHE`)가 `/tmp` 또는 macOS의 `/private/tmp` 아래이면 `$DV_TMP/go-build`로 바꿉니다. 다른 캐시 설정과 `GOCACHE=off`는 유지하며, 기존 캐시 파일을 이동하거나 지우지는 않습니다. `DV_TMP`는 디스크에 있는 절대 경로로 지정해야 합니다. 이미 실행 중인 에이전트의 환경이나 도구에 직접 지정한 임시 경로는 변경하지 않습니다.
 

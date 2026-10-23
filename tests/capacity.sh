@@ -12,7 +12,9 @@ capacity_clock_advance() {
 }
 capacity_status_wait() {
   local issue=$1 i
-  for i in {1..20}; do
+  # Cached status no longer waits for a client RPC; allow the client's next
+  # poll/recovery to publish capacity metadata before exhausting this wait.
+  for i in {1..100}; do
     if dv status "$issue" --json > "$CASE_DIR/capacity-status" &&
       jq -e '.[0] | .status=="waiting-capacity" and .agent_status=="waiting-capacity" and .alive and .capacity_retry_at>0' "$CASE_DIR/capacity-status"; then return; fi
     sleep 0.05
@@ -100,6 +102,10 @@ capacity_terminal_case() {
 }
 case_capacity_claude() { capacity_terminal_case claude; }
 case_capacity_devin() { capacity_terminal_case devin; }
+case_capacity_omp() { capacity_terminal_case omp; }
+case_capacity_agy() { capacity_terminal_case agy; }
+case_capacity_grok() { capacity_terminal_case grok; }
+case_capacity_cursor() { capacity_terminal_case cursor; }
 case_capacity_terminal_exit() { export DV_CAPACITY_EXIT=1; capacity_terminal_case claude; }
 capacity_due() {
   jq '.capacity.next_try_at=0' "$DV_STATE/$1/meta" > "$CASE_DIR/capacity-meta"
@@ -108,7 +114,7 @@ capacity_due() {
 case_capacity_classifier() {
   bidding_functions
   local message file="$CASE_DIR/error"
-  for message in 'usage limit' usageLimitExceeded rate_limit_exceeded 'HTTP 429' 'HTTP/1.1 429' 'Selected model is at capacity' overloaded '{"httpStatusCode":429}' '{"statusCode":429}'; do
+  for message in 'usage limit' usageLimitExceeded rate_limit_exceeded RESOURCE_EXHAUSTED 'Resource exhausted' 'HTTP 429' 'HTTP/1.1 429' 'Selected model is at capacity' overloaded '{"httpStatusCode":429}' '{"statusCode":429}'; do
     printf '%s\n' "$message" | capacity_error
     jq -cn --arg message "$message" '{type:"turn.failed",error:(try ($message|fromjson) catch {message:$message})}' > "$file"
     capacity_output_error "$file" 1

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Force independent synthetic repositories to publish their summaries together.
+# shellcheck disable=SC2317,SC2329
+mv() {
+  if [ "${1:-}" = "$GH_STUB_DIR/qa-comments.tmp" ]; then
+    touch "$CASE_DIR/summary-ready-$DV_HOST"
+    local _attempt
+    for _attempt in {1..100}; do
+      if [ -f "$CASE_DIR/summary-ready-hx-linux" ] && [ -f "$CASE_DIR/summary-ready-go2-linux" ]; then break; fi
+      sleep 0.05
+    done
+    test -f "$CASE_DIR/summary-ready-hx-linux" && test -f "$CASE_DIR/summary-ready-go2-linux" || return 1
+  fi
+  command mv "$@"
+}

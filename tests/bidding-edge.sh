@@ -147,3 +147,115 @@ case_submit_local_origin() {
   dv submit "$REPO" URL-1 edge --brief "$CASE_DIR/brief"
   jq -e '.repo=="https://github.com/test/repo.git"' "$DV_HOME/submissions/URL-1/task.json"
 }
+
+# Map only the example's fixed /scratch path into this case's disposable tree.
+config_work_value() (
+  sed "s@/scratch@$CASE_DIR/scratch@g" "$ROOT/config.example.sh" > "$CASE_DIR/example.sh"
+  unset DV_WORK
+  # shellcheck source=/dev/null
+  source "$CASE_DIR/example.sh"
+  printf '%s\n' "$DV_WORK"
+)
+case_config_work_fallback() {
+  mkdir "$CASE_DIR/scratch"
+  chmod 555 "$CASE_DIR/scratch"
+  local actual
+  actual=$(config_work_value)
+  chmod 755 "$CASE_DIR/scratch"
+  printf 'selected=%s\n' "$actual"
+  test "$actual" = "$HOME/dv/wt"
+}
+case_config_work_existing() {
+  test "$(config_work_value)" = "$HOME/dv/wt"
+  mkdir "$CASE_DIR/scratch"
+  test "$(config_work_value)" = "$CASE_DIR/scratch/dv-wt"
+  mkdir "$CASE_DIR/scratch/dv-wt"
+  chmod 555 "$CASE_DIR/scratch"
+  local actual
+  actual=$(config_work_value)
+  chmod 755 "$CASE_DIR/scratch"
+  test "$actual" = "$CASE_DIR/scratch/dv-wt"
+  # Explicit configuration must survive the default selection.
+  ( source "$CASE_DIR/example.sh"; test "$DV_WORK" = "$CASE_DIR/work" )
+}
+work_bid_setup() {
+  repo writable; bidding_functions
+  # shellcheck source=lib/disk.sh
+  source "$ROOT/lib/disk.sh"
+  export DV_MAX_JOBS=8 DV_CODEX_MODE=exec DV_AGENT_CMD_codex=''
+  work_bid_probes
+}
+work_bid_probes() {
+  # No auth, resource probes or terminal required for these synthetic bids.
+  WORK_BID_CORES=16
+  seed_host_capacity "$WORK_BID_CORES"
+  bid_agent() { return 0; }
+  bid_resources() {
+    printf '{"cores":%s,"load5":%s,"memory_available_mb":65536,"disk_available_gb":100,"go_cache_path":null,"cache_disk_available_gb":null}\n' "$WORK_BID_CORES" "${WORK_BID_LOAD:-0}"
+  }
+}
+case_bid_work_unwritable() {
+  work_bid_setup
+  chmod 555 "$DV_WORK"
+  cmd_bid --json --repo "$REPO" > "$CASE_DIR/bid.json"
+  chmod 755 "$DV_WORK"
+  cat "$CASE_DIR/bid.json"
+  jq -e '.status=="rejected" and .reason=="worktree dir not writable"' "$CASE_DIR/bid.json"
+}
+case_bid_work_paths() {
+  work_bid_setup
+  local path
+  mkdir "$CASE_DIR/locked"
+  chmod 555 "$CASE_DIR/locked"
+  touch "$CASE_DIR/file"
+  ln -s "$CASE_DIR/missing" "$CASE_DIR/dangling"
+  for path in "$CASE_DIR/locked/new/deep" "$CASE_DIR/file" "$CASE_DIR/file/child" "$CASE_DIR/dangling" "$CASE_DIR/dangling/child"; do
+    DV_WORK="$path" cmd_bid --json --repo "$REPO" > "$CASE_DIR/bid.json"
+    cat "$CASE_DIR/bid.json"
+    jq -e '.status=="rejected" and .reason=="worktree dir not writable"' "$CASE_DIR/bid.json"
+  done
+  chmod 755 "$CASE_DIR/locked"
+  # Existing directories need search permission as well as write permission.
+  chmod 666 "$DV_WORK"
+  cmd_bid --json --repo "$REPO" > "$CASE_DIR/bid.json"
+  chmod 755 "$DV_WORK"
+  jq -e '.status=="rejected" and .reason=="worktree dir not writable"' "$CASE_DIR/bid.json"
+  ln -s "$DV_WORK" "$CASE_DIR/link"
+  for path in "$DV_WORK" "$CASE_DIR/new parent/nested" "$CASE_DIR/link/nested"; do
+    DV_WORK="$path" cmd_bid --json --repo "$REPO" | jq -e '.status=="submitted"'
+  done
+  test ! -e "$CASE_DIR/new parent"
+  test ! -e "$DV_WORK/nested"
+}
+case_bid_overload() {
+  work_bid_setup
+  export DV_HOSTS='hx-linux amd-linux'
+  bidding_order_setup
+  work_bid_probes
+  WORK_BID_LOAD=38 DV_MAX_JOBS=8 cmd_bid --json --repo "$REPO" > "$CASE_DIR/hosts/amd-linux/bid.json"
+  mkdir "$DV_STATE/BUSY"
+  printf '{"status":"running"}\n' > "$DV_STATE/BUSY/meta"
+  WORK_BID_LOAD=0 DV_MAX_JOBS=2 cmd_bid --json --repo "$REPO" > "$CASE_DIR/hosts/hx-linux/bid.json"
+  jq -s '.' "$CASE_DIR/hosts/amd-linux/bid.json" "$CASE_DIR/hosts/hx-linux/bid.json"
+  bidding_order_run LOAD
+  jq -e '.host=="hx-linux" and .status=="working"' "$DV_HOME/submissions/LOAD/task.json"
+}
+case_award_error_detail() {
+  work_bid_setup
+  mkdir -p "$CASE_DIR/launcher/bin"
+  cat > "$CASE_DIR/launcher/bin/dv" <<'LAUNCHER'
+#!/usr/bin/env bash
+case "$1" in
+  start)
+    printf 'startup progress on stdout\n'
+    printf '\nPreparing worktree (new branch)\nmkdir: synthetic "Permission denied"\nsecond error\n' >&2
+    exit 1 ;;
+  *) exec "$ROOT/bin/dv" "$@" ;;
+esac
+LAUNCHER
+  chmod +x "$CASE_DIR/launcher/bin/dv"
+  DV_ROOT="$CASE_DIR/launcher" cmd__award < <(edge_request DETAIL first) > "$CASE_DIR/receipt"
+  jq -e '.status=="failed" and .token=="first"' "$CASE_DIR/receipt"
+  cat "$DV_STATE/DETAIL/events.log"
+  jq -se 'any(.[]; .kind=="failed" and .token=="first" and (.message|contains("mkdir: synthetic \"Permission denied\"")) and (.message|contains("second error")|not) and (.message|contains("startup progress")|not))' "$DV_STATE/DETAIL/events.log"
+}

@@ -16,6 +16,8 @@
 - `DV_REVIEW_ROUNDS`는 기본 4회입니다. 마지막 회차에도 P0·P1이 남으면 `review-rounds`와 열린 지적을 blocked로 보내며 관리자가 처리합니다. `DV_REVIEW_WAIT` 동안 리뷰가 없으면 `@codex review`를 한 번 더 요청하고 다시 기다립니다. 여전히 없으면 `review-timeout`으로 차단하며 done하지 않습니다. 같은 head 재조회는 새 회차가 아닙니다.
 - 최종 리뷰의 P2·P3은 병합 차단 사유가 아닙니다. devflow가 같은 저장소·원 이슈와 같은 milestone에 PR당 후속 이슈 하나를 만들고, 각 지적의 파일:줄·한 줄 내용과 `Depends on #<원 이슈>`를 적습니다. 후속 번호는 report.md와 PR 본문에 기록합니다.
 - 모든 CI 실패는 작업 세션에서 수정·시험·커밋하고 `dv pr <ISSUE>`로 push한 뒤 다시 foreground 대기합니다. 실패한 head별 CI 라운드는 최대 3회이며 같은 head 재조회는 추가 라운드가 아닙니다. 세 번째 실패에서 blocked이면 원인·남은 것을 보고합니다. 타임아웃·누락·대기·skipped 체크는 성공이 아닙니다. CI 수정으로 head가 바뀌어도 새 Codex 리뷰가 필요합니다.
+- 이 이슈의 변경이 이미 다른 PR로 base에 합쳐졌으면 PR 없이 `dv done <ISSUE> --already-merged <PR 번호 또는 커밋>`으로 끝냅니다. 브랜치에 base에 없는 변경이 남아 있으면 거절됩니다.
+- 열린 선행 이슈 때문에 더 진행할 수 없으면 작업을 커밋하고 `dv park <ISSUE> --on <번호>[,<번호>] --note "<한 줄 이유>"`로 보류한 뒤 끝냅니다. dv가 브랜치를 push하고 이슈에 댓글을 남기고 슬롯을 반환합니다. 선행 이슈가 닫히면 관리자가 `dv send`로 재개합니다.
 - 현재 head의 CI가 초록이고 최신 Codex 리뷰의 P0·P1이 0건일 때만 `dv done <ISSUE>`를 실행합니다. done과 land는 이 조건을 GitHub에서 다시 확인합니다. done은 head와 checks=green, review=handled를 전달합니다. 백그라운드 pr-wait는 조기 종료된 작업자를 같은 worktree에서 재개하는 안전망이며 회차 기록을 보존합니다. 관리자는 이슈 완료 조건·범위 확인과 병합을 담당합니다.
 - 원격 없는 로컬 저장소의 리뷰와 병합은 시온이 진행합니다. 로컬 리뷰 수정은 시온의 `dv send` 지시를 받아 P0·P1만 한 번 처리하며 재리뷰하지 않습니다. 로컬 작업도 마지막에 `dv done <ISSUE>`를 실행합니다.
 - GitHub 저장소면 `$DV_STATE/<ISSUE>/pr.md`에 PR 본문을 영어로 `.github/PULL_REQUEST_TEMPLATE.md` 구성대로 씁니다: `## Summary`(무엇을 왜 바꿨는지), `Closes #<n>`, `## Verification`(실행한 명령과 결과, 화면 변경은 캡처), `## Checklist`. `dv pr`은 세 제목과 `Closes #`를 확인합니다. 이 본문은 그대로 공개될 수 있으니 브리프·내부 경로·호스트 이름·개인 정보를 넣지 않습니다. `dv pr`은 이 파일이 있으면 그대로 씁니다.

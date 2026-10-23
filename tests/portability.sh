@@ -63,3 +63,22 @@ case_host_darwin_shells() (
   uname() { if [ "$1" = -s ]; then echo Darwin; else command uname "$@"; fi; }
   case_host_real_shells
 )
+case_portable_darwin_resources() (
+  export DV_ENTRY="$ROOT/bin/dv"
+  # shellcheck source=lib/common.sh
+  source "$ROOT/lib/common.sh"
+  # shellcheck source=lib/bidding.sh
+  source "$ROOT/lib/bidding.sh"
+  uname() { if [ "$1" = -s ]; then echo Darwin; else command uname "$@"; fi; }
+  sysctl() { case "$*" in '-n vm.loadavg') echo '{ 1.50 2.25 3.00 }' ;; '-n hw.pagesize') echo 16384 ;; *) return 1 ;; esac; }
+  vm_stat() {
+    printf '%s\n' 'Mach Virtual Memory Statistics: (page size of 16384 bytes)' \
+      'Pages free:                               65536.' 'Pages active:                            900000.' \
+      'Pages inactive:                          131072.' 'Pages speculative:                        65536.' \
+      'Pages throttled:                              0.' 'Pages wired down:                        200000.'
+  }
+  test "$(portable_load5)" = 2.25
+  # (free + inactive + speculative) pages of 16 KiB.
+  test "$(portable_memory_mb)" = 4096
+  bid_resources | jq -e '.load5==2.25 and .memory_available_mb==4096'
+)

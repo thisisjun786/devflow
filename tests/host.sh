@@ -64,6 +64,26 @@ case_host_check() {
   test ! -e "$HOME/downloads"
   test ! -e "$HOME/.local"
 }
+case_host_agents() {
+  host_setup
+  local tool
+  for tool in omp agy grok cursor-agent; do host_fake "$HOME/system/$tool" 1.2.3; done
+  mkdir -p "$HOME/.omp/agent"
+  printf 'providers:\n  inferhub:\n    apiKey: INFERHUB_API_KEY\n' > "$HOME/.omp/agent/models.yml"
+  printf 'INFERHUB_API_KEY=omp-secret-value\n' > "$HOME/.omp/agent/.env"
+  "$HOST_DV" host check --json > "$CASE_DIR/check.json"
+  jq -e '[.tools[] | select(.name=="omp" or .name=="agy" or .name=="grok" or .name=="cursor-agent") |
+    .install=="check" and .login.status=="ok" and .ssh.status=="ok"] | length==4 and all' "$CASE_DIR/check.json"
+  jq -e '.auth.omp=={login:"logged-in",ssh:"logged-in"} and .auth.agy.login=="logged-in" and .auth.grok.ssh=="logged-in" and .auth.cursor=={login:"unavailable",ssh:"unavailable"}' "$CASE_DIR/check.json"
+  "$HOST_DV" host check > "$CASE_DIR/check.txt"
+  grep -Fx 'auth cursor: login=unavailable ssh=unavailable' "$CASE_DIR/check.txt"
+  if grep -e 'private auth detail' -e 'omp-secret-value' "$CASE_DIR/check.json" "$CASE_DIR/check.txt"; then return 1; fi
+  rm "$HOME/.omp/agent/.env" "$HOME/system/agy"
+  "$HOST_DV" host check --json > "$CASE_DIR/missing.json"
+  jq -e '.auth.omp.login=="unavailable" and .auth.agy.login=="missing" and (.tools[] | select(.name=="agy") | .login.status=="missing")' "$CASE_DIR/missing.json"
+  "$HOST_DV" host sync > "$CASE_DIR/sync.txt"
+  for tool in omp agy grok cursor-agent; do grep -F "Check only: $tool (system)" "$CASE_DIR/sync.txt"; done
+}
 case_host_sync() {
   host_setup
   printf '# user profile\nexport USER_SETTING=keep\n' > "$HOME/.profile"
@@ -79,6 +99,8 @@ case_host_sync() {
   grep -F '# user profile' "$HOME/.profile"
   test "$(grep -c '^# BEGIN devflow PATH$' "$HOME/.profile")" = 1
   test "$(grep -c '^# BEGIN devflow PATH$' "$HOME/.zshenv")" = 1
+  # Linux keeps the original block: no Homebrew directories.
+  grep -Fx 'export PATH="$HOME/.opencodex/bin:$HOME/node/bin:$GOROOT/bin:$GOPATH/bin:$HOME/.local/bin:$PATH"' "$HOME/.profile"
   cp "$HOME/.profile" "$CASE_DIR/profile.after"
   cp "$HOME/.zshenv" "$CASE_DIR/zshenv.after"
   cp "$HOME/downloads" "$CASE_DIR/downloads.after"
@@ -189,4 +211,37 @@ case_host_real_shells() {
     path=$(host_shell_path login)
     test "$path" = "$HOME/system:/usr/bin:/bin"
   fi
+}
+case_host_sync_darwin() {
+  host_setup
+  # Apple Silicon with Homebrew. Apple ships git, zsh and sqlite3, not these.
+  printf '#!/usr/bin/env bash\ncase "$1" in -s) echo Darwin ;; -m) echo arm64 ;; esac\n' > "$CASE_DIR/host-bin/uname"
+  mkdir -p "$CASE_DIR/homebrew/bin"
+  printf '#!/usr/bin/env bash\nexit 99\n' > "$CASE_DIR/homebrew/bin/brew"
+  chmod +x "$CASE_DIR/homebrew/bin/brew"
+  printf 'command() { case "${1:-} ${2:-}" in "-v tmux"|"-v shellcheck"|"-v sqlite3"|"-v flock") return 1 ;; esac; builtin command "$@"; }\n' > "$CASE_DIR/hide-tools"
+  PATH="$CASE_DIR/homebrew/bin:$PATH" BASH_ENV="$CASE_DIR/hide-tools" "$HOST_DV" host sync > "$CASE_DIR/sync.txt"
+  # The same pinned versions, from their checksummed macOS assets.
+  for asset in go1.27.3.darwin-arm64.tar.gz node-v24.20.0-darwin-arm64.tar.gz uv-aarch64-apple-darwin.tar.gz \
+    gh_2.102.1_macOS_arm64.zip gitleaks_8.30.1_darwin_arm64.tar.gz herdr-macos-aarch64; do
+    grep -F "/$asset" "$HOME/downloads"
+  done
+  if grep -Ei 'linux' "$HOME/downloads"; then return 1; fi
+  grep -Ex 'Operator action \(not executed\): brew install shellcheck tmux sqlite( zsh)? flock' "$CASE_DIR/sync.txt"
+  if grep -F 'apt-get' "$CASE_DIR/sync.txt"; then return 1; fi
+  local line="export PATH=\"\$HOME/.opencodex/bin:\$HOME/node/bin:\$GOROOT/bin:\$GOPATH/bin:\$HOME/.local/bin:$CASE_DIR/homebrew/bin:$CASE_DIR/homebrew/sbin:\$PATH\""
+  grep -Fx "$line" "$HOME/.profile"
+  grep -Fx "$line" "$HOME/.zshenv"
+  "$HOST_DV" host check --json > "$CASE_DIR/after.json"
+  jq -e 'all(.tools[] | select(.install!="apt" and .install!="check"); .login.status=="ok" and .ssh.status=="ok")' "$CASE_DIR/after.json"
+  # dv heavy needs flock(1), which macOS lacks: check reports it like other system tools.
+  jq -e 'any(.tools[]; .name=="flock" and .install=="apt" and .expected=="system")' "$CASE_DIR/after.json"
+  cp "$HOME/downloads" "$CASE_DIR/downloads.after"
+  cp "$HOME/.zshenv" "$CASE_DIR/zshenv.after"
+  PATH="$CASE_DIR/homebrew/bin:$PATH" "$HOST_DV" host sync > "$CASE_DIR/sync2.txt"
+  cmp "$HOME/downloads" "$CASE_DIR/downloads.after"
+  cmp "$HOME/.zshenv" "$CASE_DIR/zshenv.after"
+  # Without brew on PATH, the block names Apple Silicon's default prefix.
+  "$HOST_DV" host sync > "$CASE_DIR/sync3.txt"
+  grep -F ':$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"' "$HOME/.zshenv"
 }
