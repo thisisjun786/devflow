@@ -244,6 +244,12 @@ cmd_submit() {
   [ -n "$mode" ] || mode=$(codex_default_mode "$agent")
   case "$agent:$mode" in codex:auto|codex:goal|codex:exec|dsh:auto|dsh:goal|dsh:exec) ;; *:goal) known_agent "$agent" || fail 'invalid agent/mode' ;; *) fail 'invalid agent/mode' ;; esac
   [ -z "$base" ] || git check-ref-format "refs/heads/$base" >/dev/null || fail 'invalid base'
+  # Bidding resolves local checkouts and cloneable URLs only; an owner/name
+  # shorthand would queue a job no host can satisfy. Reject it before any
+  # submission state or event is written.
+  if [ ! -d "$repo" ] && ! bid_remote_repo "$repo"; then
+    fail 'repository must be a local checkout path or full repository URL (https://, ssh://, git@host:)'
+  fi
   if [ -d "$repo" ]; then
     repo=$(cd "$repo" && git rev-parse --show-toplevel)
     origin=$(git -C "$repo" config --get remote.origin.url 2>/dev/null || true)
