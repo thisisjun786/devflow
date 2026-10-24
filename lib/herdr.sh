@@ -81,7 +81,7 @@ herdr_shell_only() {
 herdr_interrupt() {
   local pid command deadline
   pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
-  herdr_cmd pane send-keys "$HERDR_PANE" ctrl-c >/dev/null || return 1
+  herdr_cmd pane send-keys "$HERDR_PANE" C-c >/dev/null || return 1
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
     command=$(ps -p "$pid" -o args=) || return 1
     case "$command" in
