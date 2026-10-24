@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Sourced by run.sh: synthetic status, herdr/Codex fixtures, no live agents.
+# Sourced by run.sh: synthetic status and herdr fixtures, no live agents.
 # ROOT and DV_HOST come from the driver.
 # shellcheck disable=SC2153,SC2154,SC2016
 stall_omp_fixture() {
+  export DV_OMP_RESTART_GAP=0 DV_OMP_RESTART_SETTLE=0
   stall_fixture; stall_functions
-  jq '.agent="omp" | .head=.start_head' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  git -C "$REPO" checkout -qb fix/st-1
+  jq '.agent="omp" | .branch="fix/st-1" | .head=.start_head' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  cp "$CASE_DIR/brief" "$DV_STATE/ST-1/brief.md"
+  printf 'report to preserve\n' > "$DV_STATE/ST-1/report.md"
   printf 'π > \n' > "$CASE_DIR/herdr/w-ST-1/output"
   touch -t 202001010000 "$DV_STATE/ST-1/agent.launched"
   OMP_DIR=$(agent_transcript_dir omp "$(cd "$REPO" && pwd -P)")
@@ -16,7 +20,7 @@ stall_omp_fixture() {
 stall_omp_message() {
   jq -cn --arg id "$1" --argjson content "${2:-null}" \
     '{type:"message",id:$id,message:{role:"assistant",stopReason:"stop",content:($content //
-      [{type:"text",text:"[tool_use id=call_1 name=_bash] {\"command\":\"pwd\"}"}])}}' >> "$OMP_LOG"
+      [{type:"text",text:"[tool_use id=call_1 name=_bash]\n{\"command\":\"pwd\"}"}])}}' >> "$OMP_LOG"
 }
 stall_omp_scan() {
   stall_reconcile "$DV_HOST" "$(dv status ST-1 --json)" 60
@@ -24,211 +28,128 @@ stall_omp_scan() {
 stall_omp_count() {
   jq -se --argjson n "$1" '[.[]|select(.[0:2]==["agent","prompt"])]|length==$n' "$CASE_DIR/herdr/calls"
 }
-stall_omp_escalation_fixture() {
+stall_omp_prompts() {
+  jq -se '[.[]|select(.[0:2]==["agent","prompt"])|.[3]] |
+    length>0 and length%2==0' "$CASE_DIR/herdr/calls" >/dev/null
+  jq -se --arg state "$DV_STATE/ST-1" --arg wt "$REPO" '
+    [.[]|select(.[0:2]==["agent","prompt"])] as $calls |
+    all(range(0;$calls|length;2); . as $i |
+      $calls[$i][2:]==["w-ST-1:p1","/new"] and
+      ($calls[$i+1][3:] | join("\n") | contains("ST-1") and contains($state+"/brief.md") and
+        contains($state+"/report.md") and contains($wt) and contains("fix/st-1") and
+        contains("base main") and contains("real tool calls") and contains("transcripts") and
+        contains("dv done ST-1")))' "$CASE_DIR/herdr/calls"
+}
+stall_omp_origin() {
+  git init -q --bare "$CASE_DIR/remote.git"
+  git -C "$REPO" config url."$CASE_DIR/remote.git".insteadOf https://github.com/test/repo.git
+  git -C "$REPO" remote add origin https://github.com/test/repo.git
+  git -C "$REPO" push -qu origin main fix/st-1
+}
+case_stall_omp_once() {
   stall_omp_fixture
-  export DV_CODEX_BIN="$ROOT/tests/fixtures/texttool-codex"
-  unset DV_OMP_TEXTTOOL_ESCALATE
-  cp "$CASE_DIR/brief" "$DV_STATE/ST-1/brief.md"
-  jq '.herdr_workspace="w-ST-1"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  stall_omp_scan; stall_omp_count 2
+  stall_omp_scan
+  # A separate command and later PR transition cannot repeat the same turn.
+  dv _stall-recover ST-1 --omp-texttool round-1
+  jq '.status="pr"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
-  printf 'report to preserve\n' > "$DV_STATE/ST-1/report.md"
-  printf '{"rounds":2,"requests":{"old":{"retried":true}}}\n' > "$DV_STATE/ST-1/pr-loop.json"
-  printf 'review receipt\n' > "$DV_STATE/ST-1/review-fix.sent"
+  stall_omp_scan; stall_omp_count 2
+  stall_omp_message turn-2
+  stall_omp_scan; stall_omp_count 4
+  stall_omp_message turn-1
+  stall_omp_scan; stall_omp_count 4
+  stall_omp_prompts
+  jq -e 'length==2' "$DV_STATE/ST-1/omp-restarts.json"
+  jq -e '.agent=="omp" and .branch=="fix/st-1" and .escalated_from==null' "$DV_STATE/ST-1/meta"
+  jq -se 'all(.[]; .[0:2]!=["pane","run"] and .[0:2]!=["pane","send-keys"] and .[0:2]!=["workspace","close"])' "$CASE_DIR/herdr/calls"
+  test ! -e "$DV_STATE/ST-1/revive"
+  test ! -f "$DV_STATE/ST-1/stall-recovery.json"
+  test ! -s "$DV_HOME/kick.q"
+}
+case_stall_omp_forms() {
+  stall_omp_fixture
+  local form count=0 content
+  for form in '[tool_use id=x name=_bash]
+{"command":"pwd"}' '<tool_use id="x" name="_read">{"path":"README.md"}</tool_use>' \
+    '<function_calls><invoke name="_edit"><parameter name="path">a</parameter></invoke></function_calls>' \
+    '<antml:function_calls><antml:invoke name="_bash"><antml:parameter name="command">pwd</antml:parameter></antml:invoke></antml:function_calls>' \
+    '<tool_call>{"name":"_bash","arguments":{"command":"pwd"}}</tool_call>'; do
+    count=$((count + 1))
+    content=$(jq -cn --arg text "$form" '[{type:"text",text:$text}]')
+    stall_omp_message "form-$count" "$content"
+    stall_omp_scan; stall_omp_count "$((count * 2))"
+  done
+  stall_omp_prompts
+}
+case_stall_omp_wip() {
+  stall_omp_fixture; stall_omp_origin
   printf 'staged\n' > "$REPO/staged"
   git -C "$REPO" add staged
   printf 'unstaged\n' >> "$REPO/staged"
   printf 'untracked\n' > "$REPO/untracked"
-  git -C "$REPO" diff --binary > "$CASE_DIR/unstaged"
-  git -C "$REPO" diff --cached --binary > "$CASE_DIR/staged"
-  cp "$DV_STATE/ST-1/report.md" "$CASE_DIR/report"
-  cp "$DV_STATE/ST-1/pr-loop.json" "$CASE_DIR/pr-loop"
-}
-stall_omp_escalation_check() {
-  local expected_status=$1 interrupts=${2:-1}
-  wait_file "$DV_STATE/ST-1/takeover.json"
-  dv status ST-1 --json | jq -e --arg status "$expected_status" '.[0] |
-    .agent=="codex" and .escalated_from=="omp" and .escalation_reason=="texttool" and .status==$status and
-    .escalation_status=="launched" and .escalation_error==null'
-  dv status ST-1 | grep -F 'escalated_from=omp reason=texttool'
-  jq -e --arg wt "$REPO" '.cwd==$wt and (.args|index("exec")!=null) and
-    (.args[-1]|contains("stalled") and contains("uncommitted") and contains("brief.md") and contains("PR") and contains("dv done ST-1"))' "$DV_STATE/ST-1/takeover.json"
-  git -C "$REPO" diff --binary > "$CASE_DIR/unstaged-after"
-  git -C "$REPO" diff --cached --binary > "$CASE_DIR/staged-after"
-  cmp "$CASE_DIR/unstaged" "$CASE_DIR/unstaged-after"
-  cmp "$CASE_DIR/staged" "$CASE_DIR/staged-after"
-  grep -Fx untracked "$REPO/untracked"
-  test "$(git -C "$REPO" symbolic-ref --short HEAD)" = main
-  cmp "$CASE_DIR/report" "$DV_STATE/ST-1/report.md"
-  cmp "$CASE_DIR/pr-loop" "$DV_STATE/ST-1/pr-loop.json"
-  grep -Fx 'review receipt' "$DV_STATE/ST-1/review-fix.sent"
-  jq -se --argjson count "$interrupts" '[.[]|select(.[0:2]==["pane","send-keys"] and .[3]=="C-c")]|length==$count' "$CASE_DIR/herdr/calls"
-  stall_omp_scan
-  dv _stall-recover ST-1 --omp-texttool round-1
-  test "$(wc -l < "$DV_STATE/ST-1/takeover-runs" | tr -d ' ')" = 1
-}
-case_stall_omp_escalate() {
-  stall_omp_escalation_fixture
-  local n
-  for n in 1 2 3 4; do
-    stall_omp_message "retry-$n"
-    stall_omp_scan; stall_omp_count "$n"
-    jq -e '.agent=="omp" and .escalated_from==null' "$DV_STATE/ST-1/meta"
-  done
-  # A repeated scan of the just-resumed turn must let that attempt run.
+  stall_omp_scan; stall_omp_count 2
+  test "$(git -C "$REPO" log -1 --format=%s)" = 'wip: save work before restarting the omp session'
+  test -z "$(git -C "$REPO" status --porcelain)"
+  test "$(git -C "$CASE_DIR/remote.git" rev-parse refs/heads/fix/st-1)" = "$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" show HEAD:staged | grep -Fx unstaged
+  git -C "$REPO" show HEAD:untracked | grep -Fx untracked
+  grep -F 'wip: save work before restarting the omp session' "$DV_STATE/ST-1/sent-input"
+  grep -F 'dv pr ST-1' "$DV_STATE/ST-1/sent-input"
+  grep -F 'dv pr-wait ST-1 --foreground' "$DV_STATE/ST-1/sent-input"
+  grep -F 'wip=committed' "$DV_HOME/omp-restarts.log" | grep -F 'pushed=yes'
+  stall_omp_prompts
+  # A clean restart still pushes existing branch commits, without a new WIP.
+  local head
+  head=$(git -C "$REPO" rev-parse HEAD)
+  stall_omp_message clean
   stall_omp_scan; stall_omp_count 4
-  stall_omp_message exhausted
-  stall_omp_scan; stall_omp_count 4
-  stall_omp_escalation_check running
-  test ! -d "$DV_STATE/ST-1/revive"
-}
-case_stall_omp_escalate_pr() {
-  stall_omp_escalation_fixture
-  export DV_OMP_TEXTTOOL_ESCALATE=1
-  jq '.status="pr"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
-  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
-  mkdir "$DV_STATE/ST-1/revive" "$DV_STATE/ST-1/.pr-wait"
-  printf 'previous-revive\n' > "$DV_STATE/ST-1/revive/id"
-  touch "$DV_STATE/ST-1/.pr-wait/pid-$$"
-  stall_omp_scan; stall_omp_count 1
-  stall_omp_message exhausted
-  stall_omp_scan; stall_omp_count 1
-  stall_omp_escalation_check pr
-  grep -Fx previous-revive "$DV_STATE/ST-1/revive/id"
-}
-case_stall_omp_escalate_skip() {
-  stall_omp_escalation_fixture
-  export DV_OMP_TEXTTOOL_ESCALATE=1
-  stall_omp_scan; stall_omp_count 1
-  stall_omp_message exhausted
-  touch "$DV_STATE/ST-1/texttool-skip"
-  stall_omp_scan; stall_omp_count 1
-  test ! -e "$DV_STATE/ST-1/takeover.json"
-  jq -e '.agent=="omp" and .escalated_from==null' "$DV_STATE/ST-1/meta"
-}
-case_stall_omp_escalate_launch() {
-  stall_omp_escalation_fixture
-  export DV_OMP_TEXTTOOL_ESCALATE=1
-  # Existing reservation format from a previous launch must not exhaust this one.
-  printf '{"old":{"reserved_at":1}}\n' > "$DV_STATE/ST-1/omp-texttool-nudges.json"
-  stall_omp_scan; stall_omp_count 1
-  # A distinct launch, even within the same second, starts a fresh budget.
-  printf 'next-launch\n' > "$DV_STATE/ST-1/agent.launched"
-  stall_omp_message next-launch
-  stall_omp_scan; stall_omp_count 2
-  jq -e '.agent=="omp" and .escalated_from==null' "$DV_STATE/ST-1/meta"
-  stall_omp_message exhausted
-  stall_omp_scan; stall_omp_count 2
-  stall_omp_escalation_check running
-}
-case_stall_omp_escalate_interrupt() {
-  stall_omp_escalation_fixture
-  export DV_OMP_TEXTTOOL_ESCALATE=1
-  stall_omp_scan; stall_omp_count 1
-  stall_omp_message exhausted
-  printf 'pane send-keys\n' > "$CASE_DIR/herdr/fail"
-  stall_omp_scan; stall_omp_count 1
-  jq -e '.agent=="omp" and .escalation_status=="blocked"' "$DV_STATE/ST-1/meta"
-  rm "$CASE_DIR/herdr/fail"
-  stall_omp_scan
-  stall_omp_count 1
-  stall_omp_escalation_check running 2
-  jq -se '[.[]|select(.kind=="blocked")]|length==1' "$DV_STATE/ST-1/events.log"
-}
-stall_omp_blocked_fixture() {
-  stall_omp_escalation_fixture
-  export DV_OMP_TEXTTOOL_ESCALATE=1
-  stall_omp_scan; stall_omp_count 1
-  stall_omp_message exhausted
-  # Reproduce the record retained by older releases after invalid_key.
-  mkdir "$DV_STATE/ST-1/omp-texttool-escalation"
-  printf 'Retained handoff: stalled, uncommitted, brief.md, PR, dv done ST-1\n' > "$DV_STATE/ST-1/omp-texttool-escalation/prompt.md"
-  cp "$DV_STATE/ST-1/omp-texttool-escalation/prompt.md" "$CASE_DIR/prompt"
-  jq '.escalated_from="omp" | .escalation_reason="texttool" | .escalation_status="blocked" |
-    .escalation_error="omp did not stop" | .escalation_resumes=1 | .escalated_at=1' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
-  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
-}
-case_stall_omp_escalate_blocked() {
-  stall_omp_blocked_fixture
-  stall_omp_scan
-  stall_omp_escalation_check running
-  cmp "$CASE_DIR/prompt" "$DV_STATE/ST-1/omp-texttool-escalation/prompt.md"
-}
-case_stall_omp_escalate_blocked_guards() {
-  stall_omp_blocked_fixture
-  local change
-  cp "$DV_STATE/ST-1/meta" "$CASE_DIR/blocked-meta"
-  for change in '.escalation_status="interrupting"' '.escalation_status="launching"' '.escalation_status="launched"' \
-    '.escalation_error="could not close stopped omp pane"' '.escalation_error="could not launch Codex"' \
-    '.escalation_reason="other"' '.done_at=1' '.capacity={}' ; do
-    jq "$change" "$CASE_DIR/blocked-meta" > "$DV_STATE/ST-1/meta"
-    stall_omp_scan
-    dv _stall-recover ST-1 --omp-texttool round-1
-  done
-  cp "$CASE_DIR/blocked-meta" "$DV_STATE/ST-1/meta"
-  dv _stall-recover ST-1 --omp-texttool stale-token
-  touch "$DV_STATE/ST-1/texttool-skip"
-  stall_omp_scan
-  rm "$DV_STATE/ST-1/texttool-skip"
-  printf 'working\n' > "$CASE_DIR/herdr/w-ST-1/status"
-  stall_omp_scan
-  dv _stall-recover ST-1 --omp-texttool round-1
-  stall_omp_count 1
-  test ! -e "$DV_STATE/ST-1/takeover.json"
-  jq -se 'all(.[]; .[0:2]!=["pane","send-keys"])' "$CASE_DIR/herdr/calls"
-  printf 'idle\n' > "$CASE_DIR/herdr/w-ST-1/status"
-  stall_omp_scan
-  stall_omp_escalation_check running
-}
-case_stall_omp_escalate_legacy() {
-  stall_omp_escalation_fixture
-  export DV_OMP_TEXTTOOL_ESCALATE=1
-  jq -n --argjson at "$(date +%s)" '{old:{reserved_at:$at}}' > "$DV_STATE/ST-1/omp-texttool-nudges.json"
-  stall_omp_scan; stall_omp_count 0
-  stall_omp_escalation_check running
-}
-case_stall_omp_escalate_wrapper() {
-  stall_omp_escalation_fixture
-  export DV_OMP_TEXTTOOL_ESCALATE=1
-  export DV_AGENT_CMD_omp='printf "%s\n" "$$" > "$DV_STATE/$DV_ISSUE/omp-pid"; while :; do sleep 0.1; done'
-  touch "$CASE_DIR/herdr/w-ST-1/ready"
-  herdr pane run w-ST-1:p1 "$(shell_join "$ROOT/bin/dv" _agent ST-1)"
-  wait_file "$DV_STATE/ST-1/omp-pid"
-  local previous_pid
-  previous_pid=$(cat "$DV_STATE/ST-1/agent.pid")
-  stall_omp_message live-wrapper
-  stall_omp_scan; stall_omp_count 1
-  stall_omp_message exhausted
-  stall_omp_scan; stall_omp_count 1
-  stall_omp_escalation_check running
-  ! kill -0 "$previous_pid" 2>/dev/null
-  # The old wrapper cannot publish an exit over its Codex successor.
-  test ! -f "$DV_STATE/ST-1/agent.exit"
-  test ! -d "$DV_STATE/ST-1/revive"
-}
-case_stall_omp_once() {
-  stall_omp_fixture
-  stall_omp_scan; stall_omp_count 1
-  # The same turn survives scans, command restarts and a later PR transition.
-  stall_omp_scan
-  jq '.status="pr"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
-  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
-  stall_omp_scan; stall_omp_count 1
-  stall_omp_message turn-2
-  stall_omp_scan; stall_omp_count 2
-  stall_omp_message turn-1
-  stall_omp_scan; stall_omp_count 2
-  test ! -f "$DV_STATE/ST-1/stall-recovery.json"
-  grep -F 'Continue' "$DV_STATE/ST-1/sent-input"
+  test "$(git -C "$REPO" rev-parse HEAD)" = "$head"
+  test "$(git -C "$REPO" symbolic-ref --short HEAD)" = fix/st-1
 }
 case_stall_omp_pr() {
-  stall_omp_fixture
+  stall_omp_fixture; stall_omp_origin
+  local remote_head
+  remote_head=$(git -C "$CASE_DIR/remote.git" rev-parse refs/heads/fix/st-1)
   jq '.status="pr"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
-  # A PR waiter does not suppress this specific provider fault.
-  mkdir "$DV_STATE/ST-1/.pr-wait"
+  # A waiter and an already-used revive budget do not suppress this fault.
+  mkdir "$DV_STATE/ST-1/.pr-wait" "$DV_STATE/ST-1/revive"
   touch "$DV_STATE/ST-1/.pr-wait/pid-$$"
-  stall_omp_scan; stall_omp_count 1
-  stall_omp_scan; stall_omp_count 1
+  printf 'previous-revive\n' > "$DV_STATE/ST-1/revive/id"
+  printf '{"rounds":2,"requests":{"old":{"retried":true}}}\n' > "$DV_STATE/ST-1/pr-loop.json"
+  cp "$DV_STATE/ST-1/pr-loop.json" "$CASE_DIR/pr-loop"
+  printf 'unfinished\n' > "$REPO/wip"
+  stall_omp_scan; stall_omp_count 2
+  stall_omp_scan; stall_omp_count 2
+  test -z "$(git -C "$REPO" status --porcelain)"
+  test "$(git -C "$CASE_DIR/remote.git" rev-parse refs/heads/fix/st-1)" = "$remote_head"
+  cmp "$CASE_DIR/pr-loop" "$DV_STATE/ST-1/pr-loop.json"
+  grep -Fx previous-revive "$DV_STATE/ST-1/revive/id"
+  grep -Fx 'report to preserve' "$DV_STATE/ST-1/report.md"
+  grep -F 'job status pr' "$DV_STATE/ST-1/sent-input"
+  grep -F 'pr-loop.json' "$DV_STATE/ST-1/sent-input"
+  grep -F 'pushed=pr' "$DV_HOME/omp-restarts.log"
+}
+case_stall_omp_unmerged() {
+  stall_omp_fixture
+  git -C "$REPO" checkout -qb other main
+  printf 'other\n' > "$REPO/base"
+  git -C "$REPO" commit -qam other
+  git -C "$REPO" checkout -q fix/st-1
+  printf 'ours\n' > "$REPO/base"
+  git -C "$REPO" commit -qam ours
+  if git -C "$REPO" merge other; then return 1; fi
+  local head
+  head=$(git -C "$REPO" rev-parse HEAD)
+  git -C "$REPO" ls-files -u > "$CASE_DIR/unmerged"
+  stall_omp_scan; stall_omp_count 2
+  test "$(git -C "$REPO" rev-parse HEAD)" = "$head"
+  git -C "$REPO" ls-files -u > "$CASE_DIR/unmerged-after"
+  cmp "$CASE_DIR/unmerged" "$CASE_DIR/unmerged-after"
+  grep -F 'UU base' "$DV_STATE/ST-1/sent-input"
+  grep -F 'unresolved' "$DV_STATE/ST-1/sent-input"
+  grep -F 'wip=unmerged' "$DV_HOME/omp-restarts.log"
 }
 case_stall_omp_negative() {
   stall_omp_fixture
@@ -238,16 +159,18 @@ case_stall_omp_negative() {
   stall_omp_scan; stall_omp_count 0
   stall_omp_message thinking '[{"type":"thinking","thinking":"[tool_use id=x]"}]'
   stall_omp_scan; stall_omp_count 0
-  stall_omp_message superseded
-  printf '%s\n' '{"type":"message","id":"user-1","message":{"role":"user","content":[{"type":"text","text":"Continue"}]}}' >> "$OMP_LOG"
-  stall_omp_scan; stall_omp_count 0
-  # An incomplete or corrupt trailing message must not expose an old turn.
+  local role
+  for role in user tool toolResult; do
+    stall_omp_message superseded
+    jq -cn --arg role "$role" '{type:"message",id:"later",message:{role:$role,content:[]}}' >> "$OMP_LOG"
+    stall_omp_scan; stall_omp_count 0
+  done
   stall_omp_message partial
   printf '{"type":"message"' >> "$OMP_LOG"
   stall_omp_scan; stall_omp_count 0
   printf '\n' >> "$OMP_LOG"
   stall_omp_message recovered
-  stall_omp_scan; stall_omp_count 1
+  stall_omp_scan; stall_omp_count 2
 }
 case_stall_omp_guards() {
   stall_omp_fixture
@@ -255,13 +178,12 @@ case_stall_omp_guards() {
   for status in working blocked unknown 'done'; do
     printf '%s\n' "$status" > "$CASE_DIR/herdr/w-ST-1/status"
     stall_omp_scan
-    # A stale idle snapshot must also be rejected by the issue host.
     dv _stall-recover ST-1 --omp-texttool round-1
   done
   printf 'idle\n' > "$CASE_DIR/herdr/w-ST-1/status"
   dv _stall-recover ST-1 --omp-texttool stale-token
   cp "$DV_STATE/ST-1/meta" "$CASE_DIR/original-meta"
-  for change in '.status="done"' '.done_at=1' '.cleaned_at=1' '.agent="codex"' '.capacity={}' ; do
+  for change in '.status="done"' '.done_at=1' '.cleaned_at=1' '.agent="codex"' '.capacity={}' '.escalated_from="omp"'; do
     jq "$change" "$CASE_DIR/original-meta" > "$DV_STATE/ST-1/meta"
     stall_omp_scan
     dv _stall-recover ST-1 --omp-texttool round-1
@@ -270,28 +192,27 @@ case_stall_omp_guards() {
   touch "$DV_STATE/ST-1/texttool-skip"
   stall_omp_scan; stall_omp_count 0
   rm "$DV_STATE/ST-1/texttool-skip"
-  # A pending question is protected even if herdr's pane is idle.
   cmd_status() { dv status ST-1 --json | jq 'map(.question_pending=true)'; }
   cmd__stall_recover ST-1 --omp-texttool round-1
   stall_omp_count 0
-  stall_omp_scan; stall_omp_count 1
+  test ! -e "$DV_STATE/ST-1/omp-restarts.json"
+  stall_omp_scan; stall_omp_count 2
 }
 case_stall_omp_session() {
   stall_omp_fixture
   touch -t 201901010000 "$OMP_LOG"
   stall_omp_scan; stall_omp_count 0
-  # A newer session supersedes an older session's bad final message.
   touch -t 202101010000 "$OMP_LOG"
   OMP_LOG="$OMP_DIR/new-session.jsonl"
   stall_omp_message final '[{"type":"text","text":"Done"}]'
   stall_omp_scan; stall_omp_count 0
   stall_omp_message turn-1
-  stall_omp_scan; stall_omp_count 1
+  stall_omp_scan; stall_omp_count 2
   # Identical message IDs in distinct sessions are distinct turns.
   touch -t 202201010000 "$OMP_LOG"
   OMP_LOG="$OMP_DIR/session.jsonl"
   touch "$OMP_LOG"
-  stall_omp_scan; stall_omp_count 2
+  stall_omp_scan; stall_omp_count 4
 }
 case_stall_omp_transport() {
   stall_omp_fixture
@@ -300,19 +221,95 @@ case_stall_omp_transport() {
   rm "$CASE_DIR/herdr/fail"
   stall_omp_scan; stall_omp_count 1
   test ! -f "$DV_STATE/ST-1/sent-input"
+  grep -F 'rc=1 today=1' "$DV_HOME/omp-restarts.log"
   stall_omp_message next
-  stall_omp_scan; stall_omp_count 2
+  # Fail the second prompt after delivering /new; neither may be retried.
+  STALL_TIME=$(date +%s)
+  send_text() {
+    jq -e --arg turn "$(stall_omp_turn)" 'has($turn)' "$S/omp-restarts.json" >/dev/null || return 1
+    herdr_send_text "$1" || return
+    if [ "$1" = /new ]; then printf 'agent prompt\n' > "$CASE_DIR/herdr/fail"; fi
+  }
+  if cmd__stall_recover ST-1 --omp-texttool round-1; then return 1; fi
+  stall_omp_count 3
+  rm "$CASE_DIR/herdr/fail"
+  dv _stall-recover ST-1 --omp-texttool round-1
+  stall_omp_count 3
+  test "$(wc -l < "$DV_HOME/omp-restarts.log" | tr -d ' ')" = 2
+}
+case_stall_omp_gap() {
+  stall_omp_fixture
+  DV_OMP_RESTART_GAP=180
+  cmd__stall_recover ST-1 --omp-texttool round-1; stall_omp_count 2
+  stall_omp_message next
+  STALL_TIME=1179
+  cmd__stall_recover ST-1 --omp-texttool round-1; stall_omp_count 2
+  jq -e 'length==1' "$DV_STATE/ST-1/omp-restarts.json"
+  STALL_TIME=1180
+  cmd__stall_recover ST-1 --omp-texttool round-1; stall_omp_count 4
+  # A new launch does not reset the per-job spacing.
+  printf 'next-launch\n' > "$DV_STATE/ST-1/agent.launched"
+  touch -t 202001010000 "$DV_STATE/ST-1/agent.launched"
+  stall_omp_message next-launch
+  cmd__stall_recover ST-1 --omp-texttool round-1; stall_omp_count 4
+  STALL_TIME=1360
+  cmd__stall_recover ST-1 --omp-texttool round-1; stall_omp_count 6
+}
+case_stall_omp_config() {
+  stall_omp_fixture
+  (
+    unset DV_OMP_RESTART_GAP DV_OMP_RESTART_SETTLE
+    # shellcheck source=/dev/null
+    source "$ROOT/config.example.sh"
+    test "$DV_OMP_RESTART_GAP" = 180
+    test "$DV_OMP_RESTART_SETTLE" = 2
+  )
+  local setting value
+  for setting in DV_OMP_RESTART_GAP DV_OMP_RESTART_SETTLE; do
+    for value in -1 invalid 1.5 1000000000; do
+      if env "$setting=$value" dv _stall-recover ST-1 --omp-texttool round-1; then return 1; fi
+      test ! -e "$DV_STATE/ST-1/omp-restarts.json"
+    done
+  done
+  stall_omp_count 0
+}
+case_stall_omp_daily() {
+  stall_omp_fixture
+  # The per-day count survives process restarts, and excludes earlier days.
+  printf '{"old":{"at":1,"day":"2000-01-01"}}\n' > "$DV_STATE/ST-1/omp-restarts.json"
+  local n
+  for n in 1 2 3 4 5 6 7; do
+    stall_omp_message "daily-$n"
+    stall_omp_scan; stall_omp_count "$((n * 2))"
+    tail -1 "$DV_HOME/omp-restarts.log" | grep -F "rc=0 today=$n"
+    if [ "$n" -le 5 ]; then test ! -e "$DV_HOME/omp-restarts-over5.log"; fi
+  done
+  test "$(wc -l < "$DV_HOME/omp-restarts.log" | tr -d ' ')" = 7
+  test "$(wc -l < "$DV_HOME/omp-restarts-over5.log" | tr -d ' ')" = 2
+  grep -F ST-1 "$DV_HOME/omp-restarts-over5.log"
+  test ! -s "$DV_HOME/kick.q"
+  test ! -e "$DV_STATE/ST-1/events.log"
+  jq -e '.agent=="omp" and .escalated_from==null' "$DV_STATE/ST-1/meta"
+  test ! -e "$DV_STATE/ST-1/revive"
 }
 case_stall_omp_remote() {
   stall_omp_fixture
-  mkdir -p "$CASE_DIR/remote-home" "$CASE_DIR/hosts/ssh-alias"
-  printf 'DV_HOME=%q\nDV_HOST=canonical-host\n' "$CASE_DIR/remote-home" > "$CASE_DIR/hosts/ssh-alias/config"
+  mkdir -p "$CASE_DIR/remote-home" "$CASE_DIR/hosts/ssh-alias" "$CASE_DIR/remote-state"
+  local rows
+  rows=$(dv status ST-1 --json)
+  mv "$DV_STATE/ST-1" "$CASE_DIR/remote-state/ST-1"
+  printf 'DV_HOME=%q\nDV_STATE=%q\nDV_HOST=canonical-host\n' "$CASE_DIR/remote-home" "$CASE_DIR/remote-state" > "$CASE_DIR/hosts/ssh-alias/config"
   export SSH_BIDDING=1
-  stall_reconcile ssh-alias "$(dv status ST-1 --json)" 60
-  stall_omp_count 1
-  stall_reconcile ssh-alias "$(dv status ST-1 --json)" 60
-  stall_omp_count 1
+  stall_reconcile ssh-alias "$rows" 60
+  stall_omp_count 2
+  stall_reconcile ssh-alias "$rows" 60
+  stall_omp_count 2
   grep -F 'ssh-alias dv _stall-recover ST-1 --omp-texttool round-1' "$CASE_DIR/ssh.calls"
+  grep -F "$CASE_DIR/remote-state/ST-1/brief.md" "$CASE_DIR/remote-state/ST-1/sent-input"
+  test -f "$CASE_DIR/remote-state/ST-1/omp-restarts.json"
+  test -f "$CASE_DIR/remote-home/omp-restarts.log"
+  test ! -e "$DV_HOME/omp-restarts.log"
+  test ! -d "$DV_STATE/ST-1"
 }
 stall_fixture() {
   repo stall; herdr_setup; watch_fixture
