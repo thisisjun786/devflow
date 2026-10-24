@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
+if [ "$1 $2" = 'api --include' ]; then
+  # Share conditional HTTP framing while keeping per-PR stack bodies here.
+  export GH_STUB_BODY_CMD="$0"
+  exec "$ROOT/tests/fixtures/gh" "$@"
+fi
+if [ "${GH_STUB_BODY:-0}" != 1 ]; then printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"; fi
 case "$1 $2" in
   'pr checks') exit 0 ;;
   'pr view')

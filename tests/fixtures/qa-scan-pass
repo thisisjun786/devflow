@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stop the real watcher after dispatch to measure exactly one complete pass.
+# shellcheck disable=SC2317,SC2329
+source() {
+  builtin source "$@" || return
+  case "$1" in
+    */lib/qa.sh) qa_dispatch() { touch "$DV_HOME/stop"; } ;;
+  esac
+}

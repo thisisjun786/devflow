@@ -74,7 +74,7 @@ qa_github_events() {
   done < <(qa_enabled_repos events)
 }
 qa_github_events_repo() (
-  local record=$1 repository base key dir response body code etag='' previous='' newest eligible tmp rc=0
+  local record=$1 repository base key dir response body code etag='' previous='' newest eligible message tmp rc=0
   local headers=()
   repository=$(jq -r .repository <<< "$record"); base=$(jq -r .base <<< "$record")
   key=$(printf '%s' "$repository" | cksum | awk '{print $1 "-" $2}')
@@ -99,17 +99,20 @@ qa_github_events_repo() (
   jq -e 'type=="array" and all(.[]; (.id|type)=="string")' "$body" >/dev/null || return 1
   etag=$(awk 'tolower($1)=="etag:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$response")
   newest=$(jq -r 'first.id // empty' "$body")
-  eligible=$(jq -r --arg previous "$previous" --arg base "$base" '
+  eligible=$(jq -c --arg previous "$previous" --arg base "$base" '
     (map(.id)|index($previous)) as $index | (if $index==null then . else .[:$index] end) |
     map(select((.type=="PullRequestEvent" and .payload.action=="closed" and .payload.pull_request.merged==true and
       ($base=="" or .payload.pull_request.base.ref==$base)) or
       (.type=="PushEvent" and ($base=="" or .payload.ref==("refs/heads/"+$base))) or
-      (.type=="IssuesEvent" and (.payload.action=="opened" or .payload.action=="closed")))) | first.id // empty' "$body") || return 1
+      (.type=="IssuesEvent" and (.payload.action=="opened" or .payload.action=="closed")))) |
+    sort_by(if .type=="IssuesEvent" then 1 else 0 end) | first // empty' "$body") || return 1
   if [ -n "$eligible" ]; then
+    message='GitHub repository event; verify merged base'
+    if [ "$(jq -r .type <<< "$eligible")" != IssuesEvent ]; then message='GitHub base changed; verify merged base'; fi
     # Only a repository already enabled by the operator reaches this point.
     # Public event content never supplies commands, paths or QA authorization.
-    "$DV_ROOT/bin/dv-kick" qa-repository "QA-EVENTS-$key" 'GitHub repository event; verify merged base' \
-      "$DV_HOST" '' "github:$repository:$eligible" || return 1
+    "$DV_ROOT/bin/dv-kick" qa-repository "QA-EVENTS-$key" "$message" \
+      "$DV_HOST" '' "github:$repository:$(jq -r .id <<< "$eligible")" || return 1
   fi
   # The queue write comes first: a crash replays a stable event ID, so the
   # watcher's existing deduplication preserves at-least-once delivery.
@@ -120,15 +123,44 @@ qa_github_events_repo() (
 )
 qa_scan() {
   local record
+  qa_scan_failed=0
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
   while IFS= read -r record; do
     if ! qa_poll_repo "$(jq -r .repo <<< "$record")" "$(jq -r .repository <<< "$record")" \
       "$(jq -r .base <<< "$record")" "$(jq -r .agent <<< "$record")" "$(jq -r .remote <<< "$record")"; then
       printf 'QA merge scan failed; will retry: %s\n' "$(jq -r .repository <<< "$record")" >&2
+      qa_scan_failed=1
     fi
   done < <(qa_enabled_repos)
 }
-qa_enqueue() { qa_scan; }
+qa_enqueue() {
+  [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
+  mkdir -p "$DV_HOME/qa-scan" || return 1
+  # Persist before the watcher acknowledges the queue line. A restart or
+  # self-update can delay a scan but cannot discard it.
+  touch "$DV_HOME/qa-scan/wanted" || return 1
+  if jq -e '.kind=="qa-repository" and .message=="GitHub base changed; verify merged base"' <<< "$1" >/dev/null; then
+    touch "$DV_HOME/qa-scan/urgent" || return 1
+  fi
+}
+qa_scan_flush() {
+  local force=${1:-0} dir="$DV_HOME/qa-scan" time last=0 tmp
+  [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
+  if [ "$force" = 1 ]; then
+    mkdir -p "$dir" && touch "$dir/wanted" || return 1
+  fi
+  [ -f "$dir/wanted" ] || return 0
+  time=$(now)
+  [ ! -f "$dir/last" ] || last=$(cat "$dir/last")
+  if [ "$force" != 1 ] && [ ! -f "$dir/urgent" ] && [ $((time - last)) -lt "$DV_QA_SCAN_MIN" ]; then return 0; fi
+  tmp=$(mktemp "$dir/.last.XXXXXX") || return 1
+  printf '%s\n' "$time" > "$tmp" && mv "$tmp" "$dir/last" || return 1
+  # The immediate wake is consumed once. A failed scan remains wanted and
+  # retries on the minimum interval, without spinning on the same event.
+  rm -f "$dir/urgent"
+  qa_scan || return 0
+  [ "$qa_scan_failed" != 0 ] || rm -f "$dir/wanted"
+}
 qa_dir() {
   local identity=$1 base=$2
   printf '%s/qa/%s\n' "$DV_HOME" "$(printf '%s\n%s' "$identity" "$base" | cksum | awk '{print $1 "-" $2}')"
@@ -142,7 +174,7 @@ qa_poll_repo() (
       '.repository==$repository and .base==$base' "$dir/identity.json" >/dev/null || return 1
   fi
   encoded=$(jq -rn --arg base "$base" '$base|@uri')
-  head=$(bid_limit "$DV_BID_TIMEOUT" gh api "repos/$repository/commits/$encoded" --jq .sha) || return 1
+  head=$(bid_limit "$DV_BID_TIMEOUT" gh_get_cached "repos/$repository/commits/$encoded" | jq -er .sha) || return 1
   [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
   if [ -f "$dir/observed.json" ]; then cursor=$(cat "$dir/observed.json"); fi
   since=$(jq -r .merged_at <<< "$cursor")
@@ -165,7 +197,7 @@ qa_poll_repo() (
   # durable merge watermark. Late comments on old PRs cannot hide new merges.
   page=1
   while :; do
-    rows=$(bid_limit "$DV_BID_TIMEOUT" gh api "repos/$repository/pulls?state=closed&base=$encoded&sort=updated&direction=desc&per_page=100&page=$page") || return 1
+    rows=$(bid_limit "$DV_BID_TIMEOUT" gh_get_cached "repos/$repository/pulls?state=closed&base=$encoded&sort=updated&direction=desc&per_page=100&page=$page") || return 1
     jq -e 'type=="array"' <<< "$rows" >/dev/null || return 1
     result=$(jq -c --arg base "$base" --argjson cursor "$cursor" '[.[] |
       select(.merged_at!=null and .base.ref==$base and
@@ -190,7 +222,7 @@ qa_poll_repo() (
   while IFS= read -r pr; do
     sha=$(jq -r .merge_commit_sha <<< "$pr")
     [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
-    comparison=$(bid_limit "$DV_BID_TIMEOUT" gh api "repos/$repository/compare/$sha...$head") || return 1
+    comparison=$(bid_limit "$DV_BID_TIMEOUT" gh_get_cached "repos/$repository/compare/$sha...$head") || return 1
     jq -e '.status=="ahead" or .status=="identical"' <<< "$comparison" >/dev/null || return 1
   done < <(jq -c '.[]' <<< "$merges")
   mkdir -p "$dir" || return 1

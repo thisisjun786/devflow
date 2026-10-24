@@ -36,6 +36,20 @@ case_dsh_restart() {
   jq -se 'length==2 and all(.[]; (.args|index("--session-id"))==null) and (.[1].instruction|contains("wip=committed"))' "$DV_STATE/DS-1/dsh-runs.jsonl"
   test -z "$(git -C "$(jq -r .worktree "$DV_STATE/DS-1/meta")" status --porcelain)"
 }
+case_dsh_followup_restart() {
+  dsh_setup followup
+  dsh_start_wait
+  local text='Fix the P1 finding in lib/widget.sh only'
+  dv send DS-1 "$text"
+  exec_wait DS-1
+  # The follow-up ran on the stored session; its fresh restart must keep the
+  # follow-up request instead of dropping it for the original brief alone.
+  jq -se --arg text "$text" 'length==3 and
+    (.[1].args|index("--session-id")!=null) and
+    (.[2].args|index("--session-id")==null) and
+    (.[2].instruction|contains($text))' "$DV_STATE/DS-1/dsh-runs.jsonl"
+  jq -e '.exec_status=="done"' "$DV_STATE/DS-1/meta"
+}
 case_dsh_fallback() {
   needs_tmux
   dsh_setup unfinished
@@ -225,6 +239,23 @@ case_dsh_host_probe() {
   if grep -q 'fixture-dsh-secret' "$CASE_DIR/check.json"; then return 1; fi
   if DV_DSH_SMOKE_BAD=1 "$HOST_DV" host check --probe-dsh --json > "$CASE_DIR/bad.json"; then return 1; fi
   jq -e '.dsh.probe=="failed"' "$CASE_DIR/bad.json"
+}
+# Helper for host_dsh_env_isolation; runs in a fresh process like any case.
+case_host_dsh_env_probe() {
+  # setup() must clear caller-exported dsh settings before a host case starts.
+  if [ -n "${DV_DSH_BIN:-}" ] || [ -n "${DV_DSH_KEY_FILE:-}" ]; then
+    printf 'caller dsh settings reached the case: BIN=%s KEY_FILE=%s\n' \
+      "${DV_DSH_BIN:-}" "${DV_DSH_KEY_FILE:-}" >&2
+    return 1
+  fi
+  case_dsh_host_probe
+}
+case_host_dsh_env_isolation() {
+  local rc=0
+  # A real install and key location in the caller must not reach the host case.
+  DV_DSH_BIN="$CASE_DIR/caller-dsh" DV_DSH_KEY_FILE="$CASE_DIR/caller-dsh.env" \
+    bash "$ROOT/tests/run.sh" --case host_dsh_env_probe > "$CASE_DIR/isolation.log" 2>&1 || rc=$?
+  if [ "$rc" != 0 ]; then cat "$CASE_DIR/isolation.log"; return 1; fi
 }
 case_dsh_delivery() {
   dsh_setup delivery remote

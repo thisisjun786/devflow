@@ -3,7 +3,33 @@
 # shellcheck source=tests/process-group.sh
 source "$ROOT/tests/process-group.sh"
 set -euo pipefail
-printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
+if [ "${GH_STUB_BODY:-0}" != 1 ]; then printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"; fi
+if [ "${1:-}:${2:-}" = api:--include ] && [[ "${3:-}" != */events\?* ]]; then
+  endpoint=$3
+  body=$(mktemp "$GH_STUB_DIR/.body.XXXXXX")
+  trap 'rm -f "$body"' EXIT
+  case "$endpoint" in
+    */comments\?per_page=100\&page=*|*/reviews\?per_page=100\&page=*)
+      GH_STUB_BODY=1 "${GH_STUB_BODY_CMD:-$0}" api --paginate "${endpoint%%\?*}" > "$body"
+      page=${endpoint##*&page=}
+      jq -s --argjson start "$(((page - 1) * 100))" 'add | .[$start:$start+100]' "$body" > "$body.page"
+      mv "$body.page" "$body" ;;
+    repos/*/commits/*)
+      GH_STUB_BODY=1 "${GH_STUB_BODY_CMD:-$0}" api "$endpoint" --jq .sha | jq -Rn '{sha:input}' > "$body" ;;
+    *) GH_STUB_BODY=1 "${GH_STUB_BODY_CMD:-$0}" api "$endpoint" > "$body" ;;
+  esac
+  etag=$(cksum < "$body" | awk '{print $1 "-" $2}')
+  if [ -f "$GH_STUB_DIR/cache-fail" ]; then printf 'HTTP/2.0 503 Unavailable\r\n\r\n'; exit 1; fi
+  if [ -f "$GH_STUB_DIR/cache-invalid" ]; then printf 'HTTP/2.0 200 OK\r\nETag: "bad"\r\n\r\n{invalid'; exit; fi
+  case "$*" in
+    *"If-None-Match: \"$etag\"")
+      printf '304\n' >> "$GH_STUB_DIR/cache-status"
+      printf 'HTTP/2.0 304 Not Modified\r\n\r\n'; exit "${GH_CACHE_304_EXIT:-0}" ;;
+  esac
+  printf '200\n' >> "$GH_STUB_DIR/cache-status"
+  printf 'HTTP/2.0 200 OK\r\nETag: "%s"\r\n\r\n' "$etag"
+  cat "$body"; exit
+fi
 if [ -f "$GH_STUB_DIR/qa-pr" ]; then
   case "$*" in
     'api --include repos/test/repo/events?per_page=100'*)
