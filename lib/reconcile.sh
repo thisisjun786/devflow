@@ -89,11 +89,25 @@ cmd_issue_reconcile() {
 reconcile_submissions() (
   local host=$1 rows=$2 row issue dir
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
+  # Only submissions still open on this host can change. Most terminal rows
+  # belong to ones that already settled; checking each with its own jq under
+  # the shared schedule lock held it for seconds per host, and every other
+  # host's round and bid_event gave up after 10 s (10-24). Find them first,
+  # in one pass and outside the lock.
+  local open
+  open=$(for dir in "$DV_HOME"/submissions/*/; do
+      [ -f "$dir/task.json" ] && printf '%s\n' "$dir/task.json"
+    done | xargs -r jq -r --arg host "$host" 'select((.status=="working" or .status=="input-required" or
+      (.status=="submitted" and .host!=null)) and .host==$host) | .issue // empty' 2>/dev/null)
+  [ -n "$open" ] || return 0
+  # The scan above needs no lock: each rewrite below re-checks the same
+  # condition on the current task.json while holding it.
   bid_lock "$DV_HOME/.schedule-lock" "${BASHPID:-$$}" || return 1
   trap 'owned_unlock "$DV_HOME/.schedule-lock" "${BASHPID:-$$}"' EXIT
   while IFS= read -r row; do
     issue=$(jq -r .issue <<< "$row")
     [[ "$issue" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || continue
+    grep -Fxq -- "$issue" <<< "$open" || continue
     dir="$DV_HOME/submissions/$issue"
     [ -f "$dir/task.json" ] || continue
     # A status row can exceed one argument's limit (128 KiB on Linux; a landed
@@ -109,7 +123,8 @@ reconcile_submissions() (
         (if $job.reason!=null then .reason=$job.reason else del(.reason) end)
       else . end' || { rm -f "$dir/.job-row"; return 1; }
     rm -f "$dir/.job-row"
-  done < <(jq -c '.[] | select(.status=="closed" or .status=="failed" or .status=="landed")' <<< "$rows")
+  done < <(jq -c --arg open "$open" '($open|split("\n")) as $o | .[] |
+    select((.status=="closed" or .status=="failed" or .status=="landed") and ((.issue // "") as $i | $o|index($i)))' <<< "$rows")
 )
 reconcile_dir() { printf '%s/reconcile/%s\n' "$DV_HOME" "$(printf '%s' "$1" | cksum | awk '{print $1 "-" $2}')"; }
 reconcile_alive() {

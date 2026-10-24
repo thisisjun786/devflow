@@ -214,3 +214,28 @@ case_reconcile_submissions_large_row() {
   reconcile_submissions h1 "$rows"
   jq -e '.status=="completed" and .head=="abc"' "$DV_HOME/submissions/LN-9/task.json"
 }
+case_reconcile_submissions_skips_settled() {
+  bidding_functions
+  # shellcheck source=lib/reconcile.sh
+  source "$ROOT/lib/reconcile.sh"
+  DV_HOST=work DV_MANAGER_HOST=work
+  # Hundreds of landed jobs whose submissions already settled must not each
+  # take a jq round under the shared schedule lock (10-24: 260 rows held it
+  # for seconds and other hosts' rounds and bid_event gave up after 10 s).
+  local n=0 rows='[' calls
+  while [ "$n" -lt 50 ]; do
+    mkdir -p "$DV_HOME/submissions/LN-$n"
+    jq -n --arg i "LN-$n" '{issue:$i,status:"completed",host:"h1",token:"t"}' > "$DV_HOME/submissions/LN-$n/task.json"
+    rows="$rows{\"issue\":\"LN-$n\",\"status\":\"landed\",\"host\":\"h1\",\"award_token\":\"t\"},"
+    n=$((n + 1))
+  done
+  mkdir -p "$DV_HOME/submissions/LN-live"
+  jq -n '{issue:"LN-live",status:"working",host:"h1",token:"t"}' > "$DV_HOME/submissions/LN-live/task.json"
+  rows="$rows{\"issue\":\"LN-live\",\"status\":\"landed\",\"host\":\"h1\",\"award_token\":\"t\",\"head\":\"abc\"}]"
+  calls="$CASE_DIR/task-set-calls"
+  bid_task_set() { printf '%s\n' "$1" >> "$calls"; command_bid_task_set "$@"; }
+  command_bid_task_set() { local dir=$1 tmp; shift; tmp=$(mktemp "$dir/.task.XXXXXX"); jq "$@" "$dir/task.json" > "$tmp" && mv "$tmp" "$dir/task.json"; }
+  reconcile_submissions h1 "$rows"
+  jq -e '.status=="completed" and .head=="abc"' "$DV_HOME/submissions/LN-live/task.json"
+  test "$(wc -l < "$calls")" = 1
+}
