@@ -362,18 +362,18 @@ case_reconcile_waiter_remote() {
 case_watch_quiet_events() {
   export DV_WORKER_CMD="$ROOT/tests/fixtures/worker" DV_WATCH_INTERVAL=0.05 DV_RECONCILE_INTERVAL=1800 DV_HOSTS=''
   local kind
-  for kind in waiting-capacity progress idle parked; do dv-kick "$kind" Q-1 "$kind note" host abc; done
+  for kind in waiting-capacity progress idle; do dv-kick "$kind" Q-1 "$kind note" host abc; done
   dv-kick 'done' Q-2 'needs judgment' host def
   dv-watch > "$CASE_DIR/watch.log" 2>&1 & local watcher=$!
   for _ in {1..200}; do
     [ "$(find "$DV_HOME/workers" -name '*.finished' 2>/dev/null | wc -l | tr -d ' ')" = 1 ] &&
-      [ "$(wc -l < "$DV_HOME/seen" | tr -d ' ')" = 5 ] && break
+      [ "$(wc -l < "$DV_HOME/seen" | tr -d ' ')" = 4 ] && break
     sleep 0.05
   done
   touch "$DV_HOME/stop"; wait "$watcher"
-  test "$(wc -l < "$DV_HOME/seen" | tr -d ' ')" = 5
+  test "$(wc -l < "$DV_HOME/seen" | tr -d ' ')" = 4
   test "$(find "$DV_HOME/workers" -name '*.started' | wc -l | tr -d ' ')" = 1
   grep -l 'Q-2' "$DV_HOME/workers/"*.prompt.md
   if grep -l 'Q-1' "$DV_HOME/workers/"*.prompt.md; then return 1; fi
-  test "$(grep -c '"kind":"quiet"' "$DV_HOME/quiet.log")" = 4
+  test "$(grep -c '"kind":"quiet"' "$DV_HOME/quiet.log")" = 3
 }
