@@ -2489,6 +2489,8 @@ source "$ROOT/tests/bidding-order.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/manager.sh"
 # shellcheck source=/dev/null
+source "$ROOT/tests/repo-identity.sh"
+# shellcheck source=/dev/null
 source "$ROOT/tests/revive.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/appserver.sh"
@@ -2775,6 +2777,7 @@ registered_cases() {
   autofill_submit autofill_branch_slug autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence autofill_repository_events autofill_slot_release_events autofill_cancel_event autofill_label_event qa_merge_commit_event \
   status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
   task_tmux_done_failed_status task_herdr_done_failed_status task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
+  bid_clone_equivalent_urls bid_clone_distinct_urls bid_reject_default_port bid_repo_slug_identity manager_identity_urls \
   config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
   appserver_sender_close \
   metrics_restart_slow_start \

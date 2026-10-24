@@ -59,17 +59,18 @@ bid_remote_repo() {
 }
 bid_repo() {
   # Return the existing clone or the deterministic destination for an award.
-  local repo=$1 name origin
+  local repo=$1 name origin identity
   BID_CLONED=false; BID_REPO=''; BID_REPO_OK=false
   if [ -d "$repo" ] && git -C "$repo" rev-parse --show-toplevel >/dev/null 2>&1; then
     BID_REPO=$(cd "$repo" && git rev-parse --show-toplevel); BID_CLONED=true; BID_REPO_OK=true
   elif bid_remote_repo "$repo"; then
-    name=${repo##*/}; name=${name%.git}
+    identity=$(repo_identity "$repo")
+    name=${identity##*/}
     [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || return 0
     BID_REPO="$DV_REPO_ROOT/$name"
     if [ -e "$BID_REPO" ]; then
       origin=$(git -C "$BID_REPO" config --get remote.origin.url 2>/dev/null || true)
-      if [ "${origin%.git}" = "${repo%.git}" ]; then BID_CLONED=true; BID_REPO_OK=true; fi
+      if [ "$(repo_identity "$origin")" = "$identity" ]; then BID_CLONED=true; BID_REPO_OK=true; fi
     else BID_REPO_OK=true; fi
   fi
 }
@@ -151,12 +152,11 @@ bid_work_writable() {
   done
   [ -d "$path" ] && [ -w "$path" ] && [ -x "$path" ]
 }
-# Reduce a clone URL or owner/name entry to one comparable slug. GitHub is
-# case-insensitive and the same repository can arrive as https, ssh or scp,
-# with a trailing slash or a .git suffix, so drop those before comparing.
+# Keep the exclusion list's owner/name format and case-insensitive entries.
 bid_repo_slug() {
-  printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]' |
-    sed -E 's#/+$##; s#\.git$##; s#^(https?://|ssh://)?(git@)?github\.com[:/]##'
+  local identity
+  identity=$(repo_identity "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')")
+  printf '%s\n' "${identity#github.com/}"
 }
 # A host may refuse whole repositories (DV_BID_REJECT_REPOS="owner/name ..."), so
 # work for one repo can be steered off a host without a per-issue pin (a Mac kept
