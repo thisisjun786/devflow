@@ -738,3 +738,6 @@ QA 품질은 stub 시험이 보증하지 않습니다. blocked 원인을 확인�
 dv 시작 시 `DV_TMP`와 호출자의 기존 `TMPDIR`(없으면 `/tmp`)에서 `dv-appserver.*`, `dv-qa.*`, `dv-host-probe.*`를 수거합니다. 현재 사용자 소유의 실제 디렉터리에 유효한 `owner.pid`가 있고, 해당 프로세스가 사라진 경우만 삭제합니다. Bash 3.2의 서브셸에서도 실제 소유 프로세스를 기록합니다. 시간만으로 삭제하지 않으며, 심볼릭 링크·소유 기록이 없는 이전 버전 폴더·수정된 QA Git 작업 폴더는 보존합니다. 재사용된 PID가 살아 있으면 수거를 미룹니다.
 
 `dv host check`는 `/tmp`의 사용자 사용량과 quota를 표시하고 **80% 초과** 시 경고합니다. JSON의 `tmp`에는 `usage_kb`, `quota_kb`, `percent`, `warning`, `source`가 들어갑니다. quota 도구가 조회에 성공하면 실제 값을 사용합니다(`source=quota`). tmpfs quota를 지원하지 않는 도구이거나 도구가 없으면 `DV_TMP_QUOTA_KB`(기본 12582912 KiB, 12 GiB)와 현재 사용자 파일의 할당 블록을 비교합니다(`source=configured-estimate`). 호스트의 실제 한도에 맞게 설정하고, 한도를 모르면 0으로 설정하면 됩니다. 이 추정치는 다른 사용자 소유 디렉터리 내부, 다른 마운트, 삭제됐지만 열린 파일을 포함하지 않으므로 실제 quota 회계보다 작을 수 있습니다. 측정 실패·미지정 한도는 `null`로 표시하며 시스템 quota 설정은 바꾸지 않습니다.
+
+
+<!-- Automated fix for issue #353: fix(qa): mark dead capacity-wait runners as failed -->
