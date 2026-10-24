@@ -491,6 +491,42 @@ case_manager_stale_lock() {
   test ! -f "$dir/run.lock/pid"
   test ! -f "$CASE_DIR/hermes/overlap"
 }
+case_manager_surviving_runner() {
+  manager_setup
+  dv manager start "$REPO"
+  manager_functions
+  local dir runner active=0 manager_pids='' pids=''
+  dir=$(dirname "$(manager_meta)")
+  touch "$CASE_DIR/hermes/hold-resume"
+  manager_event M-1 "$REPO"
+  manager_enqueue "$(sed -n '1p' "$DV_HOME/kick.q")" "$CASE_DIR/brief" 0
+  manager_dispatch
+  runner=$!
+  manager_wait_calls 2
+  # Kill only the outer dv process: the runner subshell and Hermes survive.
+  kill -KILL "$runner"
+  wait "$runner" 2>/dev/null || true
+  manager_event M-2 "$REPO"
+  manager_enqueue "$(sed -n '2p' "$DV_HOME/kick.q")" "$CASE_DIR/brief" 1
+  manager_dispatch
+  test "$(cat "$dir/run.lock/pid")" = "$runner"
+  kill -0 "$(cat "$dir/run.lock/claim")"
+  test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 2
+  jq -se 'all(.[]; .kind!="stale_lock_cleared")' "$dir/events.log"
+  rm "$CASE_DIR/hermes/hold-resume"
+  wait_file "$dir/pending/$(manager_job_name 0 worker:M-1:pr-ready:abc).done"
+  for _ in {1..200}; do
+    [ -f "$dir/run.lock/pid" ] || break
+    sleep 0.05
+  done
+  test ! -f "$dir/run.lock/pid"
+  manager_dispatch
+  manager_wait_calls 3
+  wait "$!"
+  jq -se 'length==3 and .[1].resume=="session-1" and .[2].resume=="session-1"' "$CASE_DIR/hermes/calls"
+  test -f "$dir/pending/$(manager_job_name 1 worker:M-2:pr-ready:abc).done"
+  test ! -f "$CASE_DIR/hermes/overlap"
+}
 case_manager_runner_ownership() {
   manager_setup
   dv manager start "$REPO"

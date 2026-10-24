@@ -454,7 +454,12 @@ cmd__manager_run() (
   [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$PPID" ] || fail 'manager runner has no parent reservation'
   [ "$(cat "$dir/run.lock/job" 2>/dev/null)" = "$job" ] || fail 'manager runner job was not reserved'
   # Only one child can claim this exact reservation, even if invoked twice.
-  (set -C; printf '%s\n' "$$" > "$dir/run.lock/claim") 2>/dev/null || fail 'manager reservation already claimed'
+  # $$ still names the outer dv process inside this subshell on Bash 3.2.
+  # Record this execution shell through a child's PPID, so killing only the
+  # outer process cannot hide a surviving turn from stale-lock recovery.
+  set -C
+  bash -c 'printf "%s\n" "$PPID"' > "$dir/run.lock/claim" 2>/dev/null || fail 'manager reservation already claimed'
+  set +C
   # Transfer the watcher's reservation to this child before doing any work.
   printf '%s\n' "$$" > "$dir/run.lock/pid"
   trap 'manager_unlock "$dir"' EXIT
