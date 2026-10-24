@@ -39,6 +39,17 @@ case_exec_config_flags() {
   test "$(cat "$DV_STATE/EX-1/stub-count")" = 2
   grep -Fx 'trust_level = "trusted"' "$HOME/.codex/config.toml"
 }
+case_exec_warning_items() {
+  exec_setup warning-items
+  dv start "$REPO" EX-1 exec --mode exec
+  exec_wait
+  jq -e '.status=="done" and .exec_status=="done" and (.failure_reason==null)' "$DV_STATE/EX-1/meta"
+  test "$(cat "$DV_STATE/EX-1/stub-count")" = 1
+  test "$(cat "$DV_STATE/EX-1/agent.exit")" = 0
+  test ! -e "$DV_STATE/EX-1/exec-retry.used"
+  grep -F 'Under-development features enabled' "$DV_STATE/EX-1/log"
+  dv clean EX-1
+}
 exec_launch_race() {
   local issue=$1 s="$DV_STATE/$1" previous_exit=false published_pid wrapper_pid
   mkfifo "$s/launch-release"
