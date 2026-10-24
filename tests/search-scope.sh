@@ -3,10 +3,20 @@
 # shellcheck disable=SC2016,SC2153,SC2329
 search_load() {
   unset RIPGREP_CONFIG_PATH DV_RG_MAX_FILESIZE DV_RG_MAX_COLUMNS DV_RG_EXCLUDE_GLOBS
-  DV_ENTRY="$ROOT/bin/dv"
-  source "$ROOT/lib/common.sh"
+  DV_ROOT=$ROOT
+  # Keep this focused fixture out of the full common.sh source graph (#305).
+  # shellcheck source=config.example.sh
+  source "$ROOT/config.example.sh"
+  # shellcheck source=lib/search.sh
+  source "$ROOT/lib/search.sh"
+  # shellcheck source=lib/job-limits.sh
+  source "$ROOT/lib/job-limits.sh"
   S="$CASE_DIR/search-state"
   mkdir -p "$S"
+}
+search_commands_load() {
+  # shellcheck source=lib/commands.sh
+  source "$ROOT/lib/commands.sh"
 }
 case_search_defaults() {
   search_load
@@ -70,7 +80,7 @@ case_search_tmux() {
 case_search_agents() {
   search_load
   # Exercise the shared launcher with each agent's command override, no live CLI.
-  source "$ROOT/lib/commands.sh"
+  search_commands_load
   local agent output
   load_issue() { :; }; require_worktree() { :; }; stop_question_sentinel() { :; }
   herdr_question_sentinel() { :; }; capacity_terminal_stop() { :; }
@@ -109,7 +119,7 @@ KERNEL
 }
 case_search_oom_retry() {
   search_load
-  source "$ROOT/lib/commands.sh"
+  search_commands_load
   load_issue() { :; }; require_worktree() { :; }; codex_exec_run() { printf '%s\n' "$1"; }
   WT="$CASE_DIR"; ISSUE=SEARCH-1; KIND=code; BACKEND='exec'
   printf '{"agent":"codex","mode":"exec"}\n' > "$S/meta"
