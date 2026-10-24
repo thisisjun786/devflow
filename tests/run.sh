@@ -2597,6 +2597,8 @@ case_task_mixed_files() {
 source "$ROOT/tests/capacity.sh"
 # shellcheck source=tests/status-nonblocking.sh
 source "$ROOT/tests/status-nonblocking.sh"
+# shellcheck source=tests/reconcile-recovery.sh
+source "$ROOT/tests/reconcile-recovery.sh"
 # shellcheck source=tests/heavy.sh
 source "$ROOT/tests/heavy.sh"
 # shellcheck source=tests/process-cleanup.sh
@@ -2703,6 +2705,7 @@ source "$ROOT/tests/job-limits.sh"
 # shellcheck source=tests/search-scope.sh
 source "$ROOT/tests/search-scope.sh"
 registered_cases() {
+  printf '%s\n' owned_lock_missing_marker owned_unlock_reaper_race owned_unlock_marker_race owned_lock_dead_reaper owned_lock_recovery_race status_cut_utf8_log_bsd status_cut_utf8_pane_bsd status_cut_utf8_native reconcile_timeout_default
   printf '%s\n' search_defaults search_override search_large search_tmux search_agents job_oom_evidence search_oom_retry search_oom_revive
   printf '%s\n' job_nproc job_failure job_failure_reset job_supervisor_retry job_generic_exit job_auto_exec job_host job_fallback job_launchd job_tasks job_memory job_agent_retry
   printf '%s\n' review_future_deadline review_future_deadline_retried review_near_deadline

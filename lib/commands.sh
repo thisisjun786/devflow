@@ -599,7 +599,7 @@ cmd_status() {
         continue
       fi
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
-      last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
+      last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | LC_ALL=C tr -d '\000-\010\013\014\016-\037\r' || true)
       if [ "$backend" = appserver ]; then
         # A done, landed, cancelled or cleaned job with no client is finished.
         # Its thread no longer matters, and opening a connection per old job made
@@ -638,7 +638,7 @@ cmd_status() {
               printf '%s\n' "$info" | jq -e --slurpfile pending "$pending" '.state_change_seq==$pending[0].seq' >/dev/null 2>&1; then question_pending=true; fi
           fi
           if live_last=$(herdr_read "$pane" --lines 1 2>/dev/null); then
-            last=$(printf '%s\n' "$live_last" | tail -n 1 | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r')
+            last=$(printf '%s\n' "$live_last" | tail -n 1 | tail -c 200 | LC_ALL=C tr -d '\000-\010\013\014\016-\037\r')
           fi
         fi
       elif command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then
