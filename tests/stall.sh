@@ -46,6 +46,60 @@ case_stall_status() {
   dv status ST-1 --json | jq -e '.[0] | .goal_stalled and .goal_active==false'
   jq -se 'any(.[]; .==["pane","read","w-ST-1:p1","--source","visible"])' "$CASE_DIR/herdr/calls"
 }
+case_stall_pr_idle() {
+  stall_fixture
+  printf '› \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  jq '.status="pr" | .head=.start_head' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  stall_functions
+  STALL_ROW=$(dv status ST-1 --json | jq -c '.[0]')
+  stall_scan() { stall_reconcile "$DV_HOST" "[$STALL_ROW]" 60; }
+  stall_scan; stall_tick 9; stall_count 0
+  stall_tick 1; stall_count 1
+  stall_tick; stall_count 1
+  # A live waiter interrupts the idle episode; its stale PID does not.
+  mkdir "$DV_STATE/ST-1/.pr-wait"
+  touch "$DV_STATE/ST-1/.pr-wait/pid-$$"
+  stall_scan; stall_tick; stall_count 1
+  rm "$DV_STATE/ST-1/.pr-wait/pid-$$"
+  local dead
+  true & dead=$!; wait "$dead"
+  touch "$DV_STATE/ST-1/.pr-wait/pid-$dead"
+  stall_scan; stall_tick; stall_count 2
+  jq -n --arg head "$(printf '%s\n' "$STALL_ROW" | jq -r .head)" \
+    '{head:$head,green:true,review_handled:true}' > "$DV_STATE/ST-1/pr-ready.json"
+  stall_scan; stall_tick; stall_count 2
+  # An old clean receipt cannot handle a new head or preserve its old timer.
+  STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.done_head=.head | .done_at=1 | .head="next-head"')
+  jq '.head="next-head" | .done_at=1' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  stall_scan; stall_tick 9; stall_count 2
+  stall_tick 1; stall_count 3
+  jq -se '[.[]|select(.kind=="stalled")][-1].head=="next-head"' "$DV_HOME/kick.q"
+}
+case_stall_pr_remote() {
+  stall_fixture
+  jq '.status="pr" | .head=.start_head | .host="remote-host"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  stall_functions
+  STALL_ROW=$(dv status ST-1 --json | jq -c '.[0] | .goal_stalled=false')
+  mkdir -p "$CASE_DIR/remote-state" "$CASE_DIR/hosts/remote-host"
+  mv "$DV_STATE/ST-1" "$CASE_DIR/remote-state/ST-1"
+  printf 'DV_STATE="%s"\n' "$CASE_DIR/remote-state" > "$CASE_DIR/hosts/remote-host/config"
+  export SSH_BIDDING=1
+  stall_scan() { stall_reconcile remote-host "[$STALL_ROW]" 60; }
+  stall_scan; stall_tick; stall_count 1
+  # An unreachable observation pauses timing but keeps the emitted episode.
+  touch "$CASE_DIR/hosts/remote-host/offline"
+  stall_scan; stall_tick; stall_count 1
+  rm "$CASE_DIR/hosts/remote-host/offline"
+  stall_scan; stall_tick; stall_count 1
+  mkdir "$CASE_DIR/remote-state/ST-1/.pr-wait"
+  touch "$CASE_DIR/remote-state/ST-1/.pr-wait/pid-$$"
+  stall_scan; stall_tick; stall_count 1
+  jq -e 'length==0' "$DV_HOME/stalls.json"
+  grep -F 'remote-host dv _stall-recover ST-1 --pr-pending' "$CASE_DIR/ssh.calls"
+}
 stall_functions() {
   bidding_functions
   # shellcheck source=lib/stall.sh

@@ -1,5 +1,71 @@
 #!/usr/bin/env bash
 # PR ownership tests use only the disposable repository and gh/agent fixtures.
+pr_worker_idle_fixture() {
+  review_fixture
+  herdr_setup
+  jq '.backend="herdr" | .herdr_pane="w-P-1:p1"' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/P-1/meta"
+  herdr workspace create --label dv-P-1 --cwd "$REPO" --no-focus >/dev/null
+  touch "$CASE_DIR/herdr/w-P-1/detected"
+  printf 'idle\n' > "$CASE_DIR/herdr/w-P-1/status"
+}
+case_pr_worker_idle_review() {
+  pr_worker_idle_fixture
+  review_set 1 P1
+  dv pr-wait P-1
+  jq -se '[.[]|select(.[0:2]==["agent","prompt"])]|length==1' "$CASE_DIR/herdr/calls"
+  grep -F 'pr-snapshot.json' "$DV_STATE/P-1/sent-input"
+  dv pr-wait P-1
+  dv pr-wait P-1 --foreground >/dev/null
+  jq -se '[.[]|select(.[0:2]==["agent","prompt"])]|length==1' "$CASE_DIR/herdr/calls"
+  jq -e --arg head "$(git -C "$REPO" rev-parse HEAD)" \
+    '.recovery_sends[$head+":review-findings"] and (.reviewed_heads|length)==1' "$DV_STATE/P-1/pr-loop.json"
+  test ! -d "$DV_STATE/P-1/revive"
+  # A different reason on the same head and a later head each get one handoff.
+  printf '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]\n' > "$GH_STUB_DIR/checks"
+  dv pr-wait P-1; dv pr-wait P-1
+  jq -se '[.[]|select(.[0:2]==["agent","prompt"])]|length==2' "$CASE_DIR/herdr/calls"
+  git -C "$REPO" commit --allow-empty -qm 'fix: next head'
+  jq --arg head "$(git -C "$REPO" rev-parse HEAD)" '.head=$head' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/P-1/meta"
+  dv pr-wait P-1; dv pr-wait P-1
+  jq -se '[.[]|select(.[0:2]==["agent","prompt"])]|length==3' "$CASE_DIR/herdr/calls"
+  jq -e '(.recovery_sends|length)==3 and (.failed_heads|length)==2' "$DV_STATE/P-1/pr-loop.json"
+}
+case_pr_worker_idle_guards() {
+  pr_worker_idle_fixture
+  dv pr-wait P-1
+  review_set 1 P1
+  dv pr-wait P-1 --foreground >/dev/null
+  test ! -f "$DV_STATE/P-1/sent-input"
+  # Blocked review rounds belong to the manager, not an automatic input loop.
+  if DV_REVIEW_ROUNDS=1 dv pr-wait P-1; then return 1; fi
+  test ! -f "$DV_STATE/P-1/sent-input"
+}
+case_pr_worker_idle_concurrent() {
+  pr_worker_idle_fixture
+  review_set 1 P1
+  local first second
+  dv pr-wait P-1 & first=$!
+  dv pr-wait P-1 & second=$!
+  wait "$first"; wait "$second"
+  dv pr-wait P-1
+  jq -se '[.[]|select(.[0:2]==["agent","prompt"])]|length==1' "$CASE_DIR/herdr/calls"
+  jq -e '(.recovery_sends|length)==1 and (.reviewed_heads|length)==1' "$DV_STATE/P-1/pr-loop.json"
+}
+case_pr_worker_idle_tmux() {
+  needs_tmux
+  review_fixture
+  review_set 1 P1
+  tmux -L "$DV_TMUX_SOCKET" new-session -d -s dv-P-1 \
+    'while IFS= read -r input; do printf "%s\n" "$input" >> "$DV_STATE/P-1/sent-input"; done'
+  dv pr-wait P-1
+  wait_file "$DV_STATE/P-1/sent-input"
+  dv pr-wait P-1
+  test "$(wc -l < "$DV_STATE/P-1/sent-input" | tr -d ' ')" = 1
+  grep -F 'pr-snapshot.json' "$DV_STATE/P-1/sent-input"
+  test ! -d "$DV_STATE/P-1/revive"
+}
 case_pr_worker_foreground() {
   pr_fixture
   printf '[{"body":"P1: fix the write","path":"file.sh","line":3,"commit_id":"old"}]\n' > "$GH_STUB_DIR/comments"
