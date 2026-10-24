@@ -270,6 +270,43 @@ case_qa_dead_runner() {
   test "$(bid_active)" = 0
   dv status "$issue" --json | jq -e '.[0] | .status=="failed" and .alive==false'
 }
+case_qa_dead_capacity_runner() {
+  bidding_functions
+  # shellcheck source=lib/qa.sh
+  source "$ROOT/lib/qa.sh"
+  local issue=QA-dead-capacity S="$DV_STATE/QA-dead-capacity" qa_dir live pid_file
+  local dead=999999999
+  mkdir -p "$S" "$DV_STATE/.qa/$issue"
+  qa_dir="$DV_STATE/.qa/$issue"
+  # A provider wait nobody owns must not promise a retry. 2100-01-01 keeps the
+  # advertised time in the future for the life of the test.
+  jq -n --arg issue "$issue" '{issue:$issue,kind:"qa",repo:"test/repo",worktree:"",branch:$issue,
+    base:"main",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",start_head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    host:"test-host",agent:"codex",backend:"qa",status:"waiting-capacity",started:1,
+    capacity:{next_try_at:4102444800,attempt:1,resume_status:"running"}}' > "$S/meta"
+  printf '%s\n' "$dead" > "$S/agent.pid"
+  printf '%s\n' "$dead" > "$qa_dir/runner.pid"
+  printf '%s\n' "$dead" > "$qa_dir/child.pid"
+  test ! -e "$S/agent.exit"
+  test "$(bid_active)" = 0
+  dv status "$issue" --json | jq -e '.[0] |
+    .status=="failed" and .agent_status=="failed" and .alive==false and .capacity_retry_at==null'
+  # The scratch checkout outlives the runner until dv clean collects it.
+  test -f "$S/meta"
+  # A live wrapper, awarded runner, or agent child still owns the wait.
+  sleep 30 & live=$!
+  for pid_file in "$S/agent.pid" "$qa_dir/runner.pid" "$qa_dir/child.pid"; do
+    printf '%s\n' "$dead" > "$S/agent.pid"
+    printf '%s\n' "$dead" > "$qa_dir/runner.pid"
+    printf '%s\n' "$dead" > "$qa_dir/child.pid"
+    printf '%s\n' "$live" > "$pid_file"
+    test "$(bid_active)" = 1
+    dv status "$issue" --json | jq -e '.[0] |
+      .status=="waiting-capacity" and .agent_status=="waiting-capacity" and .alive==true and .capacity_retry_at==4102444800'
+  done
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+}
 case_qa_explicit_match() {
   qa_fixture
   printf '[{"number":19,"title":"fix(tui): answer the first message"},{"number":21,"title":"Conversation input stalls"}]\n' > "$GH_STUB_DIR/qa-issues"

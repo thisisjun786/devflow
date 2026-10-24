@@ -621,7 +621,7 @@ cmd_status() {
       elif [ "$backend" = qa ]; then
         agent_status=$(jq -r .status "$path")
         if qa_job_alive "$(dirname "$path")"; then alive=true
-        elif [ "$agent_status" = running ]; then agent_status=failed
+        elif [ "$agent_status" = running ] || [ "$agent_status" = waiting-capacity ]; then agent_status=failed
         fi
       elif [ "$backend" = herdr ]; then
         pane=$(jq -r '.herdr_pane // empty' "$path")
@@ -692,7 +692,9 @@ cmd_status() {
         if .status=="waiting-capacity" and .agent_dead!=true then .agent_status="waiting-capacity" else . end')
       if [ "$agent_status" = failed ] &&
         { [ "$agent_dead" = true ] || { { [ "$backend" = exec ] || [ "$backend" = qa ]; } && [ "$alive" = false ]; }; }; then
-        row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
+        row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed"
+          elif .status=="waiting-capacity" and .backend=="qa" then .status="failed" | .agent_status="failed" | .capacity_retry_at=null
+          else . end')
       fi
       if [ "$agent_exit_code" != null ]; then
         row=$(printf '%s\n' "$row" | jq -c --argjson code "$agent_exit_code" '.agent_exit_code=$code')
