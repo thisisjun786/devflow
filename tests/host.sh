@@ -23,7 +23,7 @@ host_setup() {
   export PATH="$CASE_DIR/host-bin:$PATH"
   # Copy the checkout so host-scoped rows can be tested without changing source.
   mkdir "$CASE_DIR/host-root"
-  cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/hosts" "$ROOT/config.example.sh" "$CASE_DIR/host-root/"
+  cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/hosts" "$ROOT/templates" "$ROOT/config.example.sh" "$CASE_DIR/host-root/"
   HOST_DV="$CASE_DIR/host-root/bin/dv"
 }
 case_host_tmp_guard() {

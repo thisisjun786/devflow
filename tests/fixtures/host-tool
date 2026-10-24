@@ -39,6 +39,7 @@ if [ "$name" = npm ] && [ "${1:-}" = install ]; then
   case "${*: -1}" in
     @anthropic-ai/claude-code@*) tool=claude ;;
     pnpm@*) tool=pnpm ;;
+    @deepseek-ai/dsh@*) tool=dsh ;;
     *) exit 1 ;;
   esac
   version=$(printf '%s\n' "${*: -1}" | sed 's/.*@//')
@@ -48,6 +49,12 @@ if [ "$name" = npm ] && [ "${1:-}" = install ]; then
     shift
   done
   test -n "$prefix"
+  if [ "$tool" = dsh ]; then
+    mkdir -p "$prefix/node_modules/.bin"
+    sed "s/@VER""SION@/$version/" "$HOST_FIXTURES/host-tool" > "$prefix/node_modules/.bin/dsh"
+    chmod +x "$prefix/node_modules/.bin/dsh"
+    exit
+  fi
   rm -f "$prefix/bin/$tool"
   [ "${HOST_NPM_FAIL:-0}" != 1 ] || exit 1
   sed "s/@VER""SION@/$version/" "$HOST_FIXTURES/host-tool" > "$prefix/bin/$tool"

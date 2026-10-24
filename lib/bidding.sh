@@ -95,7 +95,7 @@ bid_active() {
 }
 bid_agent() {
   local agent=$1 override bin probe
-  override="DV_AGENT_CMD_$agent"; override=${!override}
+  override="DV_AGENT_CMD_$agent"; override=${!override:-}
   [ -z "$override" ] || return 0 # explicit trusted custom launcher
   [ "$agent" != codex ] || codex_environment || return 1
   probe="DV_AGENT_READY_$agent"; probe=${!probe}
@@ -159,7 +159,7 @@ cmd_bid() {
       --json) json=1; shift ;;
       --repo|--agent|--kind) [ "$#" -ge 2 ] || fail 'missing bid value'
         case "$1" in --repo) repo=$2 ;; --agent) agent=$2 ;; --kind) kind=$2 ;; esac; shift 2 ;;
-      *) fail 'usage: dv bid --json [--repo REPO] [--agent codex|claude|devin|omp|agy|grok|cursor]' ;;
+      *) fail 'usage: dv bid --json [--repo REPO] [--agent codex|claude|devin|omp|dsh|agy|grok|cursor]' ;;
     esac
   done
   known_agent "$agent" || fail 'unknown agent'
@@ -169,7 +169,8 @@ cmd_bid() {
   bid_repo "$repo"
   [ -n "$repo" ] || BID_REPO_OK=true
   if [ "$kind" = qa ] && [ -n "$DV_QA_AGENT_CMD" ]; then ready=true
-  elif bid_agent "$agent"; then ready=true; fi
+  elif bid_agent "$agent"; then ready=true
+  elif [ "$agent" = dsh ] && dsh_omp_ready; then ready=true; fi
   if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ -n "$repo" ]; then
     root=$BID_REPO
     if [ "$BID_CLONED" = true ]; then root=$(codex_repo_root "$BID_REPO") || root=''; fi
@@ -179,6 +180,7 @@ cmd_bid() {
   if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then
     case "$(codex_default_mode "$agent")" in auto|exec) backend=true ;; esac
   fi
+  if [ "$agent" = dsh ] && bid_agent dsh; then backend=true; fi
   [ "$kind" != qa ] || backend=true
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
@@ -224,7 +226,7 @@ cmd_submit() {
     case "$mode" in ''|goal) submit_route "$brief" ;; esac
   fi
   [ -n "$mode" ] || mode=$(codex_default_mode "$agent")
-  case "$agent:$mode" in codex:auto|codex:goal|codex:exec) ;; *:goal) known_agent "$agent" || fail 'invalid agent/mode' ;; *) fail 'invalid agent/mode' ;; esac
+  case "$agent:$mode" in codex:auto|codex:goal|codex:exec|dsh:auto|dsh:goal|dsh:exec) ;; *:goal) known_agent "$agent" || fail 'invalid agent/mode' ;; *) fail 'invalid agent/mode' ;; esac
   [ -z "$base" ] || git check-ref-format "refs/heads/$base" >/dev/null || fail 'invalid base'
   if [ -d "$repo" ]; then
     repo=$(cd "$repo" && git rev-parse --show-toplevel)
@@ -239,7 +241,7 @@ bid_request_valid() {
   jq -e 'type=="object" and (.issue|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9_-]*$")) and
     (.slug|type=="string" and test("^[a-zA-Z0-9][a-zA-Z0-9-]*$")) and (.repo|type=="string" and length>0 and (startswith("-")|not)) and
     (.brief|type=="string") and (.base|type=="string") and
-    ((.agent=="codex" and (.mode=="auto" or .mode=="goal" or .mode=="exec")) or
+    (((.agent=="codex" or .agent=="dsh") and (.mode=="auto" or .mode=="goal" or .mode=="exec")) or
       (.agent as $agent | ["claude","devin","omp","agy","grok","cursor"] | index($agent) != null) and .mode=="goal") and
     (if .kind=="qa" then (.agent=="codex" or .agent=="claude") and .qa.remote==.repo and .qa.base==.base and
       (.qa.repository|type=="string" and test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")) and
