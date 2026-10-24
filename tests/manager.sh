@@ -316,6 +316,37 @@ case_manager_local() {
   manager_watch_until 2
   jq -se '.[1].resume=="session-1"' "$CASE_DIR/hermes/calls"
 }
+manager_remote_repo_case() {
+  manager_setup
+  git -C "$REPO" remote add origin https://github.com/example/project.git
+  dv manager start "$REPO"
+  export SSH_MANAGER_REPO=$1
+  local dir watcher
+  dir=$(dirname "$(manager_meta)")
+  test ! -d /Users/x/code/repo
+  mkdir -p "$DV_HOME/submissions/M-1"
+  jq -cn '{repo:"/Users/x/code/repo",host:"remote-box",status:"completed"}' > "$DV_HOME/submissions/M-1/task.json"
+  # Hold either route so its durable queue record remains available to inspect.
+  touch "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/hold-worker"
+  dv-kick pr-ready M-1 'remote checkout event' remote-box abc
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  manager_wait_calls 2
+  if [ "$1" = success ]; then
+    jq -e '.event.id=="remote-box:M-1:pr-ready:abc"' "$dir"/pending/*.json
+    test "$(find "$DV_HOME/pending" -name '*.json' | wc -l | tr -d ' ')" = 0
+    jq -se '.[1].resume=="session-1"' "$CASE_DIR/hermes/calls"
+  else
+    jq -e '.id=="remote-box:M-1:pr-ready:abc"' "$DV_HOME/pending/0.json"
+    test "$(find "$dir/pending" -name '*.json' | wc -l | tr -d ' ')" = 0
+    jq -se '.[1].resume==""' "$CASE_DIR/hermes/calls"
+  fi
+  # Even a failed lookup must reach SSH; returning the path happens to fall back too.
+  test -f "$CASE_DIR/manager-origin-lookup"
+  rm "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/hold-worker"
+  touch "$DV_HOME/stop"; wait "$watcher"
+}
+case_manager_remote_repo() { manager_remote_repo_case success; }
+case_manager_remote_repo_failure() { manager_remote_repo_case failure; }
 case_manager_stop_pending() {
   manager_setup
   dv manager start "$REPO"; dv manager stop "$REPO"
