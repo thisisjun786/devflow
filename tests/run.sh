@@ -2519,6 +2519,8 @@ source "$ROOT/tests/watcher-stuck.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/stale-jobs.sh"
 # shellcheck source=/dev/null
+source "$ROOT/tests/closed-issues.sh"
+# shellcheck source=/dev/null
 source "$ROOT/tests/task.sh"
 task_content_setup() {
   task_setup
@@ -2753,6 +2755,7 @@ source "$ROOT/tests/job-limits.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/search-scope.sh"
 registered_cases() {
+  printf '%s\n' reconcile_closed_issue reconcile_closed_event reconcile_submission_terminal reconcile_closed_guards reconcile_closed_push_retry reconcile_closed_submission_event reconcile_closed_waiter reconcile_closed_appserver reconcile_closed_tmux reconcile_closed_merged_pr
   printf '%s\n' dsh_success dsh_restart dsh_fallback dsh_resume dsh_stall dsh_capacity dsh_not_ready dsh_key
   printf '%s\n' dsh_quota dsh_crash_fallback dsh_completion_gate dsh_last_status dsh_jail dsh_jail_unavailable dsh_host_sync dsh_host_probe
   printf '%s\n' dsh_delivery dsh_herdr_fallback

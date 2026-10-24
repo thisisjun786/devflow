@@ -279,7 +279,7 @@ while [ ! -e "$DV_HOME/stop" ]; do
       autofill_event "$line" >> "$DV_HOME/autofill.log" 2>&1 || true
       # Stack candidates are discovered by the bounded host reconciliation.
       # Never repeat an inline fleet status scan for each done/landed event.
-      case "$(printf '%s\n' "$line" | jq -r .kind)" in done|landed) reconcile_requested=1 ;; esac
+      case "$(printf '%s\n' "$line" | jq -r .kind)" in done|landed|issue-closed) reconcile_requested=1 ;; esac
       case "$(jq -r .kind <<< "$line")" in
       # Observations that ask for no decision: capacity waits resume in place
       # and progress is a heartbeat; a model turn per event only re-read

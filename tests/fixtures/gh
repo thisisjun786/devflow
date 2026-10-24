@@ -91,6 +91,9 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
   esac
 fi
 case "$*" in
+  'api --method GET --paginate repos/'*'/pulls -f state=open -f head='*)
+    [ ! -f "$GH_STUB_DIR/open-prs-fail" ] || exit 1
+    if [ -f "$GH_STUB_DIR/open-prs" ]; then cat "$GH_STUB_DIR/open-prs"; else printf '[]\n'; fi ;;
   'api graphql '*closingIssuesReferences*)
     [ ! -f "$GH_STUB_DIR/closing-issues-fail" ] || { printf 'GraphQL unavailable\n' >&2; exit 1; }
     [[ "$*" = *'--paginate'* ]] && [[ "$*" = *'pageInfo'* ]]
