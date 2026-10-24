@@ -63,6 +63,8 @@ omp·agy·grok·cursor는 Claude·Devin처럼 herdr pane(없으면 tmux)에서 �
 
 ## dsh 실행과 격리
 
+dsh는 JSON 이벤트뿐 아니라 해당 cwd의 `$DV_DSH_SESSIONS/--<경로>--/session-*/` 로그 변경이나 살아 있는 도구 자손 프로세스도 활동으로 셉니다. 세 신호가 모두 `DV_STALL_AFTER`초 동안 없을 때만 stall로 재개합니다. 단일 도구 프로세스는 `DV_DSH_TOOL_MAX`초(기본 7200, 0이면 상한 해제)를 넘기면 이벤트·로그가 계속 갱신되어도 중단합니다. 서로 다른 도구의 실행 시간은 누적하지 않습니다.
+
 dsh는 항상 exec 백엔드로 실행합니다(`--mode auto|goal|exec` 모두 headless로 정규화). `agent.jsonl`, `agent.session`, `agent.activity`에 이벤트·첫 session ID·활동 시간을 기록하며, exit 0과 마지막 `status/turn_end`의 `reason.kind=completed`, 해당 실행의 `dv done`이 모두 있어야 완료입니다. crash/stall은 같은 cwd에서 `--session-id`로 한 번 재개합니다. 완료 없이 끝나면 기존 브랜치의 미커밋 작업을 WIP 커밋으로 저장하고 origin에 push한 뒤 새 세션에 브리프·보고서·Git 상태 요약을 전달합니다. PR 상태와 base 브랜치는 자동 push하지 않습니다. 복구되지 않은 시도가 연속 두 번이면 dsh 프로세스 트리를 종료하고 같은 state/worktree/branch에서 omp goal 작업을 시작합니다. provider capacity 대기는 실패 횟수에 포함하지 않습니다. dsh 준비 확인에 실패해도 omp가 준비되어 있으면 입찰·시작이 가능합니다. metadata의 `fallback_from/reason/at`과 `$DV_HOME/dsh-events.log`에서 전환을 확인합니다.
 
 `dv host sync`는 Node 24.9 이상에서 dsh 고정 버전(기본 `0.2.1-rc.3`)을 `~/.local/dsh`에 설치하고 `$DV_DSH_HOME/profiles/headless/cordis.patch.yml`을 원자적으로 갱신합니다. 같은 버전은 npm 설치를 건너뜁니다. `DV_DSH_KEY_FILE`(기본 `~/.omp/agent/.env`)의 `DV_DSH_KEY_VAR` 값을 실행 직전 자식 환경의 `INFERHUB_API_KEY`로 전달합니다. 파일은 source하지 않으며 키가 출력에 섞여도 저장 전에 가립니다. telemetry와 session-log/plugin-inventory 전송은 끕니다. `dv host check`는 버전·profile·키 존재·jail 상태만 확인합니다. 명시적인 `--probe-dsh`만 실제 도구 호출 한 번과 session resume를 시험하고 `.anonymous-user-id`가 생기지 않았는지 확인합니다.

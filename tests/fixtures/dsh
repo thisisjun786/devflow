@@ -32,11 +32,51 @@ case "${DV_DSH_SCENARIO:-success}" in
       printf '{"type":"status","phase":"turn_end","reason":{"kind":"completed"}}\n'
       exit
     fi ;;
-  crash|stall)
+  crash)
     if [ "$n" = 1 ]; then
       sleep 60 >/dev/null 2>&1 &
       printf '%s\n' "$!" >> "$s/dsh-pids"
-      if [ "$DV_DSH_SCENARIO" = stall ]; then wait; else exit 7; fi
+      exit 7
+    fi ;;
+  stall|session-log|other-session-log)
+    if [ "$n" = 1 ]; then
+      # A builtin read blocks without a live child. Redaction helpers belong
+      # to the supervisor and must not make this idle worker look active.
+      mkfifo "$s/silent.pipe"
+      exec 3<> "$s/silent.pipe"
+      if [ "$DV_DSH_SCENARIO" = stall ]; then read -r -u 3; fi
+      sessions="$DV_DSH_SESSIONS/--$(printf '%s' "${PWD#/}" | tr / -)--"
+      if [ "$DV_DSH_SCENARIO" = other-session-log ]; then sessions="$DV_DSH_SESSIONS/--other--"; fi
+      mkdir -p "$sessions/session-fixture"
+      for tick in {1..6}; do
+        printf '%s\n' "$tick" >> "$sessions/session-fixture/log"
+        read -r -t 1 -u 3 || true
+      done
+      touch "$s/silent-finished"
+    fi ;;
+  silent-tool|tool-cap|tool-cap-active|sequential-tools)
+    if [ "$n" = 1 ]; then
+      case "$DV_DSH_SCENARIO" in
+        silent-tool) sleep 5 & ;;
+        sequential-tools) sleep 2 & ;;
+        *) sleep 8 & ;;
+      esac
+      tool=$!
+      printf '%s\n' "$tool" >> "$s/dsh-pids"
+      if [ "$DV_DSH_SCENARIO" = tool-cap-active ]; then
+        mkfifo "$s/silent.pipe"
+        exec 3<> "$s/silent.pipe"
+        sessions="$DV_DSH_SESSIONS/--$(printf '%s' "${PWD#/}" | tr / -)--/session-fixture"
+        mkdir -p "$sessions"
+        for tick in {1..6}; do
+          printf '{"type":"text","text":"still working"}\n'
+          printf '%s\n' "$tick" >> "$sessions/log"
+          read -r -t 1 -u 3 || true
+        done
+      fi
+      wait "$tool"
+      if [ "$DV_DSH_SCENARIO" = sequential-tools ]; then sleep 2; fi
+      touch "$s/silent-finished"
     fi ;;
   crash-always) exit 7 ;;
   final-only)

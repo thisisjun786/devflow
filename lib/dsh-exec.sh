@@ -8,6 +8,9 @@ dsh_validate() {
   case "$DV_DSH_JAIL" in auto|on|off) ;; *) fail 'DV_DSH_JAIL must be auto, on or off' ;; esac
   [[ "$DV_DSH_PROFILE" =~ ^[A-Za-z0-9_-]+$ ]] || fail 'invalid DV_DSH_PROFILE'
   [[ "$DV_DSH_KEY_VAR" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail 'invalid DV_DSH_KEY_VAR'
+  # Zero disables the per-tool hard cap; keep arithmetic safe on Bash 3.2.
+  : "${DV_DSH_TOOL_MAX:=7200}"
+  [[ "$DV_DSH_TOOL_MAX" =~ ^(0|[1-9][0-9]{0,8})$ ]] || fail 'DV_DSH_TOOL_MAX must be nonnegative seconds (at most 999999999)'
 }
 dsh_key() (
   # A dotenv file is data, not shell code. Do not expose it to tracing either.
@@ -110,6 +113,9 @@ dsh_child() (
   # this child and its descendants, never in launcher arguments or metadata.
   mkfifo "$S/exec/$run/stderr.pipe"
   dsh_redact < "$S/exec/$run/stderr.pipe" >&2 & filter=$!
+  # Record the exec PID inside the jail too. The redaction pipeline and bwrap
+  # are supervision helpers, not tool descendants of the actual dsh process.
+  set -- bash -c 'printf "%s\n" "$$" > "$1"; shift; exec "$@"' _ "$S/exec/$run/dsh.pid" "$@"
   if [ "$DSH_JAIL" = on ]; then
     bwrap "${DSH_JAIL_ARGS[@]}" -- "$@" 2> "$S/exec/$run/stderr.pipe" | dsh_redact || rc=$?
   else
@@ -158,9 +164,47 @@ dsh_exec_events() {
     esac
   done < <(tail -n "+$((exec_line + 1))" "$S/agent.jsonl")
 }
+dsh_exec_tool_age() {
+  # etime and the process tree are available on both macOS and Linux. No
+  # command lines are collected, and zombies do not count as running tools.
+  LC_ALL=C ps -A -o pid=,ppid=,stat=,etime= | awk -v root="$1" '
+    { parent[$1]=$2; state[$1]=$3; elapsed[$1]=$4; count++ }
+    END {
+      oldest=-1
+      if (root in parent && state[root] !~ /^[ZX]/) {
+        for (pid in parent) {
+          if (pid==root || state[pid] ~ /^[ZX]/) continue
+          p=parent[pid]; depth=0
+          while (p!=root && p in parent && depth++<count) p=parent[p]
+          if (p!=root) continue
+          days=0; value=elapsed[pid]
+          if (split(value, day, "-")==2) { days=day[1]; value=day[2] }
+          fields=split(value, clock, ":"); seconds=0
+          for (i=1; i<=fields; i++) seconds=seconds*60+clock[i]
+          seconds+=days*86400
+          if (seconds>oldest) oldest=seconds
+        }
+      }
+      print oldest
+    }'
+}
+dsh_exec_session_stamp() {
+  local dir
+  # Scope the metadata scan to this cwd, including newly created sessions.
+  # Sizes catch appends within a timestamp tick without reading log contents.
+  for dir in "$exec_sessions"/session-*; do
+    [ -d "$dir" ] || continue
+    if [ "$exec_os" = Darwin ]; then
+      find "$dir" -type f -exec env stat -f '%N:%i:%z:%m:%c' {} + 2>/dev/null
+    else
+      find "$dir" -type f -exec env stat -c '%n:%i:%s:%y:%z' {} + 2>/dev/null
+    fi
+  done | LC_ALL=C sort
+}
 dsh_exec_run() {
   local instruction=$1 exec_child='' exec_stopped_rc=0 exec_line exec_activity exec_reason exec_capacity
   local run rc stderr_line completed resumed=0 failures session
+  local exec_sessions exec_os exec_stamp stamp current probe_at tool_age dsh_pid
   local DSH_JAIL_ARGS=() args=()
   dsh_validate
   owned_lock "$S/.exec-lock" "$$" || fail 'exec wrapper already running'
@@ -177,6 +221,8 @@ dsh_exec_run() {
   touch "$S/agent.jsonl" "$S/agent.stderr"
   exec_line=$(wc -l < "$S/agent.jsonl")
   failures=$(jq -r '.dsh_failures // 0' "$S/meta")
+  exec_sessions=$(agent_transcript_dir dsh "$(pwd -P)")
+  exec_os=$(uname -s)
   dsh_event start "jail=$DSH_JAIL"
   while :; do
     run="$(now)-$$-$RANDOM"
@@ -185,6 +231,8 @@ dsh_exec_run() {
     meta_set --arg run "$run" '.exec_run=$run | .exec_status="working" | (if .status=="pr" or .status=="ready" then . else .status="running" end) | del(.done_at,.failure_reason)'
     exec_activity=$(now); printf '%s\n' "$exec_activity" > "$S/agent.activity"
     exec_reason=''; exec_capacity=false; completed=false; rc=0
+    exec_stamp=$(dsh_exec_session_stamp) || exec_stamp=''
+    probe_at=0; dsh_pid=''; tool_age=-1
     stderr_line=$(wc -l < "$S/agent.stderr")
     args=("$DV_DSH_BIN" --profile "$DV_DSH_PROFILE" --json)
     if [ -s "$S/agent.session" ]; then
@@ -202,8 +250,21 @@ dsh_exec_run() {
       if tail -n "+$((stderr_line + 1))" "$S/agent.stderr" | grep -Eq '^dsh: (RATE_LIMIT|QUOTA):'; then exec_capacity=true; fi
       if [ "$exec_capacity" = true ]; then exec_reason='dsh provider capacity'; break; fi
       [ -z "$exec_reason" ] || break
-      if [ "$(( $(now) - exec_activity ))" -ge "$DV_STALL_AFTER" ]; then
-        exec_reason="stalled: no dsh event for $DV_STALL_AFTER seconds"; break
+      current=$(now)
+      if [ "$current" != "$probe_at" ]; then
+        probe_at=$current
+        stamp=$(dsh_exec_session_stamp) || stamp=$exec_stamp
+        if [ "$stamp" != "$exec_stamp" ]; then exec_activity=$current; exec_stamp=$stamp; fi
+        if [ -z "$dsh_pid" ] && [ -s "$S/exec/$run/dsh.pid" ]; then dsh_pid=$(cat "$S/exec/$run/dsh.pid"); fi
+        if [ -n "$dsh_pid" ]; then tool_age=$(dsh_exec_tool_age "$dsh_pid") || tool_age=-1; fi
+        if [ "$tool_age" -ge 0 ]; then exec_activity=$current; fi
+        printf '%s\n' "$exec_activity" > "$S/agent.activity"
+        if [ "$DV_DSH_TOOL_MAX" -gt 0 ] && [ "$tool_age" -ge "$DV_DSH_TOOL_MAX" ]; then
+          exec_reason="dsh tool exceeded DV_DSH_TOOL_MAX=$DV_DSH_TOOL_MAX seconds"; break
+        fi
+      fi
+      if [ "$((current - exec_activity))" -ge "$DV_STALL_AFTER" ]; then
+        exec_reason="stalled: no dsh event, session-log change or live tool for $DV_STALL_AFTER seconds"; break
       fi
       sleep 0.2
     done
