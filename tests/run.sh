@@ -2731,12 +2731,7 @@ case_readme_startup_guidance() {
 # shellcheck disable=SC2016
 case_readme_manager_max_wait() {
   local default_wait
-  default_wait=$(
-    unset DV_MANAGER_MAX_WAIT
-    # shellcheck source=/dev/null
-    source "$ROOT/config.example.sh"
-    printf '%s' "${DV_MANAGER_MAX_WAIT:-}"
-  )
+  default_wait=$(bash -c 'unset DV_MANAGER_MAX_WAIT; source "$1"; printf "%s" "${DV_MANAGER_MAX_WAIT:-}"' _ "$ROOT/config.example.sh")
   [[ "$default_wait" =~ ^[0-9]+$ ]]
   if grep -E '`DV_MANAGER_MAX_WAIT`\(기본 [0-9]+초' "$ROOT/README.md" | grep -Fv "\`DV_MANAGER_MAX_WAIT\`(기본 ${default_wait}초"; then
     return 1
