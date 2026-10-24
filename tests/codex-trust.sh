@@ -16,16 +16,29 @@ case_codex_allowlist() {
 }
 case_bid_reject_repos() {
   needs_tmux; repo excluded remote
+  local origin failed=0
   # The clone's origin and the remote URL both match the owner/name entry.
   DV_BID_REJECT_REPOS='other/app test/repo' dv bid --json --repo "$REPO" |
     jq -e '.status=="rejected" and .reason=="repository excluded by DV_BID_REJECT_REPOS"'
+  # Equivalent origins identify the same repository: a trailing slash after
+  # .git and an uppercase host must not bypass the exclusion.
+  for origin in https://github.com/test/repo.git/ https://GITHUB.COM/test/repo.git; do
+    git -C "$REPO" config remote.origin.url "$origin"
+    if ! DV_BID_REJECT_REPOS='test/repo' dv bid --json --repo "$REPO" |
+      jq -e '.status=="rejected" and .reason=="repository excluded by DV_BID_REJECT_REPOS"'; then
+      printf 'origin not rejected: %s\n' "$origin" >&2
+      failed=1
+    fi
+  done
+  [ "$failed" = 0 ] || return 1
   DV_BID_REJECT_REPOS='test/repo.git' dv bid --json --repo https://github.com/test/repo.git |
     jq -e '.status=="rejected" and (.reason|contains("DV_BID_REJECT_REPOS"))'
   # GitHub names are case-insensitive.
   DV_BID_REJECT_REPOS='Test/Repo' dv bid --json --repo https://github.com/test/REPO.git |
     jq -e '.status=="rejected" and (.reason|contains("DV_BID_REJECT_REPOS"))'
   # Another repository, a prefix and an empty list still bid normally.
-  DV_BID_REJECT_REPOS='test/repo-app test/rep' dv bid --json --repo "$REPO" | jq -e '.status=="submitted"'
+  git -C "$REPO" config remote.origin.url https://GITHUB.COM/test/other.git/
+  DV_BID_REJECT_REPOS='test/repo-app test/rep test/repo' dv bid --json --repo "$REPO" | jq -e '.status=="submitted"'
   DV_BID_REJECT_REPOS='' dv bid --json --repo "$REPO" | jq -e '.status=="submitted"'
 }
 case_codex_persisted_trust() {
