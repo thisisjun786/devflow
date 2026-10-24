@@ -2735,6 +2735,7 @@ source "$ROOT/tests/job-limits.sh"
 # shellcheck source=tests/search-scope.sh
 source "$ROOT/tests/search-scope.sh"
 registered_cases() {
+  printf '%s\n' qa_landed_admission_race
   printf '%s\n' qa_scan_batch qa_scan_delayed qa_scan_retry qa_scan_base_event \
     gh_cache_conditional gh_cache_fail_closed gh_cache_immutable review_cache_snapshot review_cache_pass_counts
   printf '%s\n' search_defaults search_override search_large search_tmux search_agents job_oom_evidence search_oom_retry search_oom_revive

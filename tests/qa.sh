@@ -59,9 +59,12 @@ qa_wait_runs() {
 }
 qa_finish() {
   touch "$CASE_DIR/qa-release"
-  local record
+  local record qa_done
   for _ in {1..200}; do
-    record=$(find "$DV_STATE" -name done.json -print)
+    record=''
+    for qa_done in "$DV_STATE"/QA-*/done.json; do
+      [ ! -f "$qa_done" ] || { record=$qa_done; break; }
+    done
     [ -z "$record" ] || break
     sleep 0.1
   done
@@ -85,6 +88,17 @@ case_qa_landed() {
   test "$(wc -l < "$CASE_DIR/qa-runs" | tr -d ' ')" = 1
   jq -e --arg head "$(git -C "$REPO" rev-parse HEAD)" '.head==$head and .kind=="qa" and .milestone.title=="M1"' "$DV_STATE"/QA-*/meta
   test "$(grep -c 'qa-summary' "$GH_STUB_DIR/qa-actions")" = 1
+}
+case_qa_landed_admission_race() {
+  # Admission locks can disappear while a QA runner publishes completion.
+  find() {
+    if [ "$*" = "$DV_STATE -name done.json -print" ]; then
+      printf 'find: admission lock disappeared during state traversal\n' >&2
+      return 1
+    fi
+    command find "$@"
+  }
+  case_qa_landed
 }
 case_qa_coalesce() {
   qa_fixture
