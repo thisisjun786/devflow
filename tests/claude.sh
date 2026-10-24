@@ -2,6 +2,8 @@
 # jq programs and child-shell snippets are literal strings.
 # shellcheck disable=SC2016
 claude_functions() {
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   DV_ENTRY="$ROOT/bin/dv"
   # shellcheck source=lib/common.sh
   source "$ROOT/lib/common.sh"
@@ -97,6 +99,8 @@ case_claude_trust_mode() {
   done
   chmod 600 "$HOME/.claude.json"
 }
+# macOS ACL metadata requires parsing ls -le.
+# shellcheck disable=SC2012
 claude_acl() {
   case "$(uname -s)" in
     Linux) getfacl -cp "$1" ;;
@@ -119,7 +123,7 @@ case_claude_trust_acl() {
 }
 case_claude_trust_copy_failure() {
   claude_functions
-  cp "$HOME/.claude.json" "$CASE_DIR/before"
+  command cp "$HOME/.claude.json" "$CASE_DIR/before"
   # Metadata-copy failure must never replace the original with a bare mktemp.
   cp() { return 1; }
   if claude_trust_worktree /target; then return 1; fi

@@ -77,6 +77,8 @@ case_search_tmux() {
   start SEARCH-1; wait_done SEARCH-1
   test "$(cat "$DV_STATE/SEARCH-1/search-env")" = "$RIPGREP_CONFIG_PATH"
 }
+# ShellCheck 0.9 cannot resolve calls through the loaded launcher helpers.
+# shellcheck disable=SC2317
 case_search_agents() {
   search_load
   # Exercise the shared launcher with each agent's command override, no live CLI.
@@ -94,6 +96,8 @@ case_search_agents() {
     test "$output" = '--max-filesize=20M'
   done
 }
+# journalctl is called by the dynamically loaded job helpers.
+# shellcheck disable=SC2317
 case_job_oom_evidence() {
   job_test_load
   job_attempt
@@ -117,6 +121,8 @@ KERNEL
   job_record_failure "$(basename "$JOB_ATTEMPT")" MemoryMax-OOM
   jq -e '.top==null and .rss_mb==null and .blocked' "$S/resource-failure.json"
 }
+# Launcher callbacks are invoked by helpers loaded at runtime.
+# shellcheck disable=SC2317
 case_search_oom_retry() {
   search_load
   search_commands_load

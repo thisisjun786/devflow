@@ -4,6 +4,8 @@ manager_setup() {
   repo manager
   # Shared queue cases emit local checkout paths from the synthetic worker.
   export DV_HOST=worker
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   export DV_MANAGER_HOST="$DV_HOST" DV_MANAGER_AGENT=hermes DV_HERMES_BIN="$ROOT/tests/fixtures/manager-hermes"
   export DV_HOSTS='' DV_PULL_HOSTS='' DV_WORKER_CMD='' DV_WATCH_INTERVAL=0.05 DV_RECONCILE_INTERVAL=1800
   export DV_MANAGER_MAX_WAIT=120
@@ -450,6 +452,8 @@ case_manager_unknown_repo() {
   manager_watch_until 2
   jq -se '.[1].resume==""' "$CASE_DIR/hermes/calls"
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_manager_reused_issue() {
   manager_setup
   git -C "$REPO" remote add origin https://github.com/example/first.git

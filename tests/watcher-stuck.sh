@@ -52,7 +52,7 @@ case_manager_legacy_replay() {
   dir=$(dirname "$(manager_meta)"); line=$(cat "$DV_HOME/kick.q")
   for location in pending failed fallback; do
     mkdir -p "$dir/$location"
-    for suffix in json done; do
+    for suffix in json 'done'; do
       [ "$location:$suffix" != failed:done ] || continue
       job="$dir/$location/00000000000000000000.$suffix"
       jq -cn --argjson event "$line" '{event:$event}' > "$job"
@@ -62,6 +62,8 @@ case_manager_legacy_replay() {
     done
   done
 }
+# Shell syntax in the fixture/assertion is deliberately literal.
+# shellcheck disable=SC2016
 case_manager_note() {
   manager_setup
   dv manager start "$REPO"

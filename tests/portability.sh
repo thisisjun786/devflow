@@ -3,6 +3,8 @@
 symlink_tmp_case() {
   mkdir -p "$CASE_DIR/physical"
   [ -L "$CASE_DIR/logical" ] || ln -s "$CASE_DIR/physical" "$CASE_DIR/logical"
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   TMPDIR="$CASE_DIR/logical/" DV_TEST_TMP="$CASE_DIR/logical/" bash "$ROOT/tests/run.sh" --case "$1"
 }
 case_symlink_paths() {
@@ -39,6 +41,8 @@ case_revive_wait_exit() {
   wait "$writer"
   return "$rc"
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_claude_bsd_stat_mode() (
   claude_functions
   # BSD stat's L subfield is only the low nine bits; raw %Op includes type
@@ -58,6 +62,8 @@ case_claude_bsd_stat_mode() (
     test -n "$(find "$HOME/.claude.json" -perm "$bsd_mode" -print)"
   done
 )
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_host_darwin_shells() (
   # Apple's bash build enables SSH_SOURCE_BASHRC just like GNU bash.
   uname() { if [ "$1" = -s ]; then echo Darwin; else command uname "$@"; fi; }

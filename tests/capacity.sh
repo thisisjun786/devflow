@@ -124,6 +124,8 @@ case_capacity_classifier() {
   printf 'normal failure\n' | capacity_error && return 1
   return 0
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_capacity_backoff() {
   bidding_functions
   ISSUE=CAP-1; S="$DV_STATE/$ISSUE"; mkdir "$S"
@@ -209,6 +211,8 @@ case_capacity_legacy_terminal() {
   stall_resume_count 1
   jq -se 'map(.kind)==["waiting-capacity"]' "$DV_STATE/ST-1/events.log"
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 case_capacity_appserver_rpc() {
   capacity_clock_setup
   export DV_APP_CAPACITY_RPC=2

@@ -3,6 +3,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export ROOT
 
+# tests/shellcheck.sh checks each tests/*.sh directly. Only test-suite imports
+# use source=/dev/null below, keeping ShellCheck out of one unbounded graph.
+
 seed_host_capacity() {
   local cores=$1 cap=${2:-8}
   mkdir -p "$DV_STATE/.host-capacity"
@@ -266,6 +269,8 @@ AGENT
   else export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"; fi
   if [ "$recovery" = stall ]; then
     stall_functions
+    # Read by stall_scan from tests/stall.sh.
+    # shellcheck disable=SC2034
     STALL_ROW=$(dv status FS-1 --json | jq -c '.[0]')
     stall_scan; stall_tick; stall_count 1
     dv _stall-recover FS-1 "$(jq -r '.[].id' "$DV_HOME/stalls.json")" ''
@@ -1899,9 +1904,9 @@ case_polish_parallel() {
   test ! -d "$DV_STATE/POL-1/.polish"
 }
 
-# shellcheck source=tests/codex-startup.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/codex-startup.sh"
-# shellcheck source=tests/codex-trust.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/codex-trust.sh"
 
 failed_start_fixture() {
@@ -2447,71 +2452,71 @@ case_bid_readonly_no_tmux() { bid_without_tmux bid_readonly; }
 case_bid_rejections_no_tmux() { bid_without_tmux bid_rejections; }
 # Parse the complete driver before running it. Editing the file while an old
 # runner was reading its tail previously produced a truncated `e` command.
-# shellcheck source=tests/host.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/host.sh"
-# shellcheck source=tests/autofill.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/autofill.sh"
-# shellcheck source=tests/host-capacity.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/host-capacity.sh"
-# shellcheck source=tests/learned-capacity.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/learned-capacity.sh"
-# shellcheck source=tests/delivery.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/delivery.sh"
-# shellcheck source=tests/pr-body.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/pr-body.sh"
-# shellcheck source=tests/pr-format.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/pr-format.sh"
-# shellcheck source=tests/claude.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/claude.sh"
-# shellcheck source=tests/followups.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/followups.sh"
-# shellcheck source=tests/watcher.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/watcher.sh"
-# shellcheck source=tests/stall.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/stall.sh"
-# shellcheck source=tests/screen-locale.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/screen-locale.sh"
-# shellcheck source=tests/pr-wait-caller.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/pr-wait-caller.sh"
-# shellcheck source=tests/bidding-edge.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/bidding-edge.sh"
-# shellcheck source=tests/bidding-order.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/bidding-order.sh"
-# shellcheck source=tests/manager.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/manager.sh"
-# shellcheck source=tests/revive.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/revive.sh"
-# shellcheck source=tests/appserver.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/appserver.sh"
-# shellcheck source=tests/codex-exec.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/codex-exec.sh"
-# shellcheck source=tests/send-branch.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/send-branch.sh"
-# shellcheck source=tests/codex-exec-review.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/codex-exec-review.sh"
-# shellcheck source=tests/portability.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/portability.sh"
-# shellcheck source=tests/qa.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/qa.sh"
-# shellcheck source=tests/qa-merge.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/qa-merge.sh"
-# shellcheck source=tests/metrics.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/metrics.sh"
-# shellcheck source=tests/pr-worker.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/pr-worker.sh"
-# shellcheck source=tests/self-update.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/self-update.sh"
-# shellcheck source=tests/disk.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/disk.sh"
-# shellcheck source=tests/tmp.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/tmp.sh"
-# shellcheck source=tests/stack.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/stack.sh"
-# shellcheck source=tests/watcher-stuck.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/watcher-stuck.sh"
-# shellcheck source=tests/stale-jobs.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/stale-jobs.sh"
-# shellcheck source=tests/task.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/task.sh"
 task_content_setup() {
   task_setup
@@ -2617,15 +2622,15 @@ case_task_mixed_files() {
   cmp "$wt/out/nested/payload.bin" "$landed/nested/payload.bin"
   test ! -f "$GH_STUB_DIR/calls"
 }
-# shellcheck source=tests/capacity.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/capacity.sh"
-# shellcheck source=tests/status-nonblocking.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/status-nonblocking.sh"
-# shellcheck source=tests/heavy.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/heavy.sh"
-# shellcheck source=tests/process-cleanup.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/process-cleanup.sh"
-# shellcheck source=tests/process-supervisor.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/process-supervisor.sh"
 runner_stub() {
   mkdir -p "$CASE_DIR/runner-bin"
@@ -2739,9 +2744,9 @@ case_readme_manager_max_wait() {
   grep -F "관리자 턴이 \`DV_MANAGER_MAX_WAIT\`(기본 ${default_wait}초" "$ROOT/README.md"
   grep -F '더 짧은 대기가 필요하면 `DV_MANAGER_MAX_WAIT`를 더 낮게 설정' "$ROOT/README.md"
 }
-# shellcheck source=tests/job-limits.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/job-limits.sh"
-# shellcheck source=tests/search-scope.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/search-scope.sh"
 registered_cases() {
   printf '%s\n' search_defaults search_override search_large search_tmux search_agents job_oom_evidence search_oom_retry search_oom_revive
@@ -2921,6 +2926,6 @@ main() {
   printf 'pass=%s skip=%s fail=%s\n' "$pass" "$skip" "$fail"
   [ "$fail" -eq 0 ]
 }
-# shellcheck source=tests/review-loop.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/review-loop.sh"
 main "$@"
