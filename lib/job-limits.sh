@@ -42,15 +42,18 @@ job_clear_streak() {
   jq '.consecutive=0' "$S/resource-failure.json" > "$S/resource-failure.tmp" && mv "$S/resource-failure.tmp" "$S/resource-failure.json"
 }
 job_record_failure() {
-  local attempt=$1 reason=$2 count=1 blocked=false previous='{}' record
+  local attempt=$1 reason=$2 count=1 blocked=false previous='{}' record evidence='{}'
   [ ! -f "$S/resource-failure.json" ] || previous=$(cat "$S/resource-failure.json")
   [ "$(printf '%s' "$previous" | jq -r '.attempt // ""')" != "$attempt" ] || return 0
   if [ "$(printf '%s' "$previous" | jq -r '.reason // ""')" = "$reason" ]; then
     count=$(( $(printf '%s' "$previous" | jq -r '.consecutive // 0') + 1 ))
   fi
   if [ "$count" -ge 2 ] || [ "$reason" = launchd-jobs ]; then blocked=true; fi
+  if [ "$reason" = MemoryMax-OOM ]; then
+    evidence=$(cat "$S/resources/$attempt/oom.json" 2>/dev/null) || evidence='{"top":null,"rss_mb":null}'
+  fi
   record=$(jq -cn --arg attempt "$attempt" --arg reason "$reason" --argjson count "$count" --argjson blocked "$blocked" --argjson at "$(now)" \
-    '{attempt:$attempt,reason:$reason,consecutive:$count,blocked:$blocked,at:$at}')
+    --argjson evidence "$evidence" '{attempt:$attempt,reason:$reason,consecutive:$count,blocked:$blocked,at:$at} + $evidence')
   printf '%s\n' "$record" > "$S/resource-failure.tmp"
   mv "$S/resource-failure.tmp" "$S/resource-failure.json"
   printf '%s\n' "$record" >> "$S/resource-events.jsonl"
@@ -61,7 +64,55 @@ job_record_failure() {
 job_attempt() {
   JOB_ATTEMPT="$S/resources/$(now)-$$-$RANDOM"
   mkdir -p "$JOB_ATTEMPT"
+  now > "$JOB_ATTEMPT/started"
   printf '%s\n' "$JOB_ATTEMPT" > "$S/resource-current"
+}
+# Kernel OOM summaries identify the cgroup and victim PID; the following kill
+# line supplies anon-rss. Correlate PIDs, never attribute a neighboring job's OOM.
+job_collect_oom() {
+  local started evidence
+  started=$(cat "$JOB_ATTEMPT/started")
+  evidence=$(journalctl -k -b --since "@$started" --no-pager -o cat 2>/dev/null | awk -v unit="$JOB_UNIT" '
+    /oom-kill:/ {
+      owned=0; pid=""
+      n=split($0, fields, ",")
+      for (i=1;i<=n;i++) {
+        if (fields[i] ~ /^(oom_memcg|task_memcg)=/) {
+          m=split(fields[i], parts, "/")
+          for (j=1;j<=m;j++) if (parts[j]==unit) owned=1
+        }
+        if (fields[i] ~ /^pid=[0-9]+$/) {pid=fields[i]; sub(/^pid=/,"",pid)}
+      }
+      if (pid!="") victims[pid]=owned
+    }
+    /Killed process [0-9]+ .*anon-rss:[0-9]+kB/ {
+      line=$0; sub(/^.*Killed process /,"",line)
+      pid=line; sub(/ .*/,"",pid)
+      if (!victims[pid]) next
+      name=line; sub(/^[0-9]+ \(/,"",name); sub(/\) total-vm:.*/,"",name)
+      rss=line; sub(/^.*anon-rss:/,"",rss); sub(/kB.*/,"",rss)
+      if (!found || rss+0>maximum) {found=1; maximum=rss+0; top=name}
+      delete victims[pid]
+    }
+    END {if (found) printf "%s\t%.0f\n", top, maximum}
+  ') || evidence=''
+  if [ -n "$evidence" ]; then
+    jq -cn --arg top "${evidence%$'\t'*}" --argjson rss "${evidence##*$'\t'}" \
+      '{top:$top,rss_mb:($rss/1024)}'
+  else
+    printf '{"top":null,"rss_mb":null}\n'
+  fi > "$JOB_ATTEMPT/oom.json"
+}
+job_oom_notice() {
+  local top rss
+  [ -f "$S/resource-failure.json" ] || return 0
+  [ "$(jq -r .reason "$S/resource-failure.json")" = MemoryMax-OOM ] || return 0
+  top=$(jq -r '.top // "unknown process"' "$S/resource-failure.json")
+  rss=$(jq -r '.rss_mb // empty' "$S/resource-failure.json")
+  if [ -n "$rss" ]; then
+    rss=$(awk -v mb="$rss" 'BEGIN {printf "%.1fGiB", mb/1024}')
+  else rss='RSS unavailable'; fi
+  printf '직전 OOM: %s %s — 같은 범위 검색 금지. Reduce the search scope; do not repeat the same command.\n' "$top" "$rss"
 }
 job_scope_reason() {
   local key value
@@ -129,6 +180,7 @@ job_scope_run() {
   JOB_CHILD=''
   result=$("${JOB_SYSTEMCTL:-systemctl}" --user show "$JOB_UNIT" -p Result --value 2>/dev/null) || result=''
   if [ "$result" = oom-kill ]; then printf 'MemoryMax-OOM\n' > "$JOB_ATTEMPT/reason"; fi
+  if [ "$(cat "$JOB_ATTEMPT/reason" 2>/dev/null)" = MemoryMax-OOM ]; then job_collect_oom; fi
   # Remove surviving descendants even when the agent returned normally.
   job_scope_stop
   "${JOB_SYSTEMCTL:-systemctl}" --user reset-failed "$JOB_UNIT" >/dev/null 2>&1 || true

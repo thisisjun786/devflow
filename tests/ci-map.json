@@ -1,6 +1,7 @@
 {
   "smoke": ["runner_*", "capacity_classifier", "screen_locale_c", "install"],
   "libraries": {
+    "lib/search.sh": ["search_*", "tmp_appserver"],
     "lib/job-limits.sh": ["job_*", "host_*", "revive_*", "exec_*", "start_done"],
     "lib/appserver-transport.sh": ["appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*"],
     "lib/appserver.sh": ["job_auto_exec", "appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*", "status_cached_many", "status_cache_*", "recovery_sweep_progress"],

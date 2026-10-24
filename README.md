@@ -476,6 +476,16 @@ watcher 점검은 감시자가 종료된 작업에 남은 등록도 확인합니
 등록을 지우지 않으며, 소유권 정보가 없는 등록은 작업에 귀속시킬 수 없습니다.
 그런 실행기는 launchd 정의에 작업 디렉터리나 `DV_ISSUE`를 넣어야 합니다.
 
+작업을 시작할 때 `RIPGREP_CONFIG_PATH`가 설정되지 않았으면 이슈 상태 폴더에
+dv 전용 rg 설정을 만들고 작업 환경에 전달합니다. 기본값은 파일 크기 20MiB
+(`DV_RG_MAX_FILESIZE=20M`), 출력 열 4000개(`DV_RG_MAX_COLUMNS=4000`)입니다.
+`DV_RG_EXCLUDE_GLOBS`는 줄바꿈으로 구분한 glob이며 기본적으로 `.codex`, `.hermes`,
+`.claude`, `.grok`, `.local/state`, `.cache`, `node_modules`, `.git/objects` 아래를
+제외합니다. 빈 문자열로 제외 목록을 끌 수 있습니다. 사용자가 설정한
+`RIPGREP_CONFIG_PATH`는 빈 값도 그대로 존중하며 사용자 rg 설정은 수정하지 않습니다.
+이는 rg 기본값이므로 `--no-config`, 명시적인 옵션, 별도 검색 엔진은 우회할 수
+있습니다. 모든 에이전트는 brief의 검색 범위 지침도 따라야 합니다.
+
 제한 종료는 `resource-failure.json`과 누적 `resource-events.jsonl`에
 `MemoryMax-OOM`/`TasksMax` 원인과 연속 횟수를 기록합니다. ulimit fallback은
 해당 실행의 stderr에서 fork 거절·메모리 할당 실패를 확인하면
@@ -485,6 +495,12 @@ scope로 한 번 재시도하고, 같은 원인이 두 번 이어지면 blocked�
 일반 종료 코드 137만으로 OOM이라고 판정하지 않습니다. 운영자가 원인을 해결한
 뒤 기록을 보존하고 차단 해제를 결정해야 합니다. `dv host check`의 `Job limits`
 및 JSON `job_limits`에 systemd 사용 가능 여부·설정 상한·계산한 nproc가 표시됩니다.
+Linux MemoryMax-OOM에는 해당 실행 이후의 커널 journal에서 scope와 victim PID가
+일치하는 kill 기록 중 가장 큰 anon-rss의 프로세스 이름(`top`)과 MiB 값(`rss_mb`)도
+남깁니다. journal 권한이나 기록이 없으면 두 값은 null이며 OOM 판정은 유지합니다.
+재시도와 revive 지시에는 직전 OOM 원인과 같은 범위 검색을 반복하지 말라는 안내가
+포함됩니다. 이 값은 커널이 기록한 victim의 anon-rss이며 모든 프로세스의 사용량을
+샘플링한 최고값은 아닙니다.
 
 `DV_CODEX_MODE=auto`가 기본값이며 새 작업은 자원 제한을 상속하는 백그라운드 exec로
 시작합니다. `DV_CODEX_MODE=appserver`도 경고 후 exec로 시작합니다. 외부 공유

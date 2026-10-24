@@ -49,6 +49,7 @@ setup() {
   )
   export DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT
   unset DV_MODE
+  unset RIPGREP_CONFIG_PATH DV_RG_MAX_FILESIZE DV_RG_MAX_COLUMNS DV_RG_EXCLUDE_GLOBS
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF DV_CAPACITY_MAX_WAIT
   unset CODEX_HOME
   export DV_TRUSTED_REPOS='' DV_CODEX_ENV_FILE="$HOME/.opencodex/codex-auth-env.sh"
@@ -2699,7 +2700,10 @@ case_runner_mapping() {
 }
 # shellcheck source=tests/job-limits.sh
 source "$ROOT/tests/job-limits.sh"
+# shellcheck source=tests/search-scope.sh
+source "$ROOT/tests/search-scope.sh"
 registered_cases() {
+  printf '%s\n' search_defaults search_override search_large search_tmux search_agents job_oom_evidence search_oom_retry search_oom_revive
   printf '%s\n' job_nproc job_failure job_failure_reset job_supervisor_retry job_generic_exit job_auto_exec job_host job_fallback job_launchd job_tasks job_memory job_agent_retry
   printf '%s\n' review_future_deadline review_future_deadline_retried review_near_deadline
   printf '%s\n' \
