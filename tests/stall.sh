@@ -2,6 +2,137 @@
 # Sourced by run.sh: synthetic status, herdr/Codex fixtures, no live agents.
 # ROOT and DV_HOST come from the driver.
 # shellcheck disable=SC2153,SC2154,SC2016
+stall_omp_fixture() {
+  stall_fixture; stall_functions
+  jq '.agent="omp" | .head=.start_head' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  printf 'π > \n' > "$CASE_DIR/herdr/w-ST-1/output"
+  touch -t 202001010000 "$DV_STATE/ST-1/agent.launched"
+  OMP_DIR=$(agent_transcript_dir omp "$(cd "$REPO" && pwd -P)")
+  mkdir -p "$OMP_DIR"
+  OMP_LOG="$OMP_DIR/session.jsonl"
+  stall_omp_message turn-1
+}
+stall_omp_message() {
+  jq -cn --arg id "$1" --argjson content "${2:-null}" \
+    '{type:"message",id:$id,message:{role:"assistant",stopReason:"stop",content:($content //
+      [{type:"text",text:"[tool_use id=call_1 name=_bash] {\"command\":\"pwd\"}"}])}}' >> "$OMP_LOG"
+}
+stall_omp_scan() {
+  stall_reconcile "$DV_HOST" "$(dv status ST-1 --json)" 60
+}
+stall_omp_count() {
+  jq -se --argjson n "$1" '[.[]|select(.[0:2]==["agent","prompt"])]|length==$n' "$CASE_DIR/herdr/calls"
+}
+case_stall_omp_once() {
+  stall_omp_fixture
+  stall_omp_scan; stall_omp_count 1
+  # The same turn survives scans, command restarts and a later PR transition.
+  stall_omp_scan
+  jq '.status="pr"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  stall_omp_scan; stall_omp_count 1
+  stall_omp_message turn-2
+  stall_omp_scan; stall_omp_count 2
+  stall_omp_message turn-1
+  stall_omp_scan; stall_omp_count 2
+  test ! -f "$DV_STATE/ST-1/stall-recovery.json"
+  grep -F 'Continue' "$DV_STATE/ST-1/sent-input"
+}
+case_stall_omp_pr() {
+  stall_omp_fixture
+  jq '.status="pr"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  # A PR waiter does not suppress this specific provider fault.
+  mkdir "$DV_STATE/ST-1/.pr-wait"
+  touch "$DV_STATE/ST-1/.pr-wait/pid-$$"
+  stall_omp_scan; stall_omp_count 1
+  stall_omp_scan; stall_omp_count 1
+}
+case_stall_omp_negative() {
+  stall_omp_fixture
+  stall_omp_message real '[{"type":"text","text":"[tool_use id=x]"},{"type":"toolCall","id":"x","name":"bash","arguments":{}}]'
+  stall_omp_scan; stall_omp_count 0
+  stall_omp_message final '[{"type":"text","text":"Finished the requested work."}]'
+  stall_omp_scan; stall_omp_count 0
+  stall_omp_message thinking '[{"type":"thinking","thinking":"[tool_use id=x]"}]'
+  stall_omp_scan; stall_omp_count 0
+  stall_omp_message superseded
+  printf '%s\n' '{"type":"message","id":"user-1","message":{"role":"user","content":[{"type":"text","text":"Continue"}]}}' >> "$OMP_LOG"
+  stall_omp_scan; stall_omp_count 0
+  # An incomplete or corrupt trailing message must not expose an old turn.
+  stall_omp_message partial
+  printf '{"type":"message"' >> "$OMP_LOG"
+  stall_omp_scan; stall_omp_count 0
+  printf '\n' >> "$OMP_LOG"
+  stall_omp_message recovered
+  stall_omp_scan; stall_omp_count 1
+}
+case_stall_omp_guards() {
+  stall_omp_fixture
+  local status change
+  for status in working blocked unknown 'done'; do
+    printf '%s\n' "$status" > "$CASE_DIR/herdr/w-ST-1/status"
+    stall_omp_scan
+    # A stale idle snapshot must also be rejected by the issue host.
+    dv _stall-recover ST-1 --omp-texttool round-1
+  done
+  printf 'idle\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  dv _stall-recover ST-1 --omp-texttool stale-token
+  cp "$DV_STATE/ST-1/meta" "$CASE_DIR/original-meta"
+  for change in '.status="done"' '.done_at=1' '.cleaned_at=1' '.agent="codex"' '.capacity={}' ; do
+    jq "$change" "$CASE_DIR/original-meta" > "$DV_STATE/ST-1/meta"
+    stall_omp_scan
+    dv _stall-recover ST-1 --omp-texttool round-1
+  done
+  cp "$CASE_DIR/original-meta" "$DV_STATE/ST-1/meta"
+  touch "$DV_STATE/ST-1/texttool-skip"
+  stall_omp_scan; stall_omp_count 0
+  rm "$DV_STATE/ST-1/texttool-skip"
+  # A pending question is protected even if herdr's pane is idle.
+  cmd_status() { dv status ST-1 --json | jq 'map(.question_pending=true)'; }
+  cmd__stall_recover ST-1 --omp-texttool round-1
+  stall_omp_count 0
+  stall_omp_scan; stall_omp_count 1
+}
+case_stall_omp_session() {
+  stall_omp_fixture
+  touch -t 201901010000 "$OMP_LOG"
+  stall_omp_scan; stall_omp_count 0
+  # A newer session supersedes an older session's bad final message.
+  touch -t 202101010000 "$OMP_LOG"
+  OMP_LOG="$OMP_DIR/new-session.jsonl"
+  stall_omp_message final '[{"type":"text","text":"Done"}]'
+  stall_omp_scan; stall_omp_count 0
+  stall_omp_message turn-1
+  stall_omp_scan; stall_omp_count 1
+  # Identical message IDs in distinct sessions are distinct turns.
+  touch -t 202201010000 "$OMP_LOG"
+  OMP_LOG="$OMP_DIR/session.jsonl"
+  touch "$OMP_LOG"
+  stall_omp_scan; stall_omp_count 2
+}
+case_stall_omp_transport() {
+  stall_omp_fixture
+  printf 'agent prompt\n' > "$CASE_DIR/herdr/fail"
+  stall_omp_scan; stall_omp_count 1
+  rm "$CASE_DIR/herdr/fail"
+  stall_omp_scan; stall_omp_count 1
+  test ! -f "$DV_STATE/ST-1/sent-input"
+  stall_omp_message next
+  stall_omp_scan; stall_omp_count 2
+}
+case_stall_omp_remote() {
+  stall_omp_fixture
+  mkdir -p "$CASE_DIR/remote-home" "$CASE_DIR/hosts/ssh-alias"
+  printf 'DV_HOME=%q\nDV_HOST=canonical-host\n' "$CASE_DIR/remote-home" > "$CASE_DIR/hosts/ssh-alias/config"
+  export SSH_BIDDING=1
+  stall_reconcile ssh-alias "$(dv status ST-1 --json)" 60
+  stall_omp_count 1
+  stall_reconcile ssh-alias "$(dv status ST-1 --json)" 60
+  stall_omp_count 1
+  grep -F 'ssh-alias dv _stall-recover ST-1 --omp-texttool round-1' "$CASE_DIR/ssh.calls"
+}
 stall_fixture() {
   repo stall; herdr_setup; watch_fixture
   export DV_HOSTS="$DV_HOST" DV_STALL_AFTER=1 DV_RECONCILE_INTERVAL=1

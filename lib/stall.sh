@@ -1,7 +1,57 @@
 #!/usr/bin/env bash
-# The single dv-watch owner records observations, never changes job metadata.
+# The watcher records observations; recovery revalidates on the issue host.
 # ISSUE is assigned by load_issue in common.sh; jq dollars are literal.
 # shellcheck disable=SC2016,SC2153
+stall_omp_candidates() {
+  jq -c '.[] | select(.agent=="omp" and .backend=="herdr" and
+    (.status=="running" or .status=="pr") and .alive==true and .agent_status=="idle" and
+    .question_pending!=true and .goal_active!=true and .capacity_detected!=true and .capacity==null and
+    .cleaned_at==null and (.done_at==null or (.status=="pr" and .done_head!=.head)) and
+    (.issue|type)=="string" and (.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")))'
+}
+# Read the newest session written by this launch. A later user/tool message or
+# an incomplete final JSON line supersedes the old assistant turn. Stream the
+# log so long sessions do not need to fit in memory or one shell argument.
+stall_omp_turn() {
+  local physical dir file newest=''
+  [ -f "$S/agent.launched" ] || return 1
+  physical=$(cd "$WT" && pwd -P) || return 1
+  dir=$(agent_transcript_dir omp "$physical") || return 1
+  [ -d "$dir" ] || return 1
+  while IFS= read -r file; do
+    if [ -z "$newest" ] || [ "$file" -nt "$newest" ]; then newest=$file; fi
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.jsonl' -newer "$S/agent.launched" 2>/dev/null)
+  [ -n "$newest" ] || return 1
+  jq -Rner --arg session "$newest" '
+    reduce inputs as $line (null;
+      (try ($line|fromjson) catch null) as $entry |
+      if $entry==null or $entry.type=="message" then $entry else . end) |
+    select(.type=="message" and (.id|type)=="string" and .id!="" and
+      .message.role=="assistant" and .message.stopReason=="stop" and
+      (.message.content|type)=="array") |
+    select(any(.message.content[]; .type=="text" and (.text|type)=="string" and (.text|contains("[tool_use"))) and
+      all(.message.content[]; .type!="toolCall")) |
+    [$session,.id]|tojson' "$newest"
+}
+stall_omp_resume() {
+  local token=$1 turn row tmp state="$S/omp-texttool-nudges.json"
+  [ ! -e "$S/texttool-skip" ] || return 0
+  turn=$(stall_omp_turn) || return 0
+  # Recheck live activity after reading the log, under the normal issue lock.
+  row=$(cmd_status "$ISSUE" --json | stall_omp_candidates) || return 1
+  [ -n "$row" ] && printf '%s\n' "$row" | jq -e --arg token "$token" '(.award_token // "")==$token' >/dev/null || return 0
+  if [ -f "$state" ]; then
+    jq -e 'type=="object"' "$state" >/dev/null || return 1
+    if jq -e --arg turn "$turn" 'has($turn)' "$state" >/dev/null; then return 0; fi
+  fi
+  # Reserve before sending: uncertain transport delivery is never retried for
+  # the same session/message, including after watcher or command restarts.
+  tmp=$(mktemp "$S/.omp-texttool.XXXXXX") || return 1
+  if ! { if [ -f "$state" ]; then cat "$state"; else printf '{}\n'; fi; } |
+    jq --arg turn "$turn" --argjson time "$(now)" '.[$turn]={reserved_at:$time}' > "$tmp" ||
+    ! mv "$tmp" "$state"; then rm -f "$tmp"; return 1; fi
+  send_text 'Your last turn ended with a tool call written as text. Continue the existing task using actual tool calls. Preserve existing changes and finish the brief.'
+}
 stall_reconcile() {
   local host=$1 rows=$2 interval=$3 time state tmp row issue event_host head token id message pending
   time=$(now)
@@ -13,6 +63,13 @@ stall_reconcile() {
   # A host's status rows can exceed one argument's limit (128 KiB on Linux):
   # pass them as a file, or every reconcile round fails before recovery.
   if ! printf '%s\n' "$rows" > "$tmp.rows"; then rm -f "$tmp" "$tmp.rows"; return 1; fi
+  # This specific ended-turn fault needs no idle timeout or PR waiter check.
+  # The issue host reads its own log and persists one reservation per turn.
+  while IFS= read -r row; do
+    issue=$(printf '%s\n' "$row" | jq -r .issue)
+    token=$(printf '%s\n' "$row" | jq -r '.award_token // ""')
+    bid_rpc "$host" _stall-recover "$issue" --omp-texttool "$token" < /dev/null || true
+  done < <(stall_omp_candidates < "$tmp.rows")
   # Status rows do not carry waiter ownership or review receipts. Read those
   # on the issue host, never infer a remote PID's liveness on this watcher.
   : > "$tmp.pr"
@@ -130,6 +187,7 @@ cmd__stall_recover() (
     return 0
   fi
   load_issue "$1"; issue_lock; require_worktree
+  if [ "$2" = --omp-texttool ]; then stall_omp_resume "$3"; return; fi
   local episode=$2 token=$3 row attempts=0 last=0 time tmp supervisor capacity_rc next
   row=$(cmd_status "$ISSUE" --json | jq -c '.[0]') || return 1
   # A dead wrapper no longer owns its wait (capacity_detected is false): the
