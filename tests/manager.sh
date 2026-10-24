@@ -2,6 +2,8 @@
 # shellcheck disable=SC2016
 manager_setup() {
   repo manager
+  # Shared queue cases emit local checkout paths from the synthetic worker.
+  export DV_HOST=worker
   # Assigned by the shared test harness.
   # shellcheck disable=SC2153
   export DV_MANAGER_HOST="$DV_HOST" DV_MANAGER_AGENT=hermes DV_HERMES_BIN="$ROOT/tests/fixtures/manager-hermes"
@@ -349,6 +351,31 @@ manager_remote_repo_case() {
 }
 case_manager_remote_repo() { manager_remote_repo_case success; }
 case_manager_remote_repo_failure() { manager_remote_repo_case failure; }
+case_manager_remote_repo_local_collision() {
+  manager_setup
+  git -C "$REPO" remote add origin https://github.com/example/project.git
+  dv manager start "$REPO"
+  local dir watcher
+  dir=$(dirname "$(manager_meta)")
+  repo collision
+  git -C "$REPO" remote add origin https://github.com/example/other.git
+  dv manager start "$REPO"
+  export SSH_MANAGER_REPO=success SSH_MANAGER_REPO_PATH="$REPO"
+  mkdir -p "$DV_HOME/submissions/M-1"
+  jq -cn --arg repo "$REPO" '{repo:$repo,host:"remote-box",status:"completed"}' > "$DV_HOME/submissions/M-1/task.json"
+  touch "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/hold-worker"
+  dv-kick pr-ready M-1 'remote path also exists locally' remote-box abc
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  manager_wait_calls 3
+  # The remote origin belongs to session-1; the local checkout owns session-2.
+  jq -se 'length==3 and .[2].resume=="session-1"' "$CASE_DIR/hermes/calls"
+  jq -e '.event.id=="remote-box:M-1:pr-ready:abc"' "$dir"/pending/*.json
+  test "$(find "$DV_HOME/managers" -path '*/pending/*.json' | wc -l | tr -d ' ')" = 1
+  test "$(find "$DV_HOME/pending" -name '*.json' | wc -l | tr -d ' ')" = 0
+  test -f "$CASE_DIR/manager-origin-lookup"
+  rm "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/hold-worker"
+  touch "$DV_HOME/stop"; wait "$watcher"
+}
 case_manager_stop_pending() {
   manager_setup
   dv manager start "$REPO"; dv manager stop "$REPO"
@@ -449,12 +476,12 @@ case_manager_reused_issue() {
   # the emitting host's metadata. These functions are read-only RPC stubs.
   (
     manager_functions
-    DV_HOSTS=worker
+    DV_HOSTS=remote-box
     bid_limit() { shift; "$@"; }
-    bid_rpc() { jq -cn '[{issue:"M-1",host:"worker",repo:"/remote/second"}]'; }
+    bid_rpc() { jq -cn '[{issue:"M-1",host:"remote-box",repo:"/remote/second"}]'; }
     ssh() { printf 'https://github.com/example/second.git\n'; }
     local event
-    event=$(jq -cn '{issue:"M-1",host:"worker"}')
+    event=$(jq -cn '{issue:"M-1",host:"remote-box"}')
     test "$(manager_event_repo "$event")" = https://github.com/example/second.git
   )
 }
