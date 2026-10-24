@@ -281,12 +281,13 @@ while [ ! -e "$DV_HOME/stop" ]; do
       # Never repeat an inline fleet status scan for each done/landed event.
       case "$(printf '%s\n' "$line" | jq -r .kind)" in done|landed) reconcile_requested=1 ;; esac
       case "$(jq -r .kind <<< "$line")" in
-      # Observations that ask for no decision: capacity waits resume in place,
-      # progress is a heartbeat, idle has no exit evidence, parked waits on
-      # open issues that unpark/stack resume. A model turn per event only
-      # re-read status and did nothing (devflow#326). blocked/failed/stalled
-      # still reach the manager, so real exhaustion is not lost.
-      waiting-capacity|progress|idle|parked)
+      # Observations that ask for no decision: capacity waits resume in place
+      # and progress is a heartbeat; a model turn per event only re-read
+      # status (devflow#326). idle stays with the manager because it can be
+      # the only alert of a stall episode (metrics_stall_notify dedup), and
+      # parked because only the manager resumes a job whose prerequisites
+      # closed. blocked/failed/stalled still reach the manager.
+      waiting-capacity|progress)
         jq -c --argjson at "$(now)" '{kind:"quiet",at:$at,event:.}' <<< "$line" >> "$DV_HOME/quiet.log"
         metrics_handled "$line"
         printf '%s\n' "$id" >> "$DV_HOME/seen"
