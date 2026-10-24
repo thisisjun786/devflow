@@ -176,6 +176,17 @@ case_stall_omp_once() {
   stall_omp_scan; stall_omp_count 2
   test ! -f "$DV_STATE/ST-1/stall-recovery.json"
   grep -F 'Continue' "$DV_STATE/ST-1/sent-input"
+  grep -F 'Call tools only through tool_use (actual tool calls), never as text. Do not prefix tool names with _ (for example, use bash).' "$DV_STATE/ST-1/sent-input"
+}
+case_stall_omp_patterns() {
+  stall_omp_fixture
+  local marker content n=0
+  for marker in '<invoke name="_bash">' '<function_calls>' '<tool_call>' '[tool_use'; do
+    content=$(jq -cn --arg text "$marker" '[{type:"text",text:$text}]')
+    stall_omp_message "pattern-$n" "$content"
+    n=$((n + 1))
+    stall_omp_scan; stall_omp_count "$n"
+  done
 }
 case_stall_omp_pr() {
   stall_omp_fixture
@@ -189,11 +200,16 @@ case_stall_omp_pr() {
 }
 case_stall_omp_negative() {
   stall_omp_fixture
-  stall_omp_message real '[{"type":"text","text":"[tool_use id=x]"},{"type":"toolCall","id":"x","name":"bash","arguments":{}}]'
-  stall_omp_scan; stall_omp_count 0
+  local marker content
+  for marker in '[tool_use id=x]' '<invoke name="bash">' '<function_calls>' '<tool_call>'; do
+    content=$(jq -cn --arg text "$marker" '[{type:"text",text:$text},{type:"toolCall",id:"x",name:"bash",arguments:{}}]')
+    stall_omp_message real "$content"
+    stall_omp_scan; stall_omp_count 0
+    content=$(jq -cn --arg text "$marker" '[{type:"thinking",thinking:$text,text:$text}]')
+    stall_omp_message thinking "$content"
+    stall_omp_scan; stall_omp_count 0
+  done
   stall_omp_message final '[{"type":"text","text":"Finished the requested work."}]'
-  stall_omp_scan; stall_omp_count 0
-  stall_omp_message thinking '[{"type":"thinking","thinking":"[tool_use id=x]"}]'
   stall_omp_scan; stall_omp_count 0
   stall_omp_message superseded
   printf '%s\n' '{"type":"message","id":"user-1","message":{"role":"user","content":[{"type":"text","text":"Continue"}]}}' >> "$OMP_LOG"

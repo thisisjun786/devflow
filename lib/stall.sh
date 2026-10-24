@@ -29,7 +29,8 @@ stall_omp_turn() {
     select(.type=="message" and (.id|type)=="string" and .id!="" and
       .message.role=="assistant" and .message.stopReason=="stop" and
       (.message.content|type)=="array") |
-    select(any(.message.content[]; .type=="text" and (.text|type)=="string" and (.text|contains("[tool_use"))) and
+    select(any(.message.content[]; .type=="text" and (.text|type)=="string" and
+      (.text | contains("[tool_use") or contains("<invoke") or contains("<function_calls>") or contains("<tool_call>"))) and
       all(.message.content[]; .type!="toolCall")) |
     [$session,.id]|tojson' "$newest"
 }
@@ -60,7 +61,8 @@ stall_omp_resume() {
   if ! { if [ -f "$state" ]; then cat "$state"; else printf '{}\n'; fi; } |
     jq --arg turn "$turn" --arg launch "$launch" --argjson time "$(now)" '.[$turn]={reserved_at:$time,launch:$launch}' > "$tmp" ||
     ! mv "$tmp" "$state"; then rm -f "$tmp"; return 1; fi
-  send_text 'Your last turn ended with a tool call written as text. Continue the existing task using actual tool calls. Preserve existing changes and finish the brief.'
+  send_text 'Your last turn ended with a tool call written as text. Continue the existing task using actual tool calls. Preserve existing changes and finish the brief.
+Call tools only through tool_use (actual tool calls), never as text. Do not prefix tool names with _ (for example, use bash).'
 }
 stall_omp_escalate() {
   local count=$1 dir="$S/omp-texttool-escalation" trust_root file

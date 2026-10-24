@@ -2755,7 +2755,8 @@ registered_cases() {
   printf '%s\n' \
     qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter \
     pr_worker_idle_review pr_worker_idle_guards pr_worker_idle_concurrent pr_worker_idle_tmux stall_pr_idle stall_pr_remote \
-    stall_omp_once stall_omp_pr stall_omp_negative stall_omp_guards stall_omp_session stall_omp_transport stall_omp_remote \
+    host_omp_compaction host_omp_compaction_failure host_omp_compaction_missing \
+    stall_omp_once stall_omp_patterns stall_omp_pr stall_omp_negative stall_omp_guards stall_omp_session stall_omp_transport stall_omp_remote \
     stall_omp_escalate stall_omp_escalate_pr stall_omp_escalate_skip stall_omp_escalate_launch stall_omp_escalate_interrupt stall_omp_escalate_wrapper stall_omp_escalate_legacy
 }
 
