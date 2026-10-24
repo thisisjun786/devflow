@@ -87,10 +87,17 @@ agent_transcript_root() {
 }
 # Each CLI names its per-directory store from the physical working directory.
 agent_transcript_dir() {
-  local root name
+  local root name omp_home
   root=$(agent_transcript_root "$1") || return 1
   case "$1" in
-    omp) name="--$(printf '%s' "${2#/}" | tr '/\\:' '---')--" ;;
+    omp)
+      # omp 18.12 shortens home descendants before encoding the directory.
+      # Callers pass physical worktrees, so resolve a symlinked HOME as well.
+      omp_home=$(cd "$HOME" 2>/dev/null && pwd -P) || omp_home=${HOME%/}
+      case "$2" in
+        "$omp_home"/*) name="-$(printf '%s' "${2#"$omp_home"/}" | tr '/\\:' '---')" ;;
+        *) name="--$(printf '%s' "${2#/}" | tr '/\\:' '---')--" ;;
+      esac ;;
     dsh) name="--$(printf '%s' "${2#/}" | tr / -)--" ;;
     claude) name=$(printf '%s' "$2" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g') ;;
     grok) name=$(jq -rn --arg dir "$2" '$dir|@uri') ;;

@@ -625,6 +625,9 @@ finding 기록을 보존하며 Codex가 thread ID를 제공했다면 `exec resum
 Claude QA는 세션을 저장하지 않는 기존 설정을 유지하고 같은 checkout과 원래 브리프로 이어갑니다.
 터미널은 현재 화면을 사용하고, 이후 `Pursuing goal`·`Working`·`Thinking` 배너가 나오면 옛 오류를 무시합니다.
 Codex·Claude는 화면의 모든 줄을 분류합니다. omp는 화면 대신 이번 실행 뒤 `DV_OMP_SESSIONS`에 쓴 세션 JSONL의
+기록을 읽습니다. omp 18.12의 홈 아래 worktree는 `-<홈 기준 상대 경로>` 디렉터리에서,
+홈 바깥 worktree는 `--<절대 경로>--` 디렉터리에서 찾습니다(경로 구분자는 `-`로 치환).
+용량 대기와 text-tool 재시작이 같은 경로 조회를 사용합니다. 세션의
 마지막 message가 `stopReason:"error"`이고 `errorStatus` 429이거나 오류 문구가 위 분류에 맞을 때만 기다리며,
 그 뒤 입력이나 응답이 기록되면 대기를 끝냅니다. 세션 기록이 없는 omp와 Devin·agy·grok·cursor는
 `Error:`·`API Error: 429`처럼 오류 메시지로 시작하는 줄만 분류합니다. 도구 출력에 보인 시험 이름이나 문서의

@@ -1628,6 +1628,28 @@ case_agent_transcripts() {
   test "$(agent_transcript_root agy)" = "$DV_AGY_SESSIONS"
   if agent_transcript_root devin; then return 1; fi
 }
+case_agent_transcripts_omp_home() {
+  bidding_functions
+  local physical_home wt expected sibling
+  physical_home=$(cd "$HOME" && pwd -P)
+  wt="$physical_home/dv/wt/my repo.v2-T_1"
+  expected="$DV_OMP_SESSIONS/-dv-wt-my repo.v2-T_1"
+  mkdir -p "$wt" "$expected"
+  test "$(agent_transcript_dir omp "$wt")" = "$expected"
+  test "$(agent_transcript omp "$wt")" = "$expected"
+  # A shared prefix is not a descendant of HOME.
+  sibling="${physical_home}-other/dv/wt/T_1"
+  test "$(agent_transcript_dir omp "$sibling")" = "$DV_OMP_SESSIONS/--$(printf '%s' "${sibling#/}" | tr / -)--"
+  # Callers use physical paths even when HOME itself is a symlink.
+  ln -s "$HOME" "$CASE_DIR/home-link"
+  # Expand variables in the child shell after env has supplied its HOME.
+  # shellcheck disable=SC2016
+  test "$(env HOME="$CASE_DIR/home-link" bash -c '
+    DV_ENTRY="$ROOT/bin/dv"
+    source "$ROOT/lib/common.sh"
+    agent_transcript_dir omp "$1"
+  ' _ "$wt")" = "$expected"
+}
 case_revive_transcript() {
   repo revive-transcript; herdr_setup
   local state="$DV_STATE/RT-1" wt dir
@@ -2763,6 +2785,7 @@ source "$ROOT/tests/job-limits.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/search-scope.sh"
 registered_cases() {
+  printf '%s\n' agent_transcripts_omp_home capacity_omp_home_session stall_omp_home_session
   printf '%s\n' dsh_success dsh_restart dsh_followup_restart dsh_fallback dsh_resume dsh_stall dsh_capacity dsh_not_ready dsh_key
   printf '%s\n' dsh_quota dsh_crash_fallback dsh_completion_gate dsh_last_status dsh_jail dsh_jail_plan dsh_jail_nonlinux_log dsh_jail_unavailable dsh_host_sync dsh_host_probe
   printf '%s\n' dsh_delivery dsh_herdr_fallback

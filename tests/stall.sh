@@ -55,6 +55,19 @@ case_stall_omp_restart() {
   stall_omp_scan; stall_omp_count 2
   stall_omp_prompts
 }
+case_stall_omp_home_session() {
+  stall_omp_fixture
+  mkdir -p "$HOME/dv/wt"
+  mv "$REPO" "$HOME/dv/wt/stall-ST-1"
+  REPO="$HOME/dv/wt/stall-ST-1"
+  jq --arg repo "$REPO" '.repo=$repo | .worktree=$repo' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  # Keep the actual home-relative session name independent of the helper.
+  mv "$OMP_DIR" "$DV_OMP_SESSIONS/-dv-wt-stall-ST-1"
+  stall_omp_scan; stall_omp_count 2
+  stall_omp_prompts
+  jq -e 'length==1' "$DV_STATE/ST-1/omp-restarts.json"
+}
 case_stall_omp_once() {
   stall_omp_fixture
   stall_omp_scan; stall_omp_count 2
