@@ -320,7 +320,8 @@ case_qa_crashed_dispatch() {
   local scheduler old_job old_task new_job
   qa_crashed_dispatch_fixture
   # A remote host confirms exit even though the killed runner wrote no exit file.
-  # shellcheck disable=SC2329
+  # Invoked indirectly by bid_limit (SC2317 on ShellCheck 0.9, SC2329 on 0.11).
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() {
     test "$*" = "test-host _receipt $old_job qa-award" || return 1
     printf '{"status":"failed","token":"qa-award","exited":true}\n'
@@ -339,7 +340,8 @@ case_qa_dispatch_receipt_guards() {
   qa_crashed_dispatch_fixture
   cp "$old_task" "$CASE_DIR/task.before"
   cp "$scheduler/pending.json" "$CASE_DIR/pending.before"
-  # shellcheck disable=SC2329
+  # Invoked indirectly by bid_limit.
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() { [ "$reply" != unavailable ] || return 1; printf '%s\n' "$reply"; }
   for reply in unavailable invalid '{}' '{"status":"absent"}' \
     '{"status":"working","token":"qa-award","exited":false}' \
@@ -368,7 +370,7 @@ case_qa_dispatch_exited_receipt() {
   qa_crashed_dispatch_fixture
   bid_task_set "${old_task%/task.json}" '.status="input-required"'
   # Older hosts retain the startup status in their terminal receipt.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() { printf '{"status":"working","token":"qa-award","exited":true}\n'; }
   qa_assert_crashed_dispatch
 }
@@ -386,7 +388,7 @@ case_qa_dispatch_unawarded() {
   local scheduler old_job old_task new_job
   qa_crashed_dispatch_fixture
   bid_task_set "${old_task%/task.json}" '.status="submitted" | .host=null | del(.token)'
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() { touch "$CASE_DIR/unexpected-rpc"; return 1; }
   qa_dispatch
   test ! -f "$CASE_DIR/unexpected-rpc"
