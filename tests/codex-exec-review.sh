@@ -72,7 +72,7 @@ case_exec_exhausted_rebids() {
   jq -n --arg repo "$REPO" '{issue:"QUEUED-1",repo:$repo,agent:"codex",mode:"exec",status:"submitted",host:null,submitted_at:2}' > "$dir/QUEUED-1/task.json"
   # Replay the receipt state observed when each event was actually delivered,
   # not the later terminal state that would conceal the pre-exit failure race.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() {
     case "$2" in
       _receipt) jq -n --argjson exited "$(cat "$CASE_DIR/event-exited")" '{status:"working",token:"exec-round",exited:$exited}' ;;

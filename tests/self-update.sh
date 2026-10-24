@@ -329,7 +329,7 @@ case_update_receipt() {
   jq -cn --arg repo "$UPDATE_ROOT" '{issue:"RPC-1",repo:$repo,agent:"codex",status:"submitted",host:null,attempts:[]}' > "$dir/task.json"
   # Simulate a lost award response after the host has persisted success; the
   # scheduler must recover the actual CLI receipt within its RPC budget.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() {
     case "$2" in
       bid) printf '{"status":"submitted","score":100}\n' ;;

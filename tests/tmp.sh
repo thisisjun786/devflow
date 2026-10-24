@@ -137,7 +137,7 @@ case_tmp_appserver_killed() {
   kill -KILL "$client"
   for _ in {1..100}; do
     remaining=$(ps -p "$client" -o stat= 2>/dev/null) || remaining=''
-    [ -n "$remaining" ] && [[ "$remaining" != Z* ]] || break
+    { [ -n "$remaining" ] && [[ "$remaining" != Z* ]]; } || break
     sleep 0.01
   done
   # A defunct process must be reaped by its parent before kill -0 is false.
