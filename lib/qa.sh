@@ -266,7 +266,7 @@ qa_dispatch() {
         host=$(jq -r '.host // empty' "$task"); token=$(jq -r '.token // empty' "$task")
         # Unawarded submissions still own the queue position. An unavailable
         # host or a receipt for another award cannot prove that QA has stopped.
-        [ -n "$host" ] && [ -n "$token" ] || continue
+        if [ -z "$host" ] || [ -z "$token" ]; then continue; fi
         receipt=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" _receipt "$job" "$token" </dev/null) || continue
         jq -e --arg token "$token" '.token==$token and .exited==true' <<< "$receipt" >/dev/null 2>&1 || continue
         if jq -e '.status=="submitted" or .status=="working" or .status=="input-required"' "$task" >/dev/null; then
