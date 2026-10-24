@@ -4,6 +4,8 @@
 pr_body_setup() {
   repo public-body remote
   PR_WT="$DV_WORK/public-body"
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   PR_STATE="$DV_STATE/PUB-1"
   git -C "$REPO" worktree add -qb codex/public-body "$PR_WT"
   git -C "$PR_WT" commit --allow-empty -qm 'DF-56: publish a useful PR subject'

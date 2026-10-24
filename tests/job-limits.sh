@@ -67,6 +67,8 @@ case_job_generic_exit() {
   test "$rc" = 137
   test ! -f "$S/resource-failure.json"
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_job_auto_exec() {
   job_test_load
   # shellcheck source=lib/appserver.sh

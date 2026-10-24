@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016
 case_tmp_reap() {
-  local child prefix path
+  local child path
   export DV_TMP="$CASE_DIR/disk tmp"
   mkdir -p "$DV_TMP"
   cat > "$CASE_DIR/owner" <<'OWNER'
@@ -89,6 +89,8 @@ case_tmp_appserver() {
 }
 case_tmp_default() {
   unset DV_TMP
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   DV_ENTRY="$ROOT/bin/dv"
   source "$ROOT/lib/common.sh"
   test "$TMPDIR" = "$HOME/.cache/dv/tmp"
@@ -135,7 +137,7 @@ case_tmp_appserver_killed() {
   kill -KILL "$client"
   for _ in {1..100}; do
     remaining=$(ps -p "$client" -o stat= 2>/dev/null) || remaining=''
-    [ -n "$remaining" ] && [[ "$remaining" != Z* ]] || break
+    { [ -n "$remaining" ] && [[ "$remaining" != Z* ]]; } || break
     sleep 0.01
   done
   # A defunct process must be reaped by its parent before kill -0 is false.
@@ -155,6 +157,8 @@ case_tmp_usage() {
   expected=$(du -k "$CASE_DIR/usage/data" | awk '{print $1}')
   test "$(tmp_usage_kb "$CASE_DIR/usage-link")" = "$expected"
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_tmp_cache() {
   DV_ENTRY="$ROOT/bin/dv"
   source "$ROOT/lib/common.sh"

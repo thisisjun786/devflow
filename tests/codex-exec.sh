@@ -7,6 +7,8 @@ exec_setup() {
   export DV_HERDR=1 DV_AGENT_CMD_codex='' DV_CODEX_BIN="$ROOT/tests/fixtures/codex-exec"
   export DV_EXEC_SCENARIO=${1:-success}
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 exec_wait() {
   local i issue=${1:-EX-1}
   for i in {1..200}; do

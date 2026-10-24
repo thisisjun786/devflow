@@ -39,14 +39,14 @@ manager_lock() {
   mkdir -p "$dir/run.lock" || return 1
   # Bash noclobber uses exclusive file creation. Keep the parent directory:
   # removing it on release races the next acquirer creating its owner file.
-  # Never steal a stale owner file automatically: a worker child may outlive
-  # its parent, and deleting a newly acquired replacement would break ordering.
+  # Dispatch checks the recorded owner before recovering a stale reservation.
+  # A runner can outlive its watcher, so the watcher's PID is not sufficient.
   (set -C; printf '%s\n' "$$" > "$dir/run.lock/pid") 2>/dev/null || return 1
   now > "$dir/run.lock/started"
 }
 manager_unlock() {
-  local dir=$1
-  [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$$" ] || return 0
+  local dir=$1 owner=${2:-$$}
+  [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$owner" ] || return 0
   rm -f "$dir/run.lock/job" "$dir/run.lock/claim" "$dir/run.lock/started" \
     "$dir/run.lock/batch.json" "$dir/run.lock/notices.json"
   rm -f "$dir/run.lock/pid"
@@ -210,16 +210,20 @@ manager_event_repo() {
   # Current event-side metadata takes precedence over a retained submission,
   # including a reused identifier on the same host with a different repo.
   if [ "$host" = "$DV_HOST" ] && [ -f "$DV_STATE/$issue/meta" ]; then
-    jq -er --arg host "$host" 'select(.host==$host) | .repo' "$DV_STATE/$issue/meta"
+    repo=$(jq -er --arg host "$host" 'select(.host==$host) | .repo' "$DV_STATE/$issue/meta") || return 1
   elif [ -f "$DV_HOME/submissions/$issue/task.json" ] &&
     repo=$(jq -er --arg host "$host" 'select(.host==$host) | .repo | select(type=="string" and length>0)' "$DV_HOME/submissions/$issue/task.json"); then
-    printf '%s\n' "$repo"
+    :
   else
     case " $DV_HOSTS " in *" $host "*) ;; *) return 1 ;; esac
     rows=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" status "$issue" --json < /dev/null) || return 1
     repo=$(printf '%s\n' "$rows" | jq -er --arg issue "$issue" --arg host "$host" '.[] | select(.issue==$issue and .host==$host) | .repo') || return 1
+  fi
+  if [ "$host" != "$DV_HOST" ] && [[ "$repo" = /* ]] && [ ! -d "$repo" ]; then
     # Resolve a remote checkout on its host; basename matching can cross repos.
     bid_limit "$DV_BID_TIMEOUT" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$(shell_join git -C "$repo" config --get remote.origin.url)"
+  else
+    printf '%s\n' "$repo"
   fi
 }
 manager_conflict() {
@@ -391,7 +395,7 @@ manager_fallback_dispatch() {
 # Snapshot once under the reservation. Arrivals during a turn belong to the
 # next batch, and issues with an outstanding fallback cannot race that worker.
 manager_dispatch() {
-  local meta dir job issue anchor enabled
+  local meta dir job issue anchor enabled owner claim
   local jobs=() notices=()
   for meta in "$DV_HOME"/managers/*/meta.json; do
     [ -f "$meta" ] || continue
@@ -400,7 +404,21 @@ manager_dispatch() {
     jq -e .enabled "$meta" >/dev/null && enabled=true
     # Enabled managers own one slot per repository, outside the worker pool.
     if [ "$enabled" = false ] && [ "$active" -ge "$DV_MAX_WORKERS" ]; then continue; fi
-    if ! manager_lock "$dir"; then manager_fallback_dispatch "$dir"; continue; fi
+    if ! manager_lock "$dir"; then
+      owner=$(cat "$dir/run.lock/pid" 2>/dev/null || true)
+      claim=$(cat "$dir/run.lock/claim" 2>/dev/null || true)
+      # An empty owner may still be getting written. A live claim also covers
+      # the brief handoff before the runner replaces its watcher's PID.
+      if ! [[ "$owner" =~ ^[1-9][0-9]*$ ]] || kill -0 "$owner" 2>/dev/null ||
+        { [[ "$claim" =~ ^[1-9][0-9]*$ ]] && kill -0 "$claim" 2>/dev/null; }; then
+        manager_fallback_dispatch "$dir"; continue
+      fi
+      manager_unlock "$dir" "$owner"
+      jq -cn --arg pid "$owner" --argjson time "$(now)" \
+        '{kind:"stale_lock_cleared",pid:$pid,time:$time}' >> "$dir/events.log"
+      # Jobs and notices remain queued; rebuild their reservation this pass.
+      if ! manager_lock "$dir"; then manager_fallback_dispatch "$dir"; continue; fi
+    fi
     jobs=(); notices=(); anchor=''
     for job in "$dir"/pending/*.json; do
       [ -f "$job" ] || continue
@@ -440,7 +458,12 @@ cmd__manager_run() (
   [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$PPID" ] || fail 'manager runner has no parent reservation'
   [ "$(cat "$dir/run.lock/job" 2>/dev/null)" = "$job" ] || fail 'manager runner job was not reserved'
   # Only one child can claim this exact reservation, even if invoked twice.
-  (set -C; printf '%s\n' "$$" > "$dir/run.lock/claim") 2>/dev/null || fail 'manager reservation already claimed'
+  # $$ still names the outer dv process inside this subshell on Bash 3.2.
+  # Record this execution shell through a child's PPID, so killing only the
+  # outer process cannot hide a surviving turn from stale-lock recovery.
+  set -C
+  bash -c 'printf "%s\n" "$PPID"' > "$dir/run.lock/claim" 2>/dev/null || fail 'manager reservation already claimed'
+  set +C
   # Transfer the watcher's reservation to this child before doing any work.
   printf '%s\n' "$$" > "$dir/run.lock/pid"
   trap 'manager_unlock "$dir"' EXIT

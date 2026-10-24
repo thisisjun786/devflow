@@ -17,7 +17,7 @@ dv send TK-1 '출처를 보완하고 같은 작업을 마무리하세요'
 
 브리프에는 한 줄짜리 `Destination: /absolute/path`와 완료 조건을 씁니다. task는 제출한 호스트에서 실행하고 같은 호스트의 목적지로 전달합니다. 호스트 입찰·원격 파일 전송은 하지 않으며, GitHub 이슈 없이 브리프와 `TK-<n>` 식별자만으로 실행할 수 있습니다. 기존 코드 제출은 그대로입니다(`--kind code`도 가능).
 
-새 임시 작업 폴더와 빈 `out/`를 만들고 원래 workspace는 참고용 입력으로 안내합니다. 이는 파일시스템 샌드박스가 아닙니다. Codex는 코드 작업과 같은 모드 선택을 사용합니다: 기본 auto는 연결 가능한 App Server를 사용하고 없으면 JSON exec로 실행합니다. App Server는 Git 없는 작업 폴더를 thread의 cwd로 전달하며 사용자 설정을 다시 쓰지 않습니다. exec는 `--skip-git-repo-check`와 기존 stall/재시도를 사용하고, `DV_CODEX_MODE=exec`로 명시할 수 있습니다. goal/tui, Claude와 사용자 지정 명령은 기존 herdr/tmux 경로를 사용합니다. Codex의 원래 workspace는 `DV_TRUSTED_REPOS`에 등록되어 있어야 하며, exec/TUI에서는 해당 작업 폴더에만 신뢰를 이어 줍니다. 같은 로컬 수용량, 상태·경과 시간·파일 수와 완료 이벤트를 사용합니다. 로컬 슬롯이 없으면 제출을 거절하며, task 상태는 `dv status`에서 봅니다(`dv queue`는 호스트 입찰용).
+새 임시 작업 폴더와 빈 `out/`를 만들고 원래 workspace는 참고용 입력으로 안내합니다. 이는 파일시스템 샌드박스가 아닙니다. Codex는 코드 작업과 같은 모드 선택을 사용합니다: 기본 auto와 `DV_CODEX_MODE=appserver`(경고 출력)는 자원 제한을 상속하는 백그라운드 JSON exec로 시작합니다. 기존 레거시 App Server 작업만 저장된 thread를 유지하며(Git 없는 작업 폴더를 thread의 cwd로 전달하고 사용자 설정을 다시 쓰지 않음), App Server thread 제어는 기존 레거시 App Server 작업에만 적용됩니다. exec는 `--skip-git-repo-check`와 기존 stall/재시도를 사용하고, `DV_CODEX_MODE=exec`로 명시할 수 있습니다. goal/tui, Claude와 사용자 지정 명령은 기존 herdr/tmux 경로를 사용합니다. Codex의 원래 workspace는 `DV_TRUSTED_REPOS`에 등록되어 있어야 하며, exec/TUI에서는 해당 작업 폴더에만 신뢰를 이어 줍니다. 같은 로컬 수용량, 상태·경과 시간·파일 수와 완료 이벤트를 사용합니다. 로컬 슬롯이 없으면 제출을 거절하며, task 상태는 `dv status`에서 봅니다(`dv queue`는 호스트 입찰용).
 
 에이전트는 `out/`에 일반 파일을 만들고 `$DV_STATE/<ISSUE>/report.md`에 산출물·출처·미해결 사항을 쓴 뒤 `dv done <ISSUE>`를 실행합니다. `out/`에는 크기가 0바이트보다 큰 일반 파일이 하나 이상 있어야 하며, 그 옆의 빈 보조 파일은 허용합니다. 파일이 없거나 모두 0바이트인 산출물, 누락/빈 보고서, 심볼릭 링크·특수 파일은 완료를 거절합니다. done은 `out/`과 보고서를 revision별 스냅샷으로 보존하고 복사 전후 내용이 같은지 확인합니다. done의 head는 산출물 경로·내용과 보고서의 SHA-256이며 수정되면 다시 완료·확인해야 합니다. land는 같은 산출물 규칙을 만족하는 확인된 스냅샷만 전달하며, 스냅샷이 없거나 훼손됐으면 거절합니다.
 
@@ -184,7 +184,7 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 다른 PR로 이미 합쳐진 작업은 `dv done ISSUE --already-merged <PR 번호·PR URL·커밋>`으로 끝냅니다. 숫자만 쓰면 PR 번호입니다. PR은 MERGED이고 같은 base에 병합됐는지 확인해 병합 커밋을 씁니다. 그 커밋이 fetch한 `origin/<BASE>`(원격이 없으면 로컬 base)의 조상이고, 이 브랜치를 base에 병합해도 tree가 바뀌지 않아야 합니다. 같은 수정을 다시 만든 커밋은 통과하며 base에 없는 변경이 남으면 거절합니다. 작업 자신의 PR이 열려 있어도 거절합니다. 결과는 done.json의 `merged_via`에 남고 상태는 ready입니다. 관리자의 `dv land`는 병합하지 않고 같은 확인을 반복한 뒤 landed 기록·worktree 정리·`landed` 이벤트를 처리합니다.
 
-열린 선행 이슈 때문에 진행할 수 없는 running 또는 pr 상태의 code 작업은 `dv park ISSUE --on 12,13 [--note TEXT]`로 보류합니다. 깨끗한 worktree와 선행 이슈가 열려 있는지 확인하고, force 없이 브랜치를 push하고, 작업 이슈(meta의 `source_issue`, 없으면 ISSUE 끝 번호)에 head별 마커가 있는 댓글을 한 번 남긴 뒤 상태를 `parked`로 바꾸고 `parked` 이벤트를 보냅니다. parked 작업은 입찰 슬롯을 차지하지 않고 PR 대기자 재시작·자동 재개·정체 복구 대상도 아니며, 에이전트가 끝나도 failed를 보내지 않습니다. 보류 중에도 PR의 병합·닫힘은 상태 안전망이 감지합니다. worktree는 보존하고 `dv send`가 상태를 running으로 되돌려 같은 worktree에서 재개합니다. 이후 `dv pr` 또는 `dv pr-wait`가 상태를 pr로 되돌리며 `pr-loop.json`의 누적 CI·리뷰 횟수와 요청 기록은 유지합니다.
+열린 선행 이슈 때문에 진행할 수 없는 running 또는 pr 상태의 code 작업은 `dv park ISSUE --on 12,13 [--note TEXT]`로 보류합니다. 깨끗한 worktree와 선행 이슈가 열려 있는지 확인하고, force 없이 브랜치를 push하고, 작업 이슈(meta의 `source_issue`, 없으면 ISSUE 끝 번호)에 head별 마커가 있는 댓글을 한 번 남긴 뒤 상태를 `parked`로 바꾸고 `parked` 이벤트를 보냅니다. 같은 head에서 다시 보류하면 meta의 보류 회차(`parked.episode`)마다 다른 이벤트 ID를 쓰므로 바뀐 선행 이슈 목록이 관리자에게 다시 전달되고, 같은 이벤트의 재전송은 중복으로 처리됩니다. parked 작업은 입찰 슬롯을 차지하지 않고 PR 대기자 재시작·자동 재개·정체 복구 대상도 아니며, 에이전트가 끝나도 failed를 보내지 않습니다. 보류 중에도 PR의 병합·닫힘은 상태 안전망이 감지합니다. worktree는 보존하고 `dv send`가 상태를 running으로 되돌려 같은 worktree에서 재개합니다. 이후 `dv pr` 또는 `dv pr-wait`가 상태를 pr로 되돌리며 `pr-loop.json`의 누적 CI·리뷰 횟수와 요청 기록은 유지합니다.
 
 쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 줄 끝의 `.`·`,`·`;`는 무시하고 `Depends on #1, #2`처럼 한 줄에 여러 번호를 적어도 됩니다. 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
 
@@ -196,7 +196,7 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 업데이트 충돌은 worktree에 남기고 해당 에이전트에 `dv send`를 한 번 요청합니다. 요청은 `stack-conflict.sent`, 전달 결과는 `stack-conflict.log`에 보존합니다. 에이전트가 충돌을 해결·커밋·push하면 큐가 새 head의 CI를 확인하여 이어갑니다. 전달 실패는 자동으로 중복 전송하지 않으므로 로그를 확인해야 합니다. dirty worktree, API 오류, 비어 있거나 실패한 CI는 병합하지 않으며 기존 완료·리뷰 기록과 원격 브랜치를 보존합니다.
 
-Codex 기본 모드는 `DV_CODEX_MODE=auto`입니다. 실행 호스트에 연결 가능한 App Server가 있으면 사용하고, 없으면 exec를 선택합니다. `DV_CODEX_MODE=exec` 또는 `--mode exec`는 `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal`/`tui` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Codex 외 에이전트는 goal만 씁니다. auto 제출은 큐에서도 auto를 보존해 실제 실행 호스트에서 backend를 선택합니다.
+Codex 기본 모드는 `DV_CODEX_MODE=auto`이며, 새 auto/appserver 작업은 자원 격리를 위해 백그라운드 exec로 시작합니다(`DV_CODEX_MODE=appserver`는 경고를 출력하고 exec로 대체하며, App Server thread 제어는 기존 레거시 App Server 작업에만 적용됩니다). `DV_CODEX_MODE=exec` 또는 `--mode exec`는 `codex exec --json --dangerously-bypass-approvals-and-sandbox`를 worktree에서 백그라운드 래퍼로 실행하며 herdr·tmux가 필요 없습니다. `$DV_STATE/ISSUE/agent.jsonl`에 JSONL 이벤트를 누적하고 `agent.stderr`에 진단 출력을, `agent.exit`에 마지막 실행의 실제 종료 코드를 기록합니다. `DV_CODEX_MODE=goal`/`tui` 또는 `--mode goal`로 기존 TUI를 선택합니다. 명시적인 `--mode`와 기존 `DV_MODE` 설정은 기본값보다 우선하며, Codex 외 에이전트는 goal만 씁니다. auto 제출은 큐에서도 auto를 보존해 실제 실행 호스트에서 backend를 선택합니다.
 
 goal과 사용자 지정 실행기는 herdr가 PATH 또는 `~/.local/bin/herdr`에 있으면 포커스를 바꾸지 않고 `dv-<ISSUE>` workspace에서 실행합니다(Codex hooks 유지). send·status·clean/land는 기록된 backend를 따르며 herdr 로그는 done/clean 시 화면을 저장합니다. 미설치 또는 `DV_HERDR=0`이면 tmux를 사용하고, 기존 backend 없는 이슈도 tmux로 처리합니다. herdr 시작 오류는 상태를 보존하고 실패를 알립니다.
 
@@ -288,7 +288,7 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 큐 처리가 실패해 같은 줄을 `DV_STALL_AFTER`초(기본 300) 넘게 재시도하면 `watcher-stuck` 이벤트를 기존 큐·이벤트 로그에 남기고 stderr와 `watch.log`에도 줄 번호·원인을 출력합니다. 한 멈춤 구간에 한 번 알리며, 커서가 진행하면 다음 멈춤을 다시 감지합니다. 큐가 비어 있는 유휴 상태에는 이 경보를 내지 않습니다. 경보 이벤트의 worker 전달은 막힌 줄이 풀린 뒤 이루어지므로, 멈춘 동안에는 stderr/로그로 확인할 수 있습니다.
 
-관리자 턴이 `DV_MANAGER_MAX_WAIT`(기본 120초)를 넘으면 그 턴과 다른 이슈의 대기 이벤트를 세션 없는 기존 worker 경로로 보냅니다. fallback worker는 `DV_MAX_WORKERS`를 지키며, 같은 이슈가 실행 중이면 해당 이슈의 후속 이벤트는 기다립니다. `fallback/`에 전달을 먼저 보존하고 기존 worker 재시도·재시작 복구를 사용합니다. 성공 결과는 `notices/`에 저장해 관리자의 다음 입력에 덧붙입니다. 새 이벤트가 없어도 결과 전달을 위한 턴을 실행합니다. `events.log`의 `event_handled`에는 이벤트별 `event_id`, `event_time`, `handled_at`, `latency_seconds`(초), `route`(`manager` 또는 `fallback`), `exit_code`, `disposition`이 남습니다. 관리자 배치 실패도 종료 코드와 함께 기록하고, fallback 실패는 기존 worker 규칙으로 재시도하여 성공했을 때 기록합니다. 미래 시각의 이벤트는 지연을 0으로 기록합니다.
+관리자 턴이 `DV_MANAGER_MAX_WAIT`(기본 1800초; 더 짧은 대기가 필요하면 `DV_MANAGER_MAX_WAIT`를 더 낮게 설정)를 넘으면 그 턴과 다른 이슈의 대기 이벤트를 세션 없는 기존 worker 경로로 보냅니다. fallback worker는 `DV_MAX_WORKERS`를 지키며, 같은 이슈가 실행 중이면 해당 이슈의 후속 이벤트는 기다립니다. `fallback/`에 전달을 먼저 보존하고 기존 worker 재시도·재시작 복구를 사용합니다. 성공 결과는 `notices/`에 저장해 관리자의 다음 입력에 덧붙입니다. 새 이벤트가 없어도 결과 전달을 위한 턴을 실행합니다. `events.log`의 `event_handled`에는 이벤트별 `event_id`, `event_time`, `handled_at`, `latency_seconds`(초), `route`(`manager` 또는 `fallback`), `exit_code`, `disposition`이 남습니다. 관리자 배치 실패도 종료 코드와 함께 기록하고, fallback 실패는 기존 worker 규칙으로 재시도하여 성공했을 때 기록합니다. 미래 시각의 이벤트는 지연을 0으로 기록합니다.
 
 재개가 실패하거나 세션 ID를 받지 못하면 실패를 기록하고 초기 역할과 해당 이벤트로 새 세션을 한 번 실행해 새 ID를 저장합니다. 새 실행까지 실패하면 이벤트를 `failed/`에 보관하며 자동으로 계속 재시도하지 않습니다. 재개 실패 전에 일부 동작이 실행됐을 수 있으므로 기존 worker의 head·중복·review-fix 확인 규칙이 계속 필요합니다. Hermes가 압축 후 새 ID를 반환하면 그 ID를 이어 사용합니다.
 
@@ -636,7 +636,7 @@ Codex가 생성하는 JSON schema를 기준으로 구현했습니다. 다른 rel
 
 ```bash
 tests/run.sh
-shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fixtures/*
+bash tests/shellcheck.sh
 ```
 
 실제 에이전트·GitHub·SSH·Hermes를 시험에서 부르지 않습니다. 임시 bare 원격과 실제 tmux를 쓰며 tmux가 없을 때만 해당 시험을 skip합니다. `DV_TEST_TMP=/scratch/...`로 임시 위치를 지정할 수 있습니다. 디스크 시험은 `df`·Go 스텁과 임시 캐시를 사용합니다. 큐·worker 기록은 운영자가 보관 주기를 정하고, 자동 정리 대상이 아닌 worktree는 `dv clean`으로 정리하세요.
@@ -678,7 +678,9 @@ QA 하나를 최신 관측 base head에 제출합니다. 실행 중 추가 병�
 
 QA도 일반 작업과 같은 호스트 입찰·admission·`DV_MAX_JOBS` 슬롯을 사용하므로
 서로 다른 저장소는 여러 호스트에서 병렬 실행됩니다. 준비 중인 clone과
-`waiting-capacity`도 자리를 유지합니다. 저장소별 실행 요청은 고정하고, 같은 head의
+`waiting-capacity`도 자리를 유지합니다. 실행기나 그 자식 프로세스가 `agent.exit` 없이
+죽으면(예: 호스트 재부팅) 그 작업은 슬롯을 반환하고 `dv status`는 `failed`로 보여 주며,
+임시 clone은 `dv clean` 전까지 남습니다. 저장소별 실행 요청은 고정하고, 같은 head의
 작업을 중복 제출하지 않습니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이며
 repo identifier에는 owner, 안전한 repo 이름과 checksum이 들어갑니다.
 `dv qa status --json`은 scheduler의 저장소별 pending/running을,

@@ -66,6 +66,8 @@ case_capacity_task() {
   grep -F 'host has no free task slots' "$CASE_DIR/task.log"
   test ! -d "$DV_STATE/CAP-3"
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_capacity_launch_reservation() {
   capacity_fixture
   jq '.load5=0' "$CASE_DIR/resources" > "$CASE_DIR/next"; mv "$CASE_DIR/next" "$CASE_DIR/resources"
@@ -87,6 +89,8 @@ case_capacity_launch_reservation() {
   (cmd_start "$REPO" CAP-4 reservation --mode exec --brief "$CASE_DIR/brief")
   test ! -d "$DV_STATE/.admission-lock"
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 case_capacity_probe_cleanup() (
   capacity_fixture
   printf 'owned by caller\n' > "$CASE_DIR/owner"
