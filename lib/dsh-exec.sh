@@ -159,7 +159,7 @@ dsh_exec_events() {
   done < <(tail -n "+$((exec_line + 1))" "$S/agent.jsonl")
 }
 dsh_exec_run() {
-  local instruction=$1 exec_child='' exec_stopped_rc=0 exec_line exec_activity exec_reason exec_capacity
+  local instruction=$1 original_instruction=$1 exec_child='' exec_stopped_rc=0 exec_line exec_activity exec_reason exec_capacity
   local run rc stderr_line completed resumed=0 failures session
   local DSH_JAIL_ARGS=() args=()
   dsh_validate
@@ -246,7 +246,12 @@ dsh_exec_run() {
     failures=$((failures + 1)); resumed=0
     meta_set --argjson failures "$failures" --arg reason "$exec_reason" '.dsh_failures=$failures | .failure_reason=$reason'
     rm -f "$S/agent.session"
-    dsh_restart_prompt > "$S/dsh-restart.md"
+    # A fresh session cannot see the follow-up that this run was given, so the
+    # restart prompt keeps it alongside the brief, report and Git summary.
+    {
+      dsh_restart_prompt
+      printf '\nThe current request follows:\n%s\n' "$original_instruction"
+    } > "$S/dsh-restart.md"
     if [ "$failures" -ge 2 ]; then
       printf '%s\n' "$exec_reason" > "$S/dsh-fallback.pending"
       dsh_exec_cleanup; return 0
