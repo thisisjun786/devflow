@@ -6,12 +6,14 @@ stall_omp_candidates() {
   jq -c '.[] | select(.agent=="omp" and .backend=="herdr" and
     (.status=="running" or .status=="pr") and .alive==true and .agent_status=="idle" and
     .question_pending!=true and .goal_active!=true and .capacity_detected!=true and .capacity==null and
-    .cleaned_at==null and (.escalated_from==null or
-      (.escalated_from=="omp" and .escalation_reason=="texttool" and
-       .escalation_status=="blocked" and .escalation_error=="omp did not stop")) and
+    .cleaned_at==null and .escalated_from==null and
     (.done_at==null or (.status=="pr" and .done_head!=.head)) and
     (.issue|type)=="string" and (.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")))'
 }
+# Text forms seen from DeepSeek V4.1 Flash via InferHub (10-24 sample, 40
+# sessions): [tool_use id=.. name=..] with a JSON body, <tool_use id=..>,
+# <function_calls>/<invoke name=..> XML, antml-prefixed XML and <tool_call>.
+STALL_OMP_TEXT_TOOL='\[tool_use|<tool_use id=|<invoke|<function_calls>|<tool_call>|antml:invoke'
 # Read the newest session written by this launch. A later user/tool message or
 # an incomplete final JSON line supersedes the old assistant turn. Stream the
 # log so long sessions do not need to fit in memory or one shell argument.
@@ -25,87 +27,106 @@ stall_omp_turn() {
     if [ -z "$newest" ] || [ "$file" -nt "$newest" ]; then newest=$file; fi
   done < <(find "$dir" -maxdepth 1 -type f -name '*.jsonl' -newer "$S/agent.launched" 2>/dev/null)
   [ -n "$newest" ] || return 1
-  jq -Rner --arg session "$newest" '
+  jq -Rner --arg session "$newest" --arg pattern "$STALL_OMP_TEXT_TOOL" '
     reduce inputs as $line (null;
       (try ($line|fromjson) catch null) as $entry |
       if $entry==null or $entry.type=="message" then $entry else . end) |
     select(.type=="message" and (.id|type)=="string" and .id!="" and
       .message.role=="assistant" and .message.stopReason=="stop" and
       (.message.content|type)=="array") |
-    select(any(.message.content[]; .type=="text" and (.text|type)=="string" and
-      (.text | contains("[tool_use") or contains("<invoke") or contains("<function_calls>") or contains("<tool_call>"))) and
+    select(any(.message.content[]; .type=="text" and (.text|type)=="string" and (.text|test($pattern))) and
       all(.message.content[]; .type!="toolCall")) |
     [$session,.id]|tojson' "$newest"
 }
+# A turn that printed its tool call as text poisons the session: once one is in
+# the history the model repeats the form in about a third of later turns
+# (10-24 measurement), so a nudge rarely recovers it. Start a fresh omp session
+# in the same omp process, pane, worktree and branch instead (/new), and give
+# it a short state summary. This is separate from the single revive budget;
+# restarts are recorded in omp-restarts.json and logged for the operator.
 stall_omp_resume() {
-  local token=$1 turn row tmp launch launched count=0 state="$S/omp-texttool-nudges.json"
+  local token=$1 turn row tmp time state="$S/omp-restarts.json" day today
   [ ! -e "$S/texttool-skip" ] || return 0
   turn=$(stall_omp_turn) || return 0
   # Recheck live activity after reading the log, under the normal issue lock.
   row=$(cmd_status "$ISSUE" --json | stall_omp_candidates) || return 1
   [ -n "$row" ] && printf '%s\n' "$row" | jq -e --arg token "$token" '(.award_token // "")==$token' >/dev/null || return 0
-  [[ "$DV_OMP_TEXTTOOL_ESCALATE" =~ ^[1-9][0-9]{0,8}$ ]] || fail 'DV_OMP_TEXTTOOL_ESCALATE must be a positive integer (at most 9 digits)'
-  launch=$(cat "$S/agent.launched") || return 1
-  launched=$(stat -c %Y "$S/agent.launched" 2>/dev/null || stat -f %m "$S/agent.launched") || return 1
-  # Older launch markers were empty. Accept their existing reservations by
-  # timestamp; new markers identify distinct launches even in the same second.
-  [ -n "$launch" ] || launch="legacy:$launched"
+  [[ "$DV_OMP_RESTART_GAP" =~ ^(0|[1-9][0-9]{0,8})$ ]] || fail 'DV_OMP_RESTART_GAP must be nonnegative seconds (at most 9 digits)'
+  [[ "$DV_OMP_RESTART_SETTLE" =~ ^(0|[1-9][0-9]{0,8})$ ]] || fail 'DV_OMP_RESTART_SETTLE must be nonnegative seconds (at most 9 digits)'
   if [ -f "$state" ]; then
     jq -e 'type=="object"' "$state" >/dev/null || return 1
     if jq -e --arg turn "$turn" 'has($turn)' "$state" >/dev/null; then return 0; fi
-    count=$(jq --arg launch "$launch" --argjson launched "$launched" '[.[] |
-      select(.launch==$launch or (.launch==null and (.reserved_at // 0)>=$launched))] | length' "$state") || return 1
   fi
-  if [ "$count" -ge "$DV_OMP_TEXTTOOL_ESCALATE" ]; then stall_omp_escalate "$count"; return; fi
+  time=$(now)
+  if [ -f "$state" ] && ! jq -e --argjson time "$time" --argjson gap "$DV_OMP_RESTART_GAP" \
+    '([.[].at]|max // 0) <= ($time - $gap)' "$state" >/dev/null; then return 0; fi
   # Reserve before sending: uncertain transport delivery is never retried for
   # the same session/message, including after watcher or command restarts.
-  tmp=$(mktemp "$S/.omp-texttool.XXXXXX") || return 1
+  day=$(date +%F)
+  tmp=$(mktemp "$S/.omp-restarts.XXXXXX") || return 1
   if ! { if [ -f "$state" ]; then cat "$state"; else printf '{}\n'; fi; } |
-    jq --arg turn "$turn" --arg launch "$launch" --argjson time "$(now)" '.[$turn]={reserved_at:$time,launch:$launch}' > "$tmp" ||
+    jq --arg turn "$turn" --arg day "$day" --argjson time "$time" '.[$turn]={at:$time,day:$day}' > "$tmp" ||
     ! mv "$tmp" "$state"; then rm -f "$tmp"; return 1; fi
-  send_text 'Your last turn ended with a tool call written as text. Continue the existing task using actual tool calls. Preserve existing changes and finish the brief.
-Call tools only through tool_use (actual tool calls), never as text. Do not prefix tool names with _ (for example, use bash).'
+  today=$(jq --arg day "$day" '[.[]|select(.day==$day)]|length' "$state")
+  stall_omp_restart "$turn" "$today"
 }
-stall_omp_escalate() {
-  local count=$1 dir="$S/omp-texttool-escalation" trust_root file
-  job_can_launch || return 1
-  trust_root=$(codex_repo_root "$REPO") || return 1
-  codex_repo_allowed "$trust_root" && codex_environment && codex_trust_repo "$trust_root" || return 1
-  # Reuse a reservation only when interruption failed before any Codex launch.
-  # The issue lock and live candidate checks still guard every retry.
-  if [ -d "$dir" ]; then
-    jq -e '.escalated_from=="omp" and .escalation_reason=="texttool" and
-      .escalation_status=="blocked" and .escalation_error=="omp did not stop"' "$S/meta" >/dev/null || return 1
-  else
-    mkdir "$dir" || return 1
-    {
-      printf 'The previous omp worker stalled after repeated tool calls written as text. Its uncommitted changes are still in this worktree; preserve them.\n'
-      printf 'Continue the original brief in %s on branch %s. Read %s/brief.md and %s/report.md if present.\n' "$WT" "$BRANCH" "$S" "$S"
-      printf 'Finish the original brief, including the PR loop if status is pr. Preserve PR review rounds and receipts; fix current-head P0/P1 findings and wait for CI and Codex review.\n'
-      printf 'Do not create a new branch. Finish with dv done %s.\n' "$ISSUE"
-    } > "$dir/prompt.md"
+stall_omp_restart() {
+  local turn=$1 today=$2 wip=clean pushed=no-origin rc=0 status prompt log stamp
+  status=$(jq -r .status "$S/meta") || return 1
+  # Keep unfinished work on the branch before the new session starts.
+  if [ -n "$(git -C "$WT" diff --name-only --diff-filter=U)" ]; then
+    wip=unmerged
+  elif [ -n "$(git -C "$WT" status --porcelain)" ]; then
+    if git -C "$WT" add -A && git -C "$WT" commit -q --no-verify -m 'wip: save work before restarting the omp session'; then wip=committed
+    else wip=failed; fi
   fi
-  meta_set --argjson at "$(now)" --argjson count "$count" \
-    '.escalated_from="omp" | .escalation_reason="texttool" | .escalated_at=$at |
-      .escalation_resumes=$count | .escalation_status="interrupting" | del(.escalation_error)'
-  if ! herdr_interrupt; then stall_omp_escalation_blocked 'omp did not stop'; return 1; fi
-  for file in agent.pid agent.exit agent.launched agent.session; do
-    [ ! -f "$S/$file" ] || cp "$S/$file" "$dir/previous-$file"
-  done
-  if ! herdr_clean; then stall_omp_escalation_blocked 'could not close stopped omp pane'; return 1; fi
-  rm -f "$S/agent.pid" "$S/agent.exit" "$S/agent.session"
-  # launch_agent (commands.sh) reads the selected backend.
-  # shellcheck disable=SC2034
-  BACKEND='exec'
-  meta_set '.agent="codex" | .mode="exec" | .backend="exec" | .escalation_status="launching"'
-  if ! launch_agent --exec-prompt "$dir/prompt.md"; then
-    stall_omp_escalation_blocked 'could not launch Codex'; return 1
+  # A push in PR state starts a new review round; leave that to the worker.
+  if [ "$status" = pr ]; then pushed='pr'
+  elif [ "$BRANCH" = "$BASE" ]; then pushed=base
+  elif git -C "$WT" remote get-url origin >/dev/null 2>&1; then
+    if git -C "$WT" push -q -u origin "$BRANCH:refs/heads/$BRANCH" 2>/dev/null; then pushed=yes
+    else pushed=failed; fi
   fi
-  meta_set '.escalation_status="launched"'
+  prompt=$(stall_omp_restart_prompt "$status" "$wip" "$pushed")
+  send_text '/new' || rc=1
+  # /new returns to the composer at once; give the TUI a moment to swap.
+  [ "$rc" != 0 ] || sleep "$DV_OMP_RESTART_SETTLE" || rc=1
+  [ "$rc" != 0 ] || send_text "$prompt" || rc=1
+  log="$DV_HOME/omp-restarts.log"
+  stamp=$(date +%FT%T%z)
+  mkdir -p "$DV_HOME" || return 1
+  printf '%s\t%s\t%s\twip=%s\tpushed=%s\trc=%s today=%s\n' "$stamp" "$ISSUE" "$turn" "$wip" "$pushed" "$rc" "$today" >> "$log" || return 1
+  if [ "$today" -gt 5 ]; then
+    printf '%s\t%s\t%s\n' "$stamp" "$ISSUE" "$today" >> "$DV_HOME/omp-restarts-over5.log" || return 1
+  fi
+  [ "$rc" = 0 ] && metrics_note resume
+  return "$rc"
 }
-stall_omp_escalation_blocked() {
-  meta_set --arg error "$1" '.escalation_status="blocked" | .escalation_error=$error'
-  cmd_kick blocked "$ISSUE" "texttool escalation: $1; inspect the retained worktree and escalation record"
+stall_omp_restart_prompt() {
+  local status=$1 wip=$2 pushed=$3 log tree
+  log=$(git -C "$WT" log --oneline --no-merges -12 "origin/$BASE..HEAD" 2>/dev/null || git -C "$WT" log --oneline --no-merges -12 "$BASE..HEAD" 2>/dev/null)
+  tree=$(git -C "$WT" status --short | sed -n '1,25p')
+  printf 'This is a fresh omp session for the same job %s. The previous session stopped because a tool call came back as plain text, so nothing ran.\n' "$ISSUE"
+  printf 'Use real tool calls only. Never write a tool call as text ([tool_use ...], <invoke ...>, <function_calls>).\n'
+  printf 'Call tools only through tool_use (actual tool calls), never as text. Do not prefix tool names with _ (for example, use bash).\n'
+  printf 'Read %s/brief.md first; %s/report.md if present.\n' "$S" "$S"
+  printf 'Worktree %s, branch %s (base %s), job status %s. Do not create a new branch or force push.\n' "$WT" "$BRANCH" "$BASE" "$status"
+  printf 'Recovery preparation: wip=%s, pushed=%s. If either failed, inspect git and finish saving the work.\n' "$wip" "$pushed"
+  if [ "$wip" = committed ]; then
+    printf "Uncommitted work was saved as a WIP commit 'wip: save work before restarting the omp session'. Keep it; reword or squash it before dv pr so the HEAD subject is type(scope): subject.\n"
+  fi
+  if [ -n "$(git -C "$WT" diff --name-only --diff-filter=U)" ]; then
+    printf 'A merge is in progress with unresolved paths; resolve them first.\n'
+  fi
+  if [ "$status" = pr ]; then
+    printf 'The PR is open; keep %s/pr-loop.json review round counts and continue the PR loop.\n' "$S"
+  fi
+  printf '\nCommits on the branch beyond base:\n%s\n\nWorking tree:\n%s\n\n' "${log:-(none yet)}" "${tree:-(clean)}"
+  printf 'Do not read the earlier omp session transcripts; the state above and git are enough.\n'
+  if is_github; then
+    printf 'Finish implementation and verification, update the report, commit, run dv pr %s, then dv pr-wait %s --foreground. Resolve CI failures and P0/P1 findings within the brief limits; finish only with current-head CI green and review handled.\n' "$ISSUE" "$ISSUE"
+  fi
+  printf 'Check the current state with tools, then finish the brief exactly as it says, ending with dv done %s.\n' "$ISSUE"
 }
 stall_reconcile() {
   local host=$1 rows=$2 interval=$3 time state tmp row issue event_host head token id message pending
