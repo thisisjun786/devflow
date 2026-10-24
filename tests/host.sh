@@ -263,6 +263,14 @@ case_host_real_shells() {
     test "$path" = "$HOME/system:/usr/bin:/bin"
   fi
 }
+case_host_source_without_dv_root() {
+  # Callers source lib/host.sh directly; it must find dsh-host.sh beside itself.
+  unset DV_ROOT
+  if declare -F host_dsh_sync >/dev/null; then return 1; fi
+  # shellcheck source=lib/host.sh
+  source "$ROOT/lib/host.sh"
+  declare -F host_dsh_sync host_probe_dsh host_dsh_check >/dev/null
+}
 # Each case starts with setup in a fresh process.
 # shellcheck disable=SC2031
 case_host_sync_darwin() {
