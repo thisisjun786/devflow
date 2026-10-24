@@ -4,6 +4,7 @@
 set -euo pipefail
 state="$DV_STATE/$DV_ISSUE"
 dir="$DV_OMP_SESSIONS/--$(pwd -P | sed 's|^/||' | tr '/\\:' '---')--"
+dir=${OMP_FIXTURE_SESSION_DIR:-$dir}
 mkdir -p "$dir"
 n=1
 [ ! -f "$state/omp-runs" ] || n=$(( $(cat "$state/omp-runs") + 1 ))
@@ -19,7 +20,8 @@ message() {
 jq -cn --arg cwd "$(pwd -P)" '{type:"session",version:3,id:"fixture",cwd:$cwd}' >> "$session"
 message user '' 'Read the brief'
 if [ "${OMP_FIXTURE_MODE:-text}" = error ] && [ "$n" = 1 ]; then
-  message assistant error '' '{"errorStatus":429,"errorMessage":"429 status code (no body)"}'
+  error=${OMP_FIXTURE_ERROR:-'{"errorStatus":429,"errorMessage":"429 status code (no body)"}'}
+  message assistant error '' "$error"
   printf ' π > ◒ DeepSeek V4.1 Flash (InferHub) > ⑂ main\n'
   # herdr delivers the continuation as a prompt, not on stdin.
   while ! grep -q 'Continue the interrupted request' "$state/sent-input" 2>/dev/null; do sleep 0.05; done
