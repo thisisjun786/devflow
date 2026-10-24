@@ -3,7 +3,7 @@
 # ISSUE is assigned by load_issue in common.sh; jq dollars are literal.
 # shellcheck disable=SC2016,SC2153
 stall_reconcile() {
-  local host=$1 rows=$2 interval=$3 time state tmp row issue event_host head token id message
+  local host=$1 rows=$2 interval=$3 time state tmp row issue event_host head token id message pending
   time=$(now)
   state="$DV_HOME/stalls.json"
   tmp=$(mktemp "$DV_HOME/.stalls.XXXXXX") || return 1
@@ -13,19 +13,38 @@ stall_reconcile() {
   # A host's status rows can exceed one argument's limit (128 KiB on Linux):
   # pass them as a file, or every reconcile round fails before recovery.
   if ! printf '%s\n' "$rows" > "$tmp.rows"; then rm -f "$tmp" "$tmp.rows"; return 1; fi
+  # Status rows do not carry waiter ownership or review receipts. Read those
+  # on the issue host, never infer a remote PID's liveness on this watcher.
+  : > "$tmp.pr"
+  while IFS= read -r row; do
+    issue=$(printf '%s\n' "$row" | jq -r .issue)
+    head=$(printf '%s\n' "$row" | jq -r .head)
+    pending=$(bid_rpc "$host" _stall-recover "$issue" --pr-pending "$head" < /dev/null) || pending=null
+    case "$pending" in true|false) ;; *) pending=null ;; esac
+    jq -cn --arg issue "$issue" --argjson pending "$pending" '{key:$issue,value:$pending}' >> "$tmp.pr"
+  done < <(jq -c '.[] | select(.status=="pr" and .alive==true and .agent_status=="idle" and
+    (.issue|type)=="string" and (.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")) and
+    (.head|type)=="string" and .head!="") | {issue,head}' "$tmp.rows")
   # Unknown/unreachable agents interrupt timing but retain an emitted episode.
   # A sequence change catches activity between two otherwise idle samples.
-  if ! jq --slurpfile rows "$tmp.rows" --arg host "$host" --arg source "$host" --argjson time "$time" \
+  if ! jq --slurpfile rows "$tmp.rows" --slurpfile prs "$tmp.pr" --arg host "$host" --arg source "$host" --argjson time "$time" \
     --arg nonce "$time:$$:$RANDOM" --argjson gap "$((interval * 2 + 5))" '
+    ($prs|from_entries) as $pending |
     reduce $rows[0][] as $row (.;
       ($row.host // $host) as $host |
       ([$host,$row.issue]|tojson) as $key |
-      ([$row.started,$row.award_token,$row.herdr_pane]|tojson) as $generation |
+      ([$row.started,$row.award_token,$row.herdr_pane] +
+        (if $row.status=="pr" then [$row.head] else [] end)|tojson) as $generation |
       if ($row.issue|type)!="string" or ($row.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")|not) then .
+      elif $row.status=="pr" and $row.agent_status=="idle" and $pending[$row.issue]==null then
+        if .[$key]!=null then .[$key].since=null else . end
       elif (($row.status=="running" or
+             ($row.status=="pr" and $pending[$row.issue]==true) or
              (($row.status=="failed" or $row.status=="waiting-capacity") and $row.agent_dead==true and
               ($row.backend=="tmux" or $row.backend=="herdr")))|not) or
-           $row.capacity_detected==true or $row.done_at!=null or $row.cleaned_at!=null or $row.goal_active==true or
+           $row.capacity_detected==true or
+           ($row.done_at!=null and ($row.status!="pr" or $row.done_head==$row.head)) or
+           $row.cleaned_at!=null or $row.goal_active==true or
            ($row.agent_status=="working" and $row.goal_stalled!=true) or
            ($row.agent_status=="blocked" or $row.agent_status=="done") then del(.[$key])
       elif ($row.alive!=true and $row.agent_dead!=true) or
@@ -46,10 +65,10 @@ stall_reconcile() {
         .[$key].row=($row|{issue,head,start_head,award_token,goal_stalled,agent_dead,agent_launched}) |
         .[$key].host=$host | .[$key].source=$source
       end)' "$tmp" > "$tmp.next"; then
-    rm -f "$tmp" "$tmp.next" "$tmp.rows"; return 1
+    rm -f "$tmp" "$tmp.next" "$tmp.rows" "$tmp.pr"; return 1
   fi
-  if ! mv "$tmp.next" "$state"; then rm -f "$tmp" "$tmp.next" "$tmp.rows"; return 1; fi
-  rm "$tmp" "$tmp.rows"
+  if ! mv "$tmp.next" "$state"; then rm -f "$tmp" "$tmp.next" "$tmp.rows" "$tmp.pr"; return 1; fi
+  rm "$tmp" "$tmp.rows" "$tmp.pr"
   # Existing terminal sessions launched before capacity supervision was added
   # use the same nonblocking wait through the already-running watcher.
   while IFS= read -r row; do
@@ -100,6 +119,16 @@ stall_recover() {
 
 cmd__stall_recover() (
   [ "$#" -eq 3 ] || fail 'usage: dv _stall-recover ISSUE EPISODE TOKEN'
+  if [ "$2" = --pr-pending ]; then
+    load_issue "$1"
+    if jq -e --arg head "$3" '.status=="pr" and .head==$head and .cleaned_at==null' "$S/meta" >/dev/null &&
+      ! pr_wait_alive &&
+      ! jq -e --arg head "$3" '.head==$head and .green==true and .review_handled==true' "$S/pr-ready.json" >/dev/null 2>&1 &&
+      ! jq -e --arg head "$3" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then
+      printf 'true\n'
+    else printf 'false\n'; fi
+    return 0
+  fi
   load_issue "$1"; issue_lock; require_worktree
   local episode=$2 token=$3 row attempts=0 last=0 time tmp supervisor capacity_rc next
   row=$(cmd_status "$ISSUE" --json | jq -c '.[0]') || return 1

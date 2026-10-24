@@ -2753,7 +2753,8 @@ registered_cases() {
   reconcile_stale_prs reconcile_merged_unverified land_already_merged land_already_merged_guards qa_clean_url park_prerequisites park_agent_exit park_exec_exit park_open_pr park_pr_prerequisites park_pr_wait park_pr_stale_send park_pr_wait_resume park_pr_reconcile reconcile_merged_cleanup_retry \
   runner_contract runner_selection runner_mapping
   printf '%s\n' \
-    qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter
+    qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter \
+    pr_worker_idle_review pr_worker_idle_guards pr_worker_idle_concurrent pr_worker_idle_tmux stall_pr_idle stall_pr_remote
 }
 
 runner_error() { printf 'tests/run.sh: %s\n' "$*" >&2; return 2; }

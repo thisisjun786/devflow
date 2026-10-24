@@ -442,29 +442,48 @@ pr_wait_conflict_ready() {
       review_rounds:($loop.reviewed_heads|length),ci_rounds:($loop.failed_heads|length),blocked:false,reason:"merge-conflict",snapshot:$snapshot[0]}' > "$tmp"
   mv "$tmp" "$S/pr-ready.json"
 }
-pr_wait_recover() {
-  # Recovery uses the existing one-shot revival, only with positive exit
-  # evidence. The caller released ownership BEFORE this observes the worker: a
+pr_wait_recover() (
+  # The caller released ownership BEFORE this observes the worker: a
   # later exit can then start a successor. If its wrapper already observed our
   # lock, agent.exit was published first; wait for that wrapper to finish its
   # handoff instead.
-  local head=$1 recovery_episode=$2 message=$3 pid
+  local head=$1 recovery_episode=$2 message=$3 pid live=false reason tmp
   case "$BACKEND" in exec|appserver) return 0 ;; esac
   pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
-    [ -f "$S/agent.exit" ] || return 0
-    while kill -0 "$pid" 2>/dev/null; do
-      [ "$(jq -r .status "$S/meta")" != parked ] || return 0
-      sleep "$DV_POLL_INTERVAL"
-    done
+    if [ -f "$S/agent.exit" ]; then
+      while kill -0 "$pid" 2>/dev/null; do
+        [ "$(jq -r .status "$S/meta")" != parked ] || return 0
+        sleep "$DV_POLL_INTERVAL"
+      done
+    else live=true; fi
   fi
   [ "$(jq -r '.head // empty' "$S/meta")" = "$head" ] || return 0
   [ "$(jq -r .status "$S/meta")" != parked ] || return 0
   if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
-  if agent_gone; then
+  # Preserve the existing one-shot revival, including its exit handoff guards.
+  if [ "$live" = false ] && agent_gone; then
     DV_PR_RECOVERY_HEAD="$head" DV_PR_RECOVERY_EPISODE="$recovery_episode" "$DV_ROOT/bin/dv" send "$ISSUE" "$message"
+    return
   fi
-}
+  # A surviving wrapper alone does not prove that its terminal still exists.
+  cmd_status "$ISSUE" --json | jq -e '.[0] | .alive==true and .agent_dead!=true' >/dev/null || return 0
+  # Serialize with other waiters so their snapshots cannot overwrite a send
+  # reservation. Reserve before delivery: uncertain input must not be repeated.
+  pr_wait_lock || return 0
+  trap pr_wait_unlock EXIT
+  jq -e --arg head "$head" '.status=="pr" and .head==$head' "$S/meta" >/dev/null || return 0
+  reason=$(jq -er --arg head "$head" 'select(.head==$head and .blocked==false and .merge_conflict!=true) |
+    if .green==false then "ci-failed"
+    elif (.review.high|length)>0 then "review-findings" else empty end' "$S/pr-ready.json") || return 0
+  if jq -e --arg key "$head:$reason" '.recovery_sends[$key]' "$S/pr-loop.json" >/dev/null; then return 0; fi
+  tmp=$(mktemp "$S/.pr-loop.XXXXXX")
+  jq --arg key "$head:$reason" '.recovery_sends[$key]=true' "$S/pr-loop.json" > "$tmp"
+  mv "$tmp" "$S/pr-loop.json"
+  # The live worker can immediately enter its own foreground wait after input.
+  pr_wait_unlock; trap - EXIT
+  DV_PR_RECOVERY_HEAD="$head" DV_PR_RECOVERY_EPISODE="$recovery_episode" "$DV_ROOT/bin/dv" send "$ISSUE" "$message"
+)
 cmd_pr_wait() {
   [ "$#" -ge 1 ] || fail 'usage: dv pr-wait ISSUE [--foreground [--review-handled]]'
   load_issue "$1"; shift; require_worktree; cd "$WT" || exit
