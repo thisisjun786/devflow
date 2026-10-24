@@ -239,7 +239,7 @@ case_qa_transport_retry() {
   mkdir -p "$DV_HOME/submissions/REMOTE-1"
   jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"working",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
-  qa_scan_flush
+  qa_scan_flush 0
   jq -e '.repository=="test/repo"' "$DV_HOME"/qa/*/pending.json
 }
 case_qa_recovered_capacity() {
@@ -373,14 +373,14 @@ case_qa_bound_event() {
   mkdir -p "$DV_HOME/submissions/REMOTE-1"
   jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"completed",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
-  qa_scan_flush
+  qa_scan_flush 0
   jq -e '.repository=="test/repo"' "$DV_HOME"/qa/*/pending.json
   rm "$DV_HOME"/qa/*/pending.json
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"forged"}'
-  qa_scan_flush
+  qa_scan_flush 0
   test ! -f "$DV_HOME"/qa/*/pending.json
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","token":"issued"}'
-  qa_scan_flush
+  qa_scan_flush 0
   test ! -f "$DV_HOME"/qa/*/pending.json
 }
 
