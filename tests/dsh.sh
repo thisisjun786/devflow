@@ -174,6 +174,23 @@ case_dsh_host_probe() {
   if DV_DSH_SMOKE_BAD=1 "$HOST_DV" host check --probe-dsh --json > "$CASE_DIR/bad.json"; then return 1; fi
   jq -e '.dsh.probe=="failed"' "$CASE_DIR/bad.json"
 }
+# Helper for host_dsh_env_isolation; runs in a fresh process like any case.
+case_host_dsh_env_probe() {
+  # setup() must clear caller-exported dsh settings before a host case starts.
+  if [ -n "${DV_DSH_BIN:-}" ] || [ -n "${DV_DSH_KEY_FILE:-}" ]; then
+    printf 'caller dsh settings reached the case: BIN=%s KEY_FILE=%s\n' \
+      "${DV_DSH_BIN:-}" "${DV_DSH_KEY_FILE:-}" >&2
+    return 1
+  fi
+  case_dsh_host_probe
+}
+case_host_dsh_env_isolation() {
+  local rc=0
+  # A real install and key location in the caller must not reach the host case.
+  DV_DSH_BIN="$CASE_DIR/caller-dsh" DV_DSH_KEY_FILE="$CASE_DIR/caller-dsh.env" \
+    bash "$ROOT/tests/run.sh" --case host_dsh_env_probe > "$CASE_DIR/isolation.log" 2>&1 || rc=$?
+  if [ "$rc" != 0 ]; then cat "$CASE_DIR/isolation.log"; return 1; fi
+}
 case_dsh_delivery() {
   dsh_setup delivery remote
   dsh_start_wait
