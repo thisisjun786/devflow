@@ -80,10 +80,10 @@ jobs:
           fetch-depth: 0
       - name: Dependencies (Linux)
         if: runner.os == 'Linux' && needs.plan.outputs.count != '0'
-        run: sudo apt-get update && sudo apt-get install -y shellcheck tmux jq acl netcat-openbsd util-linux
+        run: sudo apt-get update && sudo apt-get install -y shellcheck tmux jq acl netcat-openbsd util-linux ripgrep
       - name: Dependencies (Mac)
         if: runner.os == 'macOS' && needs.plan.outputs.count != '0'
-        run: brew install shellcheck tmux jq flock
+        run: brew install shellcheck tmux jq flock ripgrep
       - name: Tests
         env:
           EVENT: ${{ github.event_name }}

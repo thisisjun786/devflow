@@ -138,11 +138,12 @@ cmd_start() {
 launch_agent() {
   job_can_launch || { printf 'dv: resource limit blocked; automatic launch refused\n' >&2; return 1; }
   tmp_agent_environment
+  search_environment || return 1
   if [ "$BACKEND" = appserver ]; then appserver_start; return; fi
   # Terminal server environments can predate this shell. Pass exported DV_* values explicitly.
   local env_args=() key launcher
   while IFS= read -r key; do
-    case "$key" in DV_*|TMPDIR|GOCACHE|CODEX_HOME|CLAUDE_CONFIG_DIR|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
+    case "$key" in DV_*|RIPGREP_CONFIG_PATH|TMPDIR|GOCACHE|CODEX_HOME|CLAUDE_CONFIG_DIR|GH_STUB_DIR|CASE_DIR|GIT_CONFIG_*|GIT_TERMINAL_PROMPT) env_args+=("$key=${!key}") ;; esac
   done < <(compgen -e)
   launcher=$(shell_join env "PATH=$PATH" "${env_args[@]}" "$DV_ROOT/bin/dv" _agent "$ISSUE" "$@")
   if [ "$BACKEND" = exec ]; then
@@ -183,6 +184,7 @@ run_agent() {
     *) require_worktree ;;
   esac
   cd "$WT" || exit
+  search_environment || return 1
   export DV_ISSUE="$ISSUE"
   local agent mode override instruction rc=0 sentinel='' helper='' revived=0 original_instruction
   [ "${2:-}" != --revived ] || revived=1
@@ -195,12 +197,15 @@ run_agent() {
     instruction=$(cat "$S/revive/prompt.md")
     DV_REVIVE_ID=$(cat "$S/revive/id"); export DV_REVIVE_ID
   fi
-  export DV_AGENT_INSTRUCTION="$instruction"
   if [ "$BACKEND" = exec ]; then
     if [ "${2:-}" = --exec-prompt ]; then instruction=$(cat "$3"); fi
+    instruction="$(printf '%s\n' "$instruction"; job_oom_notice)"
+    export DV_AGENT_INSTRUCTION="$instruction"
     codex_exec_run "$instruction"
     return
   fi
+  instruction="$(printf '%s\n' "$instruction"; job_oom_notice)"
+  export DV_AGENT_INSTRUCTION="$instruction"
   # Native herdr snapshots are collected at done/clean; tmux keeps its TTY log.
   if [ "$BACKEND" = tmux ]; then
     tmux_dv pipe-pane -o -t "$SESSION:0.0" "cat >> $(shell_join "$S/log")"
@@ -773,6 +778,7 @@ revive_agent() {
       printf 'Continue in the existing worktree %s on its current checkout (%s).\n' "$WT" "$(git -C "$WT" rev-parse --abbrev-ref HEAD)"
     fi
     printf 'Read %s/brief.md and, if present, %s/report.md for context.\n' "$S" "$S"
+    job_oom_notice
     if transcript=$(agent_transcript_dir "$(jq -r .agent "$S/meta")" "$(cd "$WT" && pwd -P)") && [ -d "$transcript" ]; then
       printf 'Earlier session transcripts for this worktree (read only): %s\n' "$transcript"
     fi

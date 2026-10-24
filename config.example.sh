@@ -18,6 +18,17 @@ fi
 : "${DV_JOB_NPROC_MAX:=1000}" # extra user processes, capped at 70% of host/hard limit
 : "${DV_JOB_LAUNCHD_MAX:=200}" # owned macOS launchd registrations per job
 : "${DV_JOB_LAUNCHD_PATTERN:=com.lina.*}" # shell glob; ownership also requires worktree or DV_ISSUE
+: "${DV_RG_MAX_FILESIZE:=20M}" # job rg defaults; an existing RIPGREP_CONFIG_PATH wins
+: "${DV_RG_MAX_COLUMNS:=4000}"
+# Newline-separated rg globs; set empty to disable these exclusions.
+: "${DV_RG_EXCLUDE_GLOBS=!**/.codex/**
+!**/.hermes/**
+!**/.claude/**
+!**/.grok/**
+!**/.local/state/**
+!**/.cache/**
+!**/node_modules/**
+!**/.git/objects/**}"
 : "${DV_AUTO_UPDATE:=1}" # clean main checkout: dv checks every 5 min; watcher on landed/safety pass
 : "${DV_KICK_HOST:=lina-os}" # host running dv-watch (lina-mac before 10-19)
 : "${DV_KICK:=}" # shell command; receives kind issue message host head as arguments
