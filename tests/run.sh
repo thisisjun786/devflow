@@ -2852,6 +2852,7 @@ registered_cases() {
     qa_merge_empty_pending qa_merge_whitespace_pending qa_merge_invalid_pending qa_merge_shape_pending qa_merge_multiple_pending qa_merge_scan_pending qa_merge_recovery_retry \
     gh_cache_conditional gh_cache_fail_closed gh_cache_immutable review_cache_snapshot review_cache_pass_counts
   printf '%s\n' watch_quiet_events manager_rotate manager_rotate_keep
+  printf '%s\n' manager_large_event manager_large_batch manager_fallback_invalid_batch manager_large_fallback_result manager_failed_notice
   printf '%s\n' \
     qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter \
     pr_worker_idle_review pr_worker_idle_guards pr_worker_idle_concurrent pr_worker_idle_tmux stall_pr_idle stall_pr_remote \

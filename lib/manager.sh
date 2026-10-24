@@ -313,8 +313,9 @@ manager_enqueue() {
   done
   job="$dir/pending/$job.json"
   tmp=$(mktemp "$dir/.pending.XXXXXX") || return 2
-  if ! jq -cn --argjson event "$line" --arg prompt "$prompt" --argjson queued_at "$(now)" \
-    '{event:$event,prompt:$prompt,queued_at:$queued_at}' > "$tmp" || ! mv "$tmp" "$job"; then
+  # Events can exceed the OS argv limit; only scalar metadata belongs in argv.
+  if ! jq -c --arg prompt "$prompt" --argjson queued_at "$(now)" \
+    '{event:.,prompt:$prompt,queued_at:$queued_at}' <<< "$line" > "$tmp" || ! mv "$tmp" "$job"; then
     rm -f "$tmp"; return 2
   fi
 }
@@ -336,12 +337,13 @@ manager_fallback_recover() {
 }
 manager_event_result() {
   local item=$1 route=$2 rc=$3
-  jq -cn --argjson item "$item" --arg route "$route" --argjson rc "$rc" --argjson handled "$(now)" '
+  jq -c --arg route "$route" --argjson rc "$rc" --argjson handled "$(now)" '
+    . as $item |
     {kind:"event_handled",event_id:$item.event.id,issue:$item.event.issue,event:$item.event,
      event_time:($item.event.time // $item.queued_at // $handled),handled_at:$handled,
      route:$route,exit_code:$rc,disposition:($item.disposition // "handled"),
      superseded_by:($item.superseded_by // null)} |
-    .latency_seconds=([0, (.handled_at-.event_time)]|max)'
+    .latency_seconds=([0, (.handled_at-.event_time)]|max)' <<< "$item"
 }
 manager_fallback_complete() {
   local slot=$1 job dir receipt
@@ -365,18 +367,27 @@ manager_issue_in_fallback() {
   return 1
 }
 manager_fallback_dispatch() {
-  local dir=$1 started batch job issue
+  local dir=$1 started job issue rc
   started=$(cat "$dir/run.lock/started" 2>/dev/null) || return 0
   [[ "$started" =~ ^[0-9]+$ ]] || return 0
   [ $(( $(now) - started )) -ge "$DV_MANAGER_MAX_WAIT" ] || return 0
   # An immutable reservation describes every issue the busy turn may touch.
-  batch=$(cat "$dir/run.lock/batch.json" 2>/dev/null) || return 0
   for job in "$dir"/pending/*.json; do
     [ "$active" -lt "$DV_MAX_WORKERS" ] || break
     [ -f "$job" ] || continue
     issue=$(jq -er .event.issue "$job") || continue
-    if jq -en --arg issue "$issue" --argjson batch "$batch" \
-      'any($batch[]; .event.issue==$issue)' >/dev/null; then continue; fi
+    if jq -e --arg issue "$issue" 'any(.[]; .event.issue==$issue)' \
+      "$dir/run.lock/batch.json" >/dev/null; then
+      continue
+    else
+      rc=$?
+      # Only false (exit 1) proves the issue is outside the running batch.
+      # A missing, unreadable or invalid reservation must not allow a race.
+      if [ "$rc" != 1 ]; then
+        printf 'dv: cannot read manager batch for fallback (exit %s): %s\n' "$rc" "$dir/run.lock/batch.json" >&2
+        return 0
+      fi
+    fi
     manager_issue_in_fallback "$dir" "$issue" && continue
     mkdir -p "$dir/fallback"
     mv "$job" "$dir/fallback/$(basename "$job")"
@@ -491,9 +502,12 @@ cmd__manager_run() (
     if [ "$rc" = 0 ]; then metrics_handled "$(jq -c .event <<< "$item")"; mv "$record" "${record%.json}.done"
     else mv "$record" "$dir/failed/$(basename "$record")"; fi
   done < <(jq -c '.[]' "$dir/run.lock/batch.json")
-  while IFS= read -r record; do
-    if [ "$rc" = 0 ]; then mv "$record" "${record%.json}.done"
-    else mv "$record" "$dir/failed/notice-$(basename "$record")"; fi
-  done < <(jq -r '.[].job' "$dir/run.lock/notices.json")
+  # Notices report completed work. Retain them for the next turn on failure,
+  # while event jobs above remain terminal and cannot run a second time.
+  if [ "$rc" = 0 ]; then
+    while IFS= read -r record; do
+      mv "$record" "${record%.json}.done"
+    done < <(jq -r '.[].job' "$dir/run.lock/notices.json")
+  fi
   return "$rc"
 )
