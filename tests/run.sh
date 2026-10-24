@@ -2787,6 +2787,7 @@ source "$ROOT/tests/pipefail.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/search-scope.sh"
 registered_cases() {
+  printf '%s\n' stack_resume_lock
   printf '%s\n' qa_labels_large_comment qa_labels_large_create qa_labels_missing qa_labels_failure
   printf '%s\n' screen_large_hook screen_large_folder screen_large_goal screen_large_ready screen_large_accept screen_large_panes job_large_nproc job_large_memory dsh_large_stderr_polling dsh_large_stderr_exit
   printf '%s\n' agent_transcripts_omp_home capacity_omp_home_session stall_omp_home_session

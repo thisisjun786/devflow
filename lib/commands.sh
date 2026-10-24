@@ -826,7 +826,12 @@ revive_agent() {
 }
 cmd_send() {
   [ "$#" -eq 2 ] || fail 'usage: dv send ISSUE text'
-  load_issue "$1"; issue_lock; require_worktree --allow-branch-change
+  load_issue "$1"; issue_lock
+  send_locked "$2"
+}
+# The caller has loaded the issue and holds its operation lock.
+send_locked() {
+  require_worktree --allow-branch-change
   job_can_launch || fail 'resource limit blocked; automatic continuation refused'
   if [ -n "${DV_PR_RECOVERY_HEAD:-}" ]; then
     # A background waiter may be descheduled before taking this issue lock.
@@ -844,12 +849,12 @@ cmd_send() {
   if jq -e '.status=="parked"' "$S/meta" >/dev/null && { [ "$BACKEND" != exec ] || ! codex_exec_alive "$S"; }; then
     meta_set --argjson time "$(now)" '.status="running" | .unparked_at=$time'
   fi
-  if [ "$BACKEND" = appserver ]; then appserver_request send "$2"; return; fi
-  if [ "$BACKEND" = exec ]; then codex_exec_send "$2"; return; fi
+  if [ "$BACKEND" = appserver ]; then appserver_request send "$1"; return; fi
+  if [ "$BACKEND" = exec ]; then codex_exec_send "$1"; return; fi
   # tmux can accept paste/Enter even when remain-on-exit retained a dead pane.
-  if [ "$BACKEND" = tmux ] && agent_gone; then revive_agent "$2"; return; fi
-  if send_text "$2"; then metrics_note resume; return 0; fi
-  if agent_gone; then revive_agent "$2"; else return 1; fi
+  if [ "$BACKEND" = tmux ] && agent_gone; then revive_agent "$1"; return; fi
+  if send_text "$1"; then metrics_note resume; return 0; fi
+  if agent_gone; then revive_agent "$1"; else return 1; fi
 }
 cmd_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean ISSUE'; load_issue "$1"; issue_lock
