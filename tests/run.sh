@@ -485,6 +485,26 @@ case_kick_failure() {
   jq -e '.delivered==false' "$DV_STATE/T-2/events.log"
   jq -e '.status=="done"' "$DV_STATE/T-2/meta"
 }
+case_kick_stale_lock() {
+  local lock="$DV_HOME/.kick-lock" dead
+  # A writer killed between taking and releasing the queue lock leaves its
+  # claim behind; the next event must reclaim it instead of failing forever.
+  bash -c 'exit 0' & dead=$!; wait "$dead"
+  mkdir "$lock"; printf '%s\n' "$dead" > "$lock/pid-$dead"; ln "$lock/pid-$dead" "$lock/owner"
+  dv-kick 'done' T-9 'after crash'
+  test ! -e "$lock"
+  # A kill between mkdir and the owner record leaves an ownerless claim.
+  mkdir "$lock"
+  dv-kick 'done' T-10 'after early crash'
+  test ! -e "$lock"
+  jq -se 'length==2 and .[0].issue=="T-9" and .[1].issue=="T-10"' "$DV_HOME/kick.q"
+  # A live writer's claim still excludes another writer.
+  mkdir "$lock"; printf '%s\n' "$$" > "$lock/pid-$$"; ln "$lock/pid-$$" "$lock/owner"
+  if dv-kick 'done' T-11 'blocked'; then return 1; fi
+  test "$(cat "$lock/owner")" = "$$"
+  if grep -q 'T-11' "$DV_HOME/kick.q"; then return 1; fi
+  rm -f "$lock/owner" "$lock/pid-$$"; rmdir "$lock"
+}
 case_local_land() {
   needs_tmux; repo local; start T-3; wait_done T-3
   before=$(git -C "$REPO" rev-parse HEAD)
@@ -843,10 +863,14 @@ case_kick_pull() {
   event P-4 '' >> "$remote_q"
   dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 4; stop_pull
   # A failed local write is not checkpointed; the next stream redelivers it.
+  # The blocking claim is a live writer's: an ownerless leftover is claimable.
   mkdir "$DV_HOME/.kick-lock"
+  printf '%s\n' "$$" > "$DV_HOME/.kick-lock/pid-$$"
+  ln "$DV_HOME/.kick-lock/pid-$$" "$DV_HOME/.kick-lock/owner"
   event P-5 '' >> "$remote_q"
   if dv-kick-pull box 2>> "$CASE_DIR/pull.err"; then return 1; fi
   read -r offset _ < "$DV_HOME/pull-box.offset"; test "$offset" = 4
+  rm -f "$DV_HOME/.kick-lock/owner" "$DV_HOME/.kick-lock/pid-$$"
   rmdir "$DV_HOME/.kick-lock"
   dv-kick-pull box 2>> "$CASE_DIR/pull.err" & until_lines 5; stop_pull
   # A replaced queue (new inode) restarts from its first line.
@@ -2756,7 +2780,7 @@ registered_cases() {
   codex_allowlist codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid \
   question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure bid_schedule_lock_dead_owner award_early_absent bid_clean_capacity submit_local_origin \
   claude_stale_server claude_stale_server_empty claude_profile_onboarding claude_profile_trust claude_profile_create claude_profile_invalid claude_trust_mode claude_trust_acl claude_trust_copy_failure claude_profile_start claude_profile_host bid_order_ties bid_order_fallback bid_order_probes bid_order_reject_input bid_order_early_reject bid_order_early_errors claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_agents host_sync host_sync_darwin host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity admission_owner submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux bid_more_agents submit_route \
-  stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_omp question_agy question_grok question_cursor question_banner_agents question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off agent_cli_more agent_transcripts revive_transcript pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_more_agents herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status \
+  stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_omp question_agy question_grok question_cursor question_banner_agents question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure kick_stale_lock local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off agent_cli_more agent_transcripts revive_transcript pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_more_agents herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status \
   land_squash_only land_merge_only land_rebase_only land_prefer_squash land_prefer_merge land_override_env land_override_repo land_config_stdout land_policy_gh_repo land_policy_pr_url land_override_precedence land_no_methods land_invalid_method land_disallowed_method land_repo_failure land_config_failure land_head_mismatch land_unconfirmed \
   pr_fallback_body pr_fallback_summary pr_fallback_private_paths pr_fallback_private_hosts pr_fallback_public_tokens pr_fallback_missing pr_fallback_bounded pr_fallback_private_only pr_head_title pr_prepared_body pr_legacy_body pr_patch_title pr_patch_body polish_unreachable polish_unreachable_timeout \
   pr_title_format pr_branch_names pr_body_template pr_format_delivery pr_format_legacy pr_format_start pr_format_instructions \
