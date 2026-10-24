@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [ -n "${SSH_MANAGER_REPO:-}" ]; then
+  test "$#" = 7 && test "$1" = -n && test "$2" = -o && test "$3" = BatchMode=yes
+  test "$4" = -o && test "$5" = ConnectTimeout=5 && test "$6" = remote-box
+  test "$7" = 'git -C /Users/x/code/repo config --get remote.origin.url '
+  touch "$CASE_DIR/manager-origin-lookup"
+  [ "$SSH_MANAGER_REPO" != failure ] || exit 255
+  printf 'https://github.com/example/project.git\n'
+  exit
+fi
 if [ "${SSH_STATUS_SLOW:-0}" = 1 ]; then
   while [ "$#" -gt 0 ]; do
     case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac
