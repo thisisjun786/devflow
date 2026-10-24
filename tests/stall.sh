@@ -29,6 +29,10 @@ stall_omp_count() {
   jq -se --argjson n "$1" '[.[]|select(.[0:2]==["agent","prompt"])]|length==$n' "$CASE_DIR/herdr/calls"
 }
 stall_omp_prompts() {
+  jq -Rse --arg pattern "$STALL_OMP_TEXT_TOOL" '
+    . as $input | (test($pattern) | not) and
+    all(["[tool_use", "tool_use", "<invoke", "<function_calls>", "<tool_call>", "antml", " _"][];
+      . as $forbidden | $input | contains($forbidden) | not)' "$DV_STATE/ST-1/sent-input"
   jq -se '[.[]|select(.[0:2]==["agent","prompt"])|.[3]] |
     length>0 and length%2==0' "$CASE_DIR/herdr/calls" >/dev/null
   jq -se --arg state "$DV_STATE/ST-1" --arg wt "$REPO" '
@@ -49,15 +53,11 @@ stall_omp_origin() {
 case_stall_omp_restart() {
   stall_omp_fixture
   stall_omp_scan; stall_omp_count 2
-  jq -Rse --arg pattern "$STALL_OMP_TEXT_TOOL" '
-    . as $input | (test($pattern) | not) and
-    all(["[tool_use", "tool_use", "<invoke", "<function_calls>", "<tool_call>", "antml", " _"][];
-      . as $forbidden | $input | contains($forbidden) | not)' "$DV_STATE/ST-1/sent-input"
   stall_omp_prompts
 }
 case_stall_omp_once() {
-  # Keep the restart-input regression in the registered suite as well.
-  case_stall_omp_restart
+  stall_omp_fixture
+  stall_omp_scan; stall_omp_count 2
   stall_omp_scan
   # A separate command and later PR transition cannot repeat the same turn.
   dv _stall-recover ST-1 --omp-texttool round-1
