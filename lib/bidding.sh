@@ -55,7 +55,9 @@ bid_resources() {
       go_cache_path:(if $cache=="" then null else $cache end),cache_disk_available_gb:$cache_free}'
 }
 bid_remote_repo() {
-  [[ "$1" =~ ^https?://[^/]+/.+ ]] || [[ "$1" =~ ^ssh://.+ ]] || [[ "$1" =~ ^git@[^:]+:.+ ]]
+  local url
+  url=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  [[ "$url" =~ ^https?://[^/]+/.+ ]] || [[ "$url" =~ ^ssh://.+ ]] || [[ "$url" =~ ^git@[^:]+:.+ ]]
 }
 bid_repo() {
   # Return the existing clone or the deterministic destination for an award.
