@@ -55,8 +55,7 @@ fi
 : "${DV_DSH_KEY_VAR:=INFERHUB_API_KEY}"
 : "${DV_DSH_FALLBACK:=omp}"
 : "${DV_DSH_JAIL:=auto}" # auto, on (required on Linux), off
-: "${DV_DSH_JAIL_HIDE=}" # newline-separated absolute directories
-: "${DV_DSH_JAIL_BIND=}" # newline-separated absolute directories
+: "${DV_DSH_JAIL_BIND=}" # newline-separated absolute directories bound read-write
 : "${DV_DSH_SESSIONS:=$DV_DSH_HOME/sessions}"
 : "${DV_AGY_BIN:=agy}"
 : "${DV_GROK_BIN:=grok}"

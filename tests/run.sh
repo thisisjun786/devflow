@@ -2762,7 +2762,7 @@ source "$ROOT/tests/job-limits.sh"
 source "$ROOT/tests/search-scope.sh"
 registered_cases() {
   printf '%s\n' dsh_success dsh_restart dsh_followup_restart dsh_fallback dsh_resume dsh_stall dsh_capacity dsh_not_ready dsh_key
-  printf '%s\n' dsh_quota dsh_crash_fallback dsh_completion_gate dsh_last_status dsh_jail dsh_jail_unavailable dsh_host_sync dsh_host_probe
+  printf '%s\n' dsh_quota dsh_crash_fallback dsh_completion_gate dsh_last_status dsh_jail dsh_jail_plan dsh_jail_nonlinux_log dsh_jail_unavailable dsh_host_sync dsh_host_probe
   printf '%s\n' dsh_delivery dsh_herdr_fallback
   printf '%s\n' dsh_silent_tool dsh_session_activity dsh_session_scope dsh_tool_cap dsh_tool_cap_activity dsh_tool_cap_per_call dsh_tool_cap_disabled
   printf '%s\n' owned_lock_missing_marker owned_unlock_reaper_race owned_unlock_marker_race owned_lock_dead_reaper owned_lock_recovery_race status_cut_utf8_log_bsd status_cut_utf8_pane_bsd status_cut_utf8_native reconcile_timeout_default
