@@ -1,5 +1,89 @@
 #!/usr/bin/env bash
 # Merge discovery is driven by GitHub data, not worker lifecycle records.
+case_qa_scan_batch() {
+  qa_merge_fixture
+  export BASH_ENV="$ROOT/tests/fixtures/qa-scan-pass"
+  local n scans requests
+  for n in {1..8}; do dv-kick qa-repository QA-BATCH event test-host '' "batch-$n"; done
+  dv-watch > "$CASE_DIR/watch.log" 2>&1
+  scans=$(grep -c 'commits/main' "$GH_STUB_DIR/calls")
+  requests=$(grep -Ec 'commits/main|pulls\?state=closed|compare/' "$GH_STUB_DIR/calls")
+  printf 'watcher pass: events=8 scans=%s QA REST requests=%s\n' "$scans" "$requests"
+  test "$(cat "$DV_HOME/cursor")" = 8
+  test "$scans" = 1
+}
+case_qa_scan_delayed() {
+  qa_merge_fixture
+  local clock=1000 kind
+  now() { printf '%s\n' "$clock"; }
+  export DV_QA_SCAN_MIN=60
+  qa_enqueue '{}'; qa_scan_flush
+  clock=1001
+  for kind in qa-repository merged landed 'done' failed submitted bid-changed issue-opened issue-closed; do
+    qa_enqueue "{\"kind\":\"$kind\"}"
+  done
+  qa_scan_flush
+  test -f "$DV_HOME/qa-scan/wanted"
+  test "$(grep -c 'commits/main' "$GH_STUB_DIR/calls")" = 1
+  clock=1059
+  qa_scan_flush
+  test -f "$DV_HOME/qa-scan/wanted"
+  # New shell/library state still consumes a delayed durable request.
+  clock=1060
+  ( source "$ROOT/lib/qa.sh"; qa_scan_flush )
+  test ! -f "$DV_HOME/qa-scan/wanted"
+  test "$(grep -c 'commits/main' "$GH_STUB_DIR/calls")" = 2
+  printf 'delayed unchanged scan: GETs=2 304=%s\n' "$(grep -c '^304$' "$GH_STUB_DIR/cache-status")"
+  test "$(grep -c '^304$' "$GH_STUB_DIR/cache-status")" = 2
+}
+case_qa_scan_retry() {
+  qa_merge_fixture
+  local clock=1000
+  now() { printf '%s\n' "$clock"; }
+  export DV_QA_SCAN_MIN=60
+  touch "$GH_STUB_DIR/qa-api-fail"
+  qa_enqueue '{"kind":"qa-repository","message":"GitHub base changed; verify merged base"}'
+  qa_scan_flush
+  test -f "$DV_HOME/qa-scan/wanted"
+  test ! -f "$DV_HOME/qa-scan/urgent"
+  rm "$GH_STUB_DIR/qa-api-fail"
+  clock=1001
+  qa_scan_flush
+  test "$(grep -c 'commits/main' "$GH_STUB_DIR/calls")" = 1
+  # Periodic reconciliation can force the pending scan in the same pass.
+  qa_scan_flush 1
+  test ! -f "$DV_HOME/qa-scan/wanted"
+  jq -e '[.prs[].number]==[7]' "$DV_HOME"/qa/*/pending.json
+}
+case_qa_scan_base_event() {
+  qa_merge_fixture
+  local clock=1000
+  now() { printf '%s\n' "$clock"; }
+  export DV_QA_SCAN_MIN=60
+  qa_enqueue '{}'; qa_scan_flush
+  clock=1001
+  printf '[{"id":"1","type":"IssuesEvent","payload":{"action":"closed"}}]\n' > "$GH_STUB_DIR/qa-events"
+  printf 'one\n' > "$GH_STUB_DIR/qa-etag"
+  qa_github_events
+  qa_enqueue "$(tail -n 1 "$DV_HOME/kick.q")"
+  qa_scan_flush
+  test "$(grep -c 'commits/main' "$GH_STUB_DIR/calls")" = 1
+  qa_merge_add 8 2026-10-22T00:02:00Z
+  # Prefer the new base event even when the newest event is an issue update.
+  jq '[{id:"3",type:"IssuesEvent",payload:{action:"opened"}},
+    {id:"2",type:"PushEvent",payload:{ref:"refs/heads/main"}}]+.' "$GH_STUB_DIR/qa-events" > "$CASE_DIR/events"
+  mv "$CASE_DIR/events" "$GH_STUB_DIR/qa-events"
+  printf 'two\n' > "$GH_STUB_DIR/qa-etag"
+  qa_github_events
+  qa_enqueue "$(tail -n 1 "$DV_HOME/kick.q")"
+  qa_enqueue '{"kind":"done"}'
+  qa_scan_flush
+  test "$(grep -c 'commits/main' "$GH_STUB_DIR/calls")" = 2
+  jq -e '[.prs[].number]==[7,8]' "$DV_HOME"/qa/*/pending.json
+  qa_github_events
+  qa_scan_flush
+  test "$(grep -c 'commits/main' "$GH_STUB_DIR/calls")" = 2
+}
 qa_merge_fixture() {
   qa_fixture
   bidding_functions
@@ -68,6 +152,7 @@ case_qa_merge_disabled() {
 case_qa_merge_untrusted_event() {
   qa_merge_fixture
   qa_enqueue '{"kind":"landed","issue":"FORGED","host":"unknown","repo":"https://github.com/evil/repo","head":"forged"}'
+  qa_scan_flush
   jq -e '.repository=="test/repo" and .head!="forged"' "$DV_HOME"/qa/*/pending.json
   if grep -q evil "$GH_STUB_DIR/calls"; then return 1; fi
 }
@@ -107,6 +192,9 @@ case_qa_merge_base_membership() {
   test ! -f "$DV_HOME"/qa/*/pending.json
   test ! -f "$DV_HOME"/qa/*/observed.json
   rm "$GH_STUB_DIR/qa-diverged"
+  # A full-SHA comparison is immutable; a new base head can contain the PR.
+  git -C "$REPO" commit --allow-empty -qm 'base now contains the merge'
+  git -C "$REPO" push -q origin main
   qa_scan
   jq -e '.base=="main"' "$DV_HOME"/qa/*/pending.json
 }

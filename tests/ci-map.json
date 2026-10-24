@@ -18,6 +18,7 @@
     "lib/common.sh": ["*"],
     "lib/delivery.sh": ["pr_*", "review_*", "reconcile_*", "status_done_head", "watch_*", "land_*", "stack_*", "start_done", "local_land", "polish_*", "qa_merge_commit_event", "park_*"],
     "lib/disk.sh": ["disk_*", "teardown_*", "bid_*", "award_*", "start_done"],
+    "lib/ghcache.sh": ["gh_cache_*", "review_*", "qa_*", "pr_wait_*"],
     "lib/heavy.sh": ["heavy_*", "bid_*", "watch_capacity*", "manager_*"],
     "lib/herdr.sh": ["herdr_*", "task_herdr_*", "code_herdr_failed_*", "send_branch_herdr", "capacity_terminal*", "capacity_legacy_terminal"],
     "lib/host.sh": ["host_*", "claude_*host", "disk_host", "update_host", "bid_*"],

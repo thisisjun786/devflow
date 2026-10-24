@@ -11,6 +11,7 @@ qa_fixture() {
   # Assigned by the shared test harness.
   # shellcheck disable=SC2153
   export DV_QA_COALESCE=0 DV_QA_BASE=main DV_MANAGER_HOST="$DV_HOST" DV_HOSTS="$DV_HOST"
+  export DV_QA_SCAN_MIN=0
   export DV_MIN_DISK_GB=0 DV_MIN_MEMORY_MB=0 DV_MAX_JOBS=2
   export DV_AGENT_READY_codex=true DV_AGENT_READY_claude=true
   export DV_HERMES_BIN="$ROOT/tests/fixtures/manager-hermes"
@@ -62,9 +63,12 @@ qa_wait_runs() {
 }
 qa_finish() {
   touch "$CASE_DIR/qa-release"
-  local record
+  local record qa_done
   for _ in {1..200}; do
-    record=$(find "$DV_STATE" -name done.json -print)
+    record=''
+    for qa_done in "$DV_STATE"/QA-*/done.json; do
+      [ ! -f "$qa_done" ] || { record=$qa_done; break; }
+    done
     [ -z "$record" ] || break
     sleep 0.1
   done
@@ -88,6 +92,19 @@ case_qa_landed() {
   test "$(wc -l < "$CASE_DIR/qa-runs" | tr -d ' ')" = 1
   jq -e --arg head "$(git -C "$REPO" rev-parse HEAD)" '.head==$head and .kind=="qa" and .milestone.title=="M1"' "$DV_STATE"/QA-*/meta
   test "$(grep -c 'qa-summary' "$GH_STUB_DIR/qa-actions")" = 1
+}
+case_qa_landed_admission_race() {
+  # Admission locks can disappear while a QA runner publishes completion.
+  # Fault injector: reached only if qa_finish regresses to a whole-state find.
+  # shellcheck disable=SC2317,SC2329
+  find() {
+    if [ "$*" = "$DV_STATE -name done.json -print" ]; then
+      printf 'find: admission lock disappeared during state traversal\n' >&2
+      return 1
+    fi
+    command find "$@"
+  }
+  case_qa_landed
 }
 case_qa_coalesce() {
   qa_fixture
@@ -158,6 +175,11 @@ case_qa_restart() {
   qa_event latest
   dv-watch >> "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   qa_wait_events 2
+  # Queue acknowledgment now records a wanted scan; the pass drains it later.
+  local qa_record
+  for qa_record in "$DV_HOME"/qa/*/running.json; do
+    wait_file "${qa_record%/running.json}/pending.json"
+  done
   dv qa status --json | jq -e 'length==1 and .[0].pending and .[0].running'
   test "$(wc -l < "$CASE_DIR/qa-runs" | tr -d ' ')" = 1
   touch "$CASE_DIR/qa-release"
@@ -217,6 +239,7 @@ case_qa_transport_retry() {
   mkdir -p "$DV_HOME/submissions/REMOTE-1"
   jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"working",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
+  qa_scan_flush 0
   jq -e '.repository=="test/repo"' "$DV_HOME"/qa/*/pending.json
 }
 case_qa_recovered_capacity() {
@@ -483,11 +506,14 @@ case_qa_bound_event() {
   mkdir -p "$DV_HOME/submissions/REMOTE-1"
   jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"completed",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
+  qa_scan_flush 0
   jq -e '.repository=="test/repo"' "$DV_HOME"/qa/*/pending.json
   rm "$DV_HOME"/qa/*/pending.json
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"forged"}'
+  qa_scan_flush 0
   test ! -f "$DV_HOME"/qa/*/pending.json
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","token":"issued"}'
+  qa_scan_flush 0
   test ! -f "$DV_HOME"/qa/*/pending.json
 }
 

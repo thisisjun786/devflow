@@ -3,7 +3,7 @@
 # Shell snippets expand in the child; PATH changes in subshells are intentional.
 # shellcheck disable=SC2016,SC2030,SC2031
 # shellcheck source=lib/dsh-host.sh
-source "$DV_ROOT/lib/dsh-host.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/dsh-host.sh"
 host_rows() {
   awk -F '\t' -v host="$DV_HOST" '
     /^#/ || /^[[:space:]]*$/ {next}
