@@ -373,3 +373,32 @@ case_metrics_stall_overlap() {
     metrics_queue_events | jq -e 'length==0'
   done
 }
+case_metrics_collect_large_queue() {
+  metrics_fixture
+  # shellcheck source=lib/bidding.sh
+  source "$ROOT/lib/bidding.sh"
+  # shellcheck source=lib/metrics.sh
+  source "$ROOT/lib/metrics.sh"
+  # The kick queue's events JSON reached 258 KB on 10-24, over Linux's 128 KiB
+  # single-argument limit: every remote sample died in ssh/jq exec (E2BIG).
+  local n=0
+  while [ "$n" -lt 2500 ]; do
+    printf '{"id":"e-%s","kind":"progress","host":"other-%s","issue":"X-%s","time":%s,"message":"%s"}\n' \
+      "$n" "$n" "$n" "$n" 'padding-padding-padding-padding' >> "$DV_HOME/kick.q"
+    n=$((n + 1))
+  done
+  test "$(metrics_queue_events | wc -c)" -gt 131072
+  mkdir -p "$CASE_DIR/large-bin"
+  cat > "$CASE_DIR/large-bin/ssh" <<'SSH'
+#!/usr/bin/env bash
+for arg in "$@"; do [ "${#arg}" -le 131072 ] || { printf 'ssh: Argument list too long\n' >&2; exit 126; }; done
+command=${*: -1}
+exec bash -c "$command"
+SSH
+  chmod +x "$CASE_DIR/large-bin/ssh"
+  PATH="$CASE_DIR/large-bin:$PATH"
+  DV_HOST=watch DV_HOSTS='remote-host'
+  metrics_collect
+  # The remote sample ran and stored this host's job snapshot.
+  find "$DV_HOME" -path '*metrics*' -name snapshot.json | grep -q .
+}

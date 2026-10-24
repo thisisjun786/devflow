@@ -96,14 +96,19 @@ reconcile_submissions() (
     [[ "$issue" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || continue
     dir="$DV_HOME/submissions/$issue"
     [ -f "$dir/task.json" ] || continue
-    bid_task_set "$dir" --arg host "$host" --argjson job "$row" '
+    # A status row can exceed one argument's limit (128 KiB on Linux; a landed
+    # appserver job's turn dump reached 286 KB on 10-24): pass it as a file.
+    printf '%s\n' "$row" > "$dir/.job-row" || return 1
+    bid_task_set "$dir" --arg host "$host" --slurpfile jobs "$dir/.job-row" '
+      $jobs[0] as $job |
       if (.status=="working" or .status=="input-required" or (.status=="submitted" and .host!=null)) and
         .host==$host and ($job.host // $host)==$host and
         ((.token // "")==($job.award_token // "")) then
         .status=(if $job.status=="landed" then "completed" elif $job.status=="closed" then "canceled" else "failed" end) |
         .head=($job.head // .head) |
         (if $job.reason!=null then .reason=$job.reason else del(.reason) end)
-      else . end' || return 1
+      else . end' || { rm -f "$dir/.job-row"; return 1; }
+    rm -f "$dir/.job-row"
   done < <(jq -c '.[] | select(.status=="closed" or .status=="failed" or .status=="landed")' <<< "$rows")
 )
 reconcile_dir() { printf '%s/reconcile/%s\n' "$DV_HOME" "$(printf '%s' "$1" | cksum | awk '{print $1 "-" $2}')"; }
