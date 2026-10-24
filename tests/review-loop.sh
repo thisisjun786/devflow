@@ -415,6 +415,8 @@ case_review_clean_summary() {
   jq -e '.review.clean and .review.source=="summary" and .review.high==[]' "$CASE_DIR/result"
   dv 'done' P-1
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_summary_guards() {
   review_fixture
   local head variant
@@ -433,6 +435,8 @@ case_review_summary_guards() {
     jq -n --slurpfile reviews "$GH_STUB_DIR/reviews" --slurpfile comments "$GH_STUB_DIR/issue-comments" \
       '{reviews:$reviews[0],issue_comments:$comments[0],inline_comments:[]}' > "$CASE_DIR/snapshot"
     (
+      # Assigned by the shared test harness.
+      # shellcheck disable=SC2153
       DV_ENTRY="$ROOT/bin/dv"
       source "$ROOT/lib/common.sh"
       source "$ROOT/lib/pr-review.sh"
@@ -446,12 +450,16 @@ case_review_summary_guards() {
   if dv pr-wait P-1 --foreground > "$CASE_DIR/result"; then return 1; fi
   jq -e '.review_timed_out and (.review_handled|not)' "$CASE_DIR/result"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_summary_api_failure() {
   review_fixture
   touch "$GH_STUB_DIR/issue-comments-fail"
   if dv pr-wait P-1 --foreground; then return 1; fi
   test ! -f "$DV_STATE/P-1/pr-ready.json"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_review_recover() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   touch "$GH_STUB_DIR/explicit-review-2"
@@ -472,6 +480,8 @@ case_stack_review_recover() {
   dv land S-2
   test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_summary_new_findings() {
   review_fixture
   review_set 1 P2
@@ -483,6 +493,8 @@ case_review_summary_new_findings() {
   test ! -f "$GH_STUB_DIR/followup"
   if dv 'done' P-1; then return 1; fi
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_summary_latest_low() {
   review_fixture
   review_set 1 P2
@@ -498,6 +510,8 @@ case_review_summary_latest_low() {
   dv pr-wait P-1 --foreground > "$CASE_DIR/result"
   jq -e '.review.clean and .review.id==2 and (.review.low|length)==1' "$CASE_DIR/result"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_summary_complete_low() {
   review_fixture
   review_set 1 P2
@@ -515,6 +529,8 @@ review_receipt_set() {
     created_at:"2026-10-22T04:00:00Z",updated_at:"2026-10-22T04:00:00Z",
     body:("<!-- codex-review-receipt:v1 -->\nCodex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `"+$head+"`")} ]' > "$GH_STUB_DIR/receipt"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 review_receipt_parse() (
   local head=$1
   cd "$REPO" || exit
@@ -526,6 +542,8 @@ review_receipt_parse() (
   review_parse "$CASE_DIR/snapshot" "$head" > "$CASE_DIR/result"
   cat "$CASE_DIR/result"
 )
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_receipt() {
   # Synthetic version of the receipt-only PR #188 at head 2a4c2d9.
   repo receipt
@@ -548,6 +566,8 @@ case_review_receipt() {
     jq -e '.exists and .clean and .source=="receipt" and .findings==[]' "$CASE_DIR/result"
   done
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_receipt_guards() {
   repo receipt-guards
   local head variant
@@ -575,6 +595,8 @@ case_review_receipt_guards() {
     jq -e '(.exists|not) and (.clean|not)' "$CASE_DIR/result"
   done
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_receipt_findings() {
   review_fixture
   local head source severity time
@@ -615,6 +637,8 @@ case_review_receipt_findings() {
     jq -e '(.exists|not) and (.clean|not)' "$CASE_DIR/result"
   done
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_receipt_wait() {
   review_fixture
   local head
@@ -630,6 +654,8 @@ case_review_receipt_wait() {
   dv 'done' P-1
   jq -e '.checks=="green" and .review=="handled"' "$DV_STATE/P-1/done.json"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_receipt_arrives() {
   review_fixture
   local head waiter attempt
@@ -652,6 +678,8 @@ case_review_receipt_arrives() {
   ! grep -q '^pr comment ' "$GH_STUB_DIR/calls"
 }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_receipt_incomplete() {
   review_fixture
   local head source severity status
@@ -683,6 +711,8 @@ case_review_receipt_incomplete() {
   done
 }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_receipt_metadata() {
   repo receipt-metadata
   local head time
@@ -701,6 +731,8 @@ case_review_receipt_metadata() {
   done
 }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_receipt_ambiguous() {
   repo receipt-collision
   local nonce old head
@@ -733,6 +765,8 @@ case_review_receipt_ambiguous() {
   jq -e '(.exists|not) and (.clean|not)' "$CASE_DIR/result"
 }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_review_followup_source() {
   # Retain the moved-job regression using authoritative closing references.
   review_fixture

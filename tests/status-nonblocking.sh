@@ -71,6 +71,9 @@ case_watch_status_single() {
   ! kill -0 "$worker" 2>/dev/null
 }
 
+# Fixture functions are called indirectly by loaded helpers.
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034,SC2317,SC2329
 case_status_cache_notifications() {
   bidding_functions
   ISSUE=NOTIFY-1; S="$DV_STATE/$ISSUE"; AS_EVENTS=1; AS_THREAD=thread-1; AS_CACHED='{}'
@@ -108,6 +111,8 @@ case_status_cache_live() {
   local client
   client=$(cat "$DV_STATE/AS-1/appserver/client.pid")
   kill -STOP "$client"
+  # Capture the local PID before the function returns.
+  # shellcheck disable=SC2064
   trap "kill -CONT $client 2>/dev/null || true; teardown" EXIT
   cp "$CASE_DIR/server/requests" "$CASE_DIR/before"
   dv status AS-1 --json | jq -e --arg transcript "$DV_CODEX_SESSIONS" '.[0] | .agent_status=="working" and (.status_age_seconds|type)=="number" and .transcript==$transcript'
@@ -121,6 +126,8 @@ case_status_cache_live() {
   trap teardown EXIT
 }
 
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_recovery_sweep_progress() {
   bidding_functions
   local n rc

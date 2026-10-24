@@ -85,6 +85,8 @@ case_update_dirty() {
 case_update_landed() {
   update_fixture
   export DV_WORKER_GATE=1 DV_MAX_WORKERS=1
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   dv-kick probe BUSY-1 '' "$DV_HOST" old
   "$UPDATE_ROOT/bin/dv-watch" > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   wait_file "$DV_HOME/pending/0.pid"
@@ -118,6 +120,8 @@ case_update_safety() {
   update_wait_watcher "$UPDATE_NEW"
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 update_wait_scan() {
   local attempt pidfile pid busy state
   wait_file "$CASE_DIR/scan-$1"

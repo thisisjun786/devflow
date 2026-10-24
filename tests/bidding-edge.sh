@@ -198,6 +198,8 @@ case_config_work_existing() {
   chmod 755 "$CASE_DIR/scratch"
   test "$actual" = "$CASE_DIR/scratch/dv-wt"
   # Explicit configuration must survive the default selection.
+  # Generated configuration; config.example.sh is checked separately.
+  # shellcheck disable=SC1091
   ( source "$CASE_DIR/example.sh"; test "$DV_WORK" = "$CASE_DIR/work" )
 }
 work_bid_setup() {
@@ -207,6 +209,8 @@ work_bid_setup() {
   export DV_MAX_JOBS=8 DV_CODEX_MODE=exec DV_AGENT_CMD_codex=''
   work_bid_probes
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 work_bid_probes() {
   # No auth, resource probes or terminal required for these synthetic bids.
   WORK_BID_CORES=16

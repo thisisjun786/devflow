@@ -40,6 +40,8 @@ case_exec_cleanup_failure() {
   exec_unlocked
   test "$(cat "$DV_STATE/EX-1/agent.exit")" = 7
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 case_exec_cleanup_signal() {
   exec_setup hold
   dv start "$REPO" EX-1 cleanup
@@ -61,6 +63,8 @@ case_exec_exhausted_rebids() {
   dv start "$REPO" EX-1 exhausted
   exec_wait
   bidding_functions
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   export DV_MANAGER_HOST="$DV_HOST" DV_HOSTS=fake-host
   local dir="$DV_HOME/submissions" event
   mkdir -p "$dir/EX-1" "$dir/QUEUED-1"

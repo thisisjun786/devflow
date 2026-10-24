@@ -14,6 +14,8 @@ autofill_fixture() {
   printf '[]\n' > "$CASE_DIR/autofill/issues"
   printf '{"data":{"repository":{"pullRequests":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}\n' > "$CASE_DIR/autofill/prs"
   printf '2\n' > "$CASE_DIR/autofill/free"
+  # Fixture functions are called indirectly by loaded helpers.
+  # shellcheck disable=SC2317,SC2329
   gh() {
     printf '%s\n' "$*" >> "$CASE_DIR/autofill/calls"
     case "$*" in
@@ -29,6 +31,8 @@ autofill_fixture() {
       *) printf 'Unexpected autofill gh: %s\n' "$*" >&2; return 1 ;;
     esac
   }
+  # Fixture functions are called indirectly by loaded helpers.
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() {
     local host=$1 action=$2 free
     case "$action" in
@@ -179,6 +183,8 @@ case_autofill_manager_alarm() {
   autofill_tick
   test ! -f "$DV_HOME/autofill/underused-since"
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 case_autofill_watch() {
   autofill_fixture; autofill_issues
   # Run the real watcher with executable gh/SSH stubs, no in-process shortcuts.

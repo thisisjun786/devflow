@@ -63,7 +63,7 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Shellcheck
-        run: shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fixtures/*
+        run: bash tests/shellcheck.sh
   tests:
     needs: plan
     strategy:

@@ -636,7 +636,7 @@ Codex가 생성하는 JSON schema를 기준으로 구현했습니다. 다른 rel
 
 ```bash
 tests/run.sh
-shellcheck -x bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fixtures/*
+bash tests/shellcheck.sh
 ```
 
 실제 에이전트·GitHub·SSH·Hermes를 시험에서 부르지 않습니다. 임시 bare 원격과 실제 tmux를 쓰며 tmux가 없을 때만 해당 시험을 skip합니다. `DV_TEST_TMP=/scratch/...`로 임시 위치를 지정할 수 있습니다. 디스크 시험은 `df`·Go 스텁과 임시 캐시를 사용합니다. 큐·worker 기록은 운영자가 보관 주기를 정하고, 자동 정리 대상이 아닌 worktree는 `dv clean`으로 정리하세요.

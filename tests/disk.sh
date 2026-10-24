@@ -16,11 +16,15 @@ STUB
   chmod +x "$CASE_DIR/disk-bin/go"
   export PATH="$CASE_DIR/disk-bin:$PATH" DV_MIN_DISK_GB=15 DV_CACHE_TRIM_DAYS=2 DV_DISK_INTERVAL=1800
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_disk_bid() {
   export DV_AGENT_CMD_codex='' DV_CODEX_MODE=exec DV_AGENT_READY_codex=true DV_MIN_MEMORY_MB=0
   export DF_STUB_KB=14680064 DV_MAX_JOBS=1
   bidding_functions
   # shellcheck source=lib/disk.sh
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   source "$ROOT/lib/disk.sh"
   bid_agent() { return 0; } # Auth is independent of disk scoring.
   local disk_bid_load baseline disk_bid_cores=16
@@ -245,6 +249,8 @@ case_disk_award() {
   test ! -e "$DV_STATE/DISK-1"
   test ! -e "$DV_STATE/.awards/DISK-1"
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_disk_bsd_stat() (
   disk_fixture; repo legacy
   disk_job OLD landed 1
@@ -327,6 +333,8 @@ case_disk_start_interval() {
   dv _disk-maintain
   test "$(wc -l < "$CASE_DIR/go.calls" | tr -d ' ')" = 2
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 case_disk_watch_due() {
   disk_fixture; disk_clock_fixture; watch_fixture
   dv _disk-maintain

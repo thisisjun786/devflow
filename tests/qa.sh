@@ -8,6 +8,8 @@ qa_fixture() {
   watch_fixture
   trap qa_teardown EXIT
   export DV_QA_AGENT_CMD="$ROOT/tests/fixtures/qa-agent" DV_QA=0
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   export DV_QA_COALESCE=0 DV_QA_BASE=main DV_MANAGER_HOST="$DV_HOST" DV_HOSTS="$DV_HOST"
   export DV_MIN_DISK_GB=0 DV_MIN_MEMORY_MB=0 DV_MAX_JOBS=2
   export DV_AGENT_READY_codex=true DV_AGENT_READY_claude=true
@@ -16,6 +18,8 @@ qa_fixture() {
   local registered
   registered="$DV_HOME/managers/$(printf '%s' github.com/test/repo | cksum | awk '{print $1 "-" $2}')"
   mkdir -p "$registered/pending"
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   jq -n --arg repo "$REPO" '{repo:$repo,identity:"github.com/test/repo",enabled:true,session_id:"qa-manager",agent:"hermes"}' > "$registered/meta.json"
   export GIT_CONFIG_GLOBAL="$CASE_DIR/qa.gitconfig"
   git config --file "$GIT_CONFIG_GLOBAL" url."$CASE_DIR/remote.git".insteadOf https://github.com/test/repo.git
