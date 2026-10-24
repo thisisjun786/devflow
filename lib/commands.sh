@@ -543,6 +543,7 @@ cmd_kick() {
     host=$(jq -r .host "$DV_STATE/$issue/meta")
     [ -n "$token" ] || token=$(jq -r '.award_token // ""' "$DV_STATE/$issue/meta")
     if [ "$kind" = 'done' ]; then episode=$(jq -r '.done_episode // ""' "$DV_STATE/$issue/meta"); fi
+    if [ "$kind" = 'parked' ]; then episode=$(jq -r '.parked.episode // ""' "$DV_STATE/$issue/meta"); fi
   fi
   case "$kind" in
     failed|blocked) episode=$(cat "$DV_STATE/$issue/revive/id" 2>/dev/null) || episode='' ;;
