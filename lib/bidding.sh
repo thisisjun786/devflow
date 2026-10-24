@@ -147,9 +147,22 @@ bid_work_writable() {
   done
   [ -d "$path" ] && [ -w "$path" ] && [ -x "$path" ]
 }
+# A host may refuse whole repositories (DV_BID_REJECT_REPOS="owner/name ..."), so
+# work for one repo can be steered off a host without a per-issue pin (a Mac kept
+# for app work stops taking Core jobs). Matches a remote URL or a clone's origin.
+bid_repo_rejected() {
+  local repo=$1 url=$1 slug entry
+  [ -n "$DV_BID_REJECT_REPOS" ] || return 1
+  if [ -d "$repo" ]; then url=$(git -C "$repo" config --get remote.origin.url 2>/dev/null) || return 1; fi
+  slug=$(printf '%s\n' "$url" | sed -E 's#^(https?://|ssh://)?(git@)?github\.com[:/]##; s#\.git$##; s#/+$##')
+  for entry in $DV_BID_REJECT_REPOS; do
+    [ "${entry%.git}" != "$slug" ] || return 0
+  done
+  return 1
+}
 cmd_bid() {
   bid_settings
-  local repo='' agent=$DV_AGENT kind=code json=0 resources ready=false backend=false trust=true root writable=false
+  local repo='' agent=$DV_AGENT kind=code json=0 resources ready=false backend=false trust=true root writable=false excluded=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -164,6 +177,7 @@ cmd_bid() {
   if bid_work_writable; then writable=true; fi
   bid_repo "$repo"
   [ -n "$repo" ] || BID_REPO_OK=true
+  if [ -n "$repo" ] && bid_repo_rejected "$repo"; then excluded=true; fi
   if [ "$kind" = qa ] && [ -n "$DV_QA_AGENT_CMD" ]; then ready=true
   elif bid_agent "$agent"; then ready=true; fi
   if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ] && [ -n "$repo" ]; then
@@ -178,10 +192,10 @@ cmd_bid() {
   [ "$kind" != qa ] || backend=true
   printf '%s\n' "$resources" | jq --arg host "$DV_HOST" --arg repo "$BID_REPO" --argjson cloned "$BID_CLONED" \
     --argjson repo_ok "$BID_REPO_OK" --argjson ready "$ready" --argjson backend "$backend" --argjson trust "$trust" \
-    --argjson min_disk "$DV_MIN_DISK_GB" --argjson writable "$writable" \
+    --argjson min_disk "$DV_MIN_DISK_GB" --argjson writable "$writable" --argjson excluded "$excluded" \
     '. + {host:$host,repo:$repo,repo_cloned:$cloned,agent_ready:$ready} |
     ([.disk_available_gb,.cache_disk_available_gb]|map(select(.!=null))|min) as $disk |
-    .reason=(if .free_slots==0 then .capacity_reason elif $writable|not then "worktree dir not writable" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
+    .reason=(if $excluded then "repository excluded by DV_BID_REJECT_REPOS" elif .free_slots==0 then .capacity_reason elif $writable|not then "worktree dir not writable" elif $ready|not then "agent unavailable or logged out" elif $repo_ok|not then "repository unavailable" elif $trust|not then "repository not in DV_TRUSTED_REPOS" elif $backend|not then "terminal backend unavailable" elif .disk_available_gb==null or (.go_cache_path!=null and .cache_disk_available_gb==null) then "disk unavailable" elif $disk<$min_disk then "low disk" else "" end) |
     .status=(if .reason=="" then "submitted" else "rejected" end) |
     # Keep normal-load scores; each core-equivalent above 1.5 costs 100 more.
     .score=(100*.free_slots/([1,.capacity]|max) - 20*.load5/.cores - 100*([0,(.load5/.cores-1.5)]|max) + ([64,(.memory_available_mb/1024)]|min) + (if .repo_cloned then 20 else 0 end) -

@@ -43,6 +43,7 @@ fi
 : "${DV_CAPACITY_MAX_WAIT:=21600}" # provider capacity wait deadline in seconds (6 h)
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
+: "${DV_BID_REJECT_REPOS=}" # space-separated owner/name this host never bids on (e.g. keep a Mac free for app work)
 : "${DV_CLAUDE_BIN:=claude}"
 : "${DV_DEVIN_BIN:=$HOME/.local/bin/devin}"
 : "${DV_OMP_BIN:=omp}"

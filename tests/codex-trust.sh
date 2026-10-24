@@ -14,6 +14,17 @@ case_codex_allowlist() {
   done
   DV_TRUSTED_REPOS='' dv bid --json --repo "$REPO" | jq -e '.status=="rejected" and (.reason|contains("DV_TRUSTED_REPOS"))'
 }
+case_bid_reject_repos() {
+  repo excluded remote
+  # The clone's origin and the remote URL both match the owner/name entry.
+  DV_BID_REJECT_REPOS='other/app test/repo' dv bid --json --repo "$REPO" |
+    jq -e '.status=="rejected" and .reason=="repository excluded by DV_BID_REJECT_REPOS"'
+  DV_BID_REJECT_REPOS='test/repo.git' dv bid --json --repo https://github.com/test/repo.git |
+    jq -e '.status=="rejected" and (.reason|contains("DV_BID_REJECT_REPOS"))'
+  # Another repository, a prefix and an empty list still bid normally.
+  DV_BID_REJECT_REPOS='test/repo-app test/rep' dv bid --json --repo "$REPO" | jq -e '.status=="submitted"'
+  DV_BID_REJECT_REPOS='' dv bid --json --repo "$REPO" | jq -e '.status=="submitted"'
+}
 case_codex_persisted_trust() {
   repo 'trust "quoted"'; herdr_setup
   local root
