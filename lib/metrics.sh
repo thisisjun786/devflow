@@ -73,7 +73,7 @@ metrics_fingerprint() (
   } | cksum
 )
 metrics_sample_issue() (
-  local meta=$1 events=${2:-[]} state dir wt status at fingerprint old snapshot records merged pr reply head
+  local meta=$1 events=${2:-/dev/null} state dir wt status at fingerprint old snapshot records merged pr reply head
   state=$(dirname "$meta"); dir="$state/metrics"
   mkdir -p "$dir" || return 1
   owned_lock "$dir/.sample-lock" "$$" || return 1
@@ -105,7 +105,8 @@ metrics_sample_issue() (
       fingerprint=$(metrics_fingerprint "$wt" "$state") || return 1 ;;
   esac
   snapshot=$(jq -cn --argjson meta "$(cat "$meta")" --argjson old "$old" --argjson at "$at" \
-    --arg fingerprint "$fingerprint" --arg status "$status" --argjson records "$records" --argjson events "$events" '
+    --arg fingerprint "$fingerprint" --arg status "$status" --argjson records "$records" --slurpfile eventsfile "$events" '
+    ($eventsfile[0] // []) as $events |
     ($status=="landed" or $status=="cancelled" or $status=="cleaned") as $terminal |
     (if $old.started==$meta.started then $old else null end) as $previous |
     (if $previous==null then $at else [$previous.observed_at,$at]|max end) as $end |
@@ -128,18 +129,26 @@ metrics_sample_issue() (
   printf '%s\n' "$snapshot" > "$tmp" && mv "$tmp" "$dir/activity.json" || return 1
   printf '%s\n' "$snapshot"
 )
-cmd__metrics_sample() {
-  local meta events='[]'
-  if [ "$#" = 2 ] && [ "$1" = --events ]; then events=$2
-  elif [ "$#" != 0 ]; then fail 'usage: dv _metrics-sample [--events JSON]'
-  elif [ -f "$DV_HOME/kick.q" ]; then events=$(metrics_queue_events); fi
+cmd__metrics_sample() (
+  # The queue's events reach 250+ KB, over Linux's 128 KiB single-argument
+  # limit for ssh and jq (10-24: every remote sample failed). Pass them on
+  # stdin (--events -) and to jq as a file, never as one argument.
+  local meta events
+  events=$(mktemp "${TMPDIR:-/tmp}/dv-metrics-events.XXXXXX") || return 1
+  # shellcheck disable=SC2064
+  trap "rm -f '$events'" EXIT
+  if [ "$#" = 2 ] && [ "$1" = --events ] && [ "$2" = - ]; then cat > "$events"
+  elif [ "$#" = 2 ] && [ "$1" = --events ]; then printf '%s\n' "$2" > "$events"
+  elif [ "$#" != 0 ]; then fail 'usage: dv _metrics-sample [--events JSON|-]'
+  elif [ -f "$DV_HOME/kick.q" ]; then metrics_queue_events > "$events"
+  else printf '[]\n' > "$events"; fi
   {
     for meta in "$DV_STATE"/*/meta; do
       [ -f "$meta" ] || continue
       metrics_sample_issue "$meta" "$events" || printf 'dv: metrics sample unavailable: %s\n' "$meta" >&2
     done
   } | jq -s .
-}
+)
 metrics_queue_events() {
   # Alert delivery/handling is observation, not progress. Do not let our own
   # alerts end the episode they describe. Preserve original event timestamps.
@@ -210,9 +219,9 @@ metrics_collect() {
   events=$(metrics_queue_events) || return 1
   for host in $DV_HOSTS; do
     if [ "$host" = "$DV_HOST" ]; then
-      rows=$(bid_limit "$DV_BID_TIMEOUT" "$DV_ROOT/bin/dv" _metrics-sample --events "$events") || continue
+      rows=$(printf '%s\n' "$events" | bid_limit "$DV_BID_TIMEOUT" "$DV_ROOT/bin/dv" _metrics-sample --events -) || continue
     else
-      rows=$(bid_limit "$DV_BID_TIMEOUT" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$(shell_join dv _metrics-sample --events "$events")") || continue
+      rows=$(printf '%s\n' "$events" | bid_limit "$DV_BID_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" "$(shell_join dv _metrics-sample --events -)") || continue
     fi
     printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null 2>&1 || continue
     while IFS= read -r row; do
