@@ -288,6 +288,14 @@ case_capacity_omp_session() {
   test "$(grep -c 'Continue the interrupted request' "$DV_STATE/OM-1/sent-input")" = 1
   jq -se 'map(.kind)==["waiting-capacity","done"]' "$DV_STATE/OM-1/events.log"
 }
+case_capacity_omp_home_session() {
+  export DV_WORK="$HOME/dv/wt"
+  # Use the observed omp directory and provider record, independently of the
+  # lookup helper: finding the wrong directory must fail the recovery test.
+  export OMP_FIXTURE_SESSION_DIR="$DV_OMP_SESSIONS/-dv-wt-repo omp-session-OM-1"
+  export OMP_FIXTURE_ERROR='{"errorStatus":402,"errorMessage":"every provider within your price limit is busy or rate-limited right now; billing_error","retry-after-ms":120000}'
+  case_capacity_omp_session
+}
 case_capacity_agent_lines() {
   bidding_functions
   local agent line state="$CASE_DIR/no-session"

@@ -199,3 +199,18 @@ case_reconcile_timeout_default() {
   source "$ROOT/config.example.sh"
   test "$DV_STATUS_TIMEOUT" = 17
 }
+case_reconcile_submissions_large_row() {
+  bidding_functions
+  # shellcheck source=lib/reconcile.sh
+  source "$ROOT/lib/reconcile.sh"
+  DV_HOST=work DV_MANAGER_HOST=work
+  mkdir -p "$DV_HOME/submissions/LN-9"
+  jq -n '{issue:"LN-9",status:"working",host:"h1",token:"t1"}' > "$DV_HOME/submissions/LN-9/task.json"
+  # A landed appserver job can carry a status row over Linux's 128 KiB
+  # single-argument limit (go2-linux LN-135: 286 KB on 10-24).
+  local rows
+  head -c 200000 /dev/zero | tr '\0' 'x' > "$CASE_DIR/pad"
+  rows=$(jq -cR '[{issue:"LN-9",status:"landed",host:"h1",award_token:"t1",head:"abc",last_log:.}]' "$CASE_DIR/pad")
+  reconcile_submissions h1 "$rows"
+  jq -e '.status=="completed" and .head=="abc"' "$DV_HOME/submissions/LN-9/task.json"
+}

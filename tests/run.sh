@@ -1628,6 +1628,28 @@ case_agent_transcripts() {
   test "$(agent_transcript_root agy)" = "$DV_AGY_SESSIONS"
   if agent_transcript_root devin; then return 1; fi
 }
+case_agent_transcripts_omp_home() {
+  bidding_functions
+  local physical_home wt expected sibling
+  physical_home=$(cd "$HOME" && pwd -P)
+  wt="$physical_home/dv/wt/my repo.v2-T_1"
+  expected="$DV_OMP_SESSIONS/-dv-wt-my repo.v2-T_1"
+  mkdir -p "$wt" "$expected"
+  test "$(agent_transcript_dir omp "$wt")" = "$expected"
+  test "$(agent_transcript omp "$wt")" = "$expected"
+  # A shared prefix is not a descendant of HOME.
+  sibling="${physical_home}-other/dv/wt/T_1"
+  test "$(agent_transcript_dir omp "$sibling")" = "$DV_OMP_SESSIONS/--$(printf '%s' "${sibling#/}" | tr / -)--"
+  # Callers use physical paths even when HOME itself is a symlink.
+  ln -s "$HOME" "$CASE_DIR/home-link"
+  # Expand variables in the child shell after env has supplied its HOME.
+  # shellcheck disable=SC2016
+  test "$(env HOME="$CASE_DIR/home-link" bash -c '
+    DV_ENTRY="$ROOT/bin/dv"
+    source "$ROOT/lib/common.sh"
+    agent_transcript_dir omp "$1"
+  ' _ "$wt")" = "$expected"
+}
 case_revive_transcript() {
   repo revive-transcript; herdr_setup
   local state="$DV_STATE/RT-1" wt dir
@@ -2489,6 +2511,8 @@ source "$ROOT/tests/bidding-order.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/manager.sh"
 # shellcheck source=/dev/null
+source "$ROOT/tests/repo-identity.sh"
+# shellcheck source=/dev/null
 source "$ROOT/tests/revive.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/appserver.sh"
@@ -2765,6 +2789,7 @@ source "$ROOT/tests/search-scope.sh"
 registered_cases() {
   printf '%s\n' qa_labels_large_comment qa_labels_large_create qa_labels_missing qa_labels_failure
   printf '%s\n' screen_large_hook screen_large_folder screen_large_goal screen_large_ready screen_large_accept screen_large_panes job_large_nproc job_large_memory dsh_large_stderr_polling dsh_large_stderr_exit
+  printf '%s\n' agent_transcripts_omp_home capacity_omp_home_session stall_omp_home_session
   printf '%s\n' dsh_success dsh_restart dsh_followup_restart dsh_fallback dsh_resume dsh_stall dsh_capacity dsh_not_ready dsh_key
   printf '%s\n' dsh_quota dsh_crash_fallback dsh_completion_gate dsh_last_status dsh_jail dsh_jail_plan dsh_jail_nonlinux_log dsh_jail_unavailable dsh_host_sync dsh_host_probe
   printf '%s\n' dsh_delivery dsh_herdr_fallback
@@ -2779,6 +2804,7 @@ registered_cases() {
   autofill_submit autofill_branch_slug autofill_dependencies autofill_order autofill_alarm autofill_duplicates autofill_errors autofill_brief autofill_missing_brief autofill_manager_alarm autofill_watch autofill_pages autofill_children autofill_shared_hosts autofill_event_cadence autofill_repository_events autofill_slot_release_events autofill_cancel_event autofill_label_event qa_merge_commit_event \
   status_cached_many status_cache_notifications status_cache_missing status_cache_live watch_status_slow watch_status_single recovery_sweep_progress \
   task_tmux_done_failed_status task_herdr_done_failed_status task_tmux_failed_status task_herdr_failed_status code_tmux_failed_status code_herdr_failed_status code_tmux_failed_stall code_herdr_failed_stall \
+  bid_clone_equivalent_urls bid_clone_distinct_urls bid_reject_default_port bid_repo_slug_identity manager_identity_urls \
   config_work_fallback config_work_existing bid_work_unwritable bid_work_paths bid_overload award_error_detail \
   appserver_sender_close \
   metrics_restart_slow_start \

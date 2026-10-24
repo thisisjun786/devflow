@@ -369,6 +369,12 @@ devflow는 PR 생성, QA finding 등록, 입찰 snapshot 변경, 확인된 병�
 
 시온은 lina-os에서 `dv submit ~/code/my-app APP-42 fix-save --brief /path/brief.md`를 실행합니다. `DV_MANAGER_HOST` 기본값은 lina-os이며, 다른 호스트의 submit은 기존 SSH 연결로 관리자에게 브리프 내용을 전송합니다. 개발 호스트에 관리자 방향 SSH 키가 없어도 관리자에서 제출하면 됩니다. `DV_HOSTS`에는 배정 가능한 SSH 별칭을 적고, 모든 호스트에 같은 버전의 dv를 둡니다. 원격 저장소가 있는 로컬 경로는 origin URL로 전달합니다. 각 호스트는 `$DV_REPO_ROOT`(기본 `~/code`)의 같은 이름 clone을 확인하고, 없으면 낙찰 후 clone합니다. 이름이 같은 다른 origin은 덮어쓰지 않습니다. 원격 없는 경로는 해당 경로가 있는 호스트만 입찰합니다.
 
+GitHub 저장소는 HTTPS·HTTP·`git@github.com:`·`ssh://` 주소의 대소문자,
+끝의 `/`와 `.git`, 각 프로토콜의 기본 포트(HTTPS 443, HTTP 80, SSH 22)를
+정규화해 같은 저장소로 비교합니다. clone 재사용, `DV_BID_REJECT_REPOS` 제외 목록,
+manager 식별에 같은 규칙을 쓰며 GitHub clone 대상 이름은 소문자로 정합니다.
+다른 호스트·소유자·저장소와 비기본 포트는 구분하고, 기존 origin은 바꾸지 않습니다.
+
 `--agent` 없이 제출하면 브리프의 줄 하나로 기본 에이전트를 고릅니다. `Route: writing`(문서·이슈·PR 글·조사처럼 글만 쓰는 작업)은 `DV_ROUTE_WRITING`(기본 agy), `Route: small`(한 패키지, 약 200줄 이하 예상)은 `DV_ROUTE_SMALL`(기본 dsh)로 보냅니다. 줄이 없거나 `Route: default`이면 `DV_AGENT`입니다. `--agent`와 Codex 전용 `--mode auto|exec`가 항상 우선하며, 대상 값을 비우면(`DV_ROUTE_SMALL=`) 그 경로를 끕니다. 다른 값은 오타로 보고 제출을 거절합니다. 선택 결과는 stderr에 한 줄 남기고 제출 기록의 `agent`에 저장됩니다.
 
 `dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 학습한 상한에 적용하는 선택적 upper bound이며 기본값은 비어 있습니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`, agy·grok·cursor `models`, omp provider·키 설정을 사용하며([에이전트](#에이전트)), 다른 CLI는 `DV_AGENT_READY_<agent>`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
@@ -619,6 +625,9 @@ finding 기록을 보존하며 Codex가 thread ID를 제공했다면 `exec resum
 Claude QA는 세션을 저장하지 않는 기존 설정을 유지하고 같은 checkout과 원래 브리프로 이어갑니다.
 터미널은 현재 화면을 사용하고, 이후 `Pursuing goal`·`Working`·`Thinking` 배너가 나오면 옛 오류를 무시합니다.
 Codex·Claude는 화면의 모든 줄을 분류합니다. omp는 화면 대신 이번 실행 뒤 `DV_OMP_SESSIONS`에 쓴 세션 JSONL의
+기록을 읽습니다. omp 18.12의 홈 아래 worktree는 `-<홈 기준 상대 경로>` 디렉터리에서,
+홈 바깥 worktree는 `--<절대 경로>--` 디렉터리에서 찾습니다(경로 구분자는 `-`로 치환).
+용량 대기와 text-tool 재시작이 같은 경로 조회를 사용합니다. 세션의
 마지막 message가 `stopReason:"error"`이고 `errorStatus` 429이거나 오류 문구가 위 분류에 맞을 때만 기다리며,
 그 뒤 입력이나 응답이 기록되면 대기를 끝냅니다. 세션 기록이 없는 omp와 Devin·agy·grok·cursor는
 `Error:`·`API Error: 429`처럼 오류 메시지로 시작하는 줄만 분류합니다. 도구 출력에 보인 시험 이름이나 문서의

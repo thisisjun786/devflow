@@ -8,15 +8,7 @@ manager_identity() {
     origin=$(git -C "$repo" config --get remote.origin.url 2>/dev/null || true)
     [ -z "$origin" ] || repo=$origin
   fi
-  repo=${repo%/}; repo=${repo%.git}
-  case "$repo" in
-    https://github.com/*) repo="github.com/${repo#https://github.com/}" ;;
-    http://github.com/*) repo="github.com/${repo#http://github.com/}" ;;
-    git@github.com:*) repo="github.com/${repo#git@github.com:}" ;;
-    ssh://git@github.com/*) repo="github.com/${repo#ssh://git@github.com/}" ;;
-  esac
-  case "$repo" in github.com/*) repo=$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]') ;; esac
-  printf '%s\n' "$repo"
+  repo_identity "$repo"
 }
 manager_dir() {
   local key dir
