@@ -618,8 +618,10 @@ cmd_status() {
         agent_status=$(codex_exec_status "$(dirname "$path")")
         last=$(tail -n 1 "$(dirname "$path")/agent.jsonl" 2>/dev/null | tail -c 200 || true)
       elif [ "$backend" = qa ]; then
-        if codex_exec_alive "$(dirname "$path")"; then alive=true; fi
         agent_status=$(jq -r .status "$path")
+        if qa_job_alive "$(dirname "$path")"; then alive=true
+        elif [ "$agent_status" = running ]; then agent_status=failed
+        fi
       elif [ "$backend" = herdr ]; then
         pane=$(jq -r '.herdr_pane // empty' "$path")
         if [ -n "$pane" ]; then
@@ -688,7 +690,7 @@ cmd_status() {
       row=$(printf '%s\n' "$row" | jq -c '.capacity_retry_at=(.capacity.next_try_at // null) |
         if .status=="waiting-capacity" and .agent_dead!=true then .agent_status="waiting-capacity" else . end')
       if [ "$agent_status" = failed ] &&
-        { [ "$agent_dead" = true ] || { [ "$backend" = exec ] && [ "$alive" = false ]; }; }; then
+        { [ "$agent_dead" = true ] || { { [ "$backend" = exec ] || [ "$backend" = qa ]; } && [ "$alive" = false ]; }; }; then
         row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
       fi
       if [ "$agent_exit_code" != null ]; then

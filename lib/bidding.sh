@@ -74,13 +74,17 @@ bid_repo() {
   fi
 }
 bid_active() {
-  local path revived
+  local path revived backend
   for path in "$DV_STATE"/*/meta; do
     [ -f "$path" ] || continue
     [ ! -f "$(dirname "$path")/agent.exit" ] || continue
-    if jq -e '.backend=="exec"' "$path" >/dev/null; then
-      codex_exec_alive "$(dirname "$path")" || continue
-    fi
+    # A backend that lost its processes without an exit record no longer holds
+    # the slot; its state stays for inspection until dv clean.
+    backend=$(jq -r '.backend // "tmux"' "$path" 2>/dev/null) || backend=''
+    case "$backend" in
+      exec) codex_exec_alive "$(dirname "$path")" || continue ;;
+      qa) qa_job_alive "$(dirname "$path")" || continue ;;
+    esac
     revived=$(cat "$(dirname "$path")/revive/id" 2>/dev/null) || revived=''
     # Release on this run's completion before its done event wakes scheduling;
     # historical or manual completions must still leave the revival counted.

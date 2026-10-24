@@ -678,7 +678,9 @@ QA 하나를 최신 관측 base head에 제출합니다. 실행 중 추가 병�
 
 QA도 일반 작업과 같은 호스트 입찰·admission·`DV_MAX_JOBS` 슬롯을 사용하므로
 서로 다른 저장소는 여러 호스트에서 병렬 실행됩니다. 준비 중인 clone과
-`waiting-capacity`도 자리를 유지합니다. 저장소별 실행 요청은 고정하고, 같은 head의
+`waiting-capacity`도 자리를 유지합니다. 실행기나 그 자식 프로세스가 `agent.exit` 없이
+죽으면(예: 호스트 재부팅) 그 작업은 슬롯을 반환하고 `dv status`는 `failed`로 보여 주며,
+임시 clone은 `dv clean` 전까지 남습니다. 저장소별 실행 요청은 고정하고, 같은 head의
 작업을 중복 제출하지 않습니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이며
 repo identifier에는 owner, 안전한 repo 이름과 checksum이 들어갑니다.
 `dv qa status --json`은 scheduler의 저장소별 pending/running을,
