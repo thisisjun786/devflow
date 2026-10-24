@@ -34,6 +34,20 @@ case_dsh_restart() {
   jq -se 'length==2 and all(.[]; (.args|index("--session-id"))==null) and (.[1].instruction|contains("wip=committed"))' "$DV_STATE/DS-1/dsh-runs.jsonl"
   test -z "$(git -C "$(jq -r .worktree "$DV_STATE/DS-1/meta")" status --porcelain)"
 }
+case_dsh_followup_restart() {
+  dsh_setup followup
+  dsh_start_wait
+  local text='Fix the P1 finding in lib/widget.sh only'
+  dv send DS-1 "$text"
+  exec_wait DS-1
+  # The follow-up ran on the stored session; its fresh restart must keep the
+  # follow-up request instead of dropping it for the original brief alone.
+  jq -se --arg text "$text" 'length==3 and
+    (.[1].args|index("--session-id")!=null) and
+    (.[2].args|index("--session-id")==null) and
+    (.[2].instruction|contains($text))' "$DV_STATE/DS-1/dsh-runs.jsonl"
+  jq -e '.exec_status=="done"' "$DV_STATE/DS-1/meta"
+}
 case_dsh_fallback() {
   needs_tmux
   dsh_setup unfinished
