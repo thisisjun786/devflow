@@ -13,7 +13,7 @@ stall_omp_candidates() {
 # Text forms seen from DeepSeek V4.1 Flash via InferHub (10-24 sample, 40
 # sessions): [tool_use id=.. name=..] with a JSON body, <tool_use id=..>,
 # <function_calls>/<invoke name=..> XML, antml-prefixed XML and <tool_call>.
-STALL_OMP_TEXT_TOOL='\[tool_use id=|<tool_use id=|<invoke name=|<function_calls>|<tool_call>|antml:invoke'
+STALL_OMP_TEXT_TOOL='\[tool_use|<tool_use id=|<invoke|<function_calls>|<tool_call>|antml:invoke'
 # Read the newest session written by this launch. A later user/tool message or
 # an incomplete final JSON line supersedes the old assistant turn. Stream the
 # log so long sessions do not need to fit in memory or one shell argument.
@@ -108,6 +108,7 @@ stall_omp_restart_prompt() {
   tree=$(git -C "$WT" status --short | sed -n '1,25p')
   printf 'This is a fresh omp session for the same job %s. The previous session stopped because a tool call came back as plain text, so nothing ran.\n' "$ISSUE"
   printf 'Use real tool calls only. Never write a tool call as text ([tool_use ...], <invoke ...>, <function_calls>).\n'
+  printf 'Call tools only through tool_use (actual tool calls), never as text. Do not prefix tool names with _ (for example, use bash).\n'
   printf 'Read %s/brief.md first; %s/report.md if present.\n' "$S" "$S"
   printf 'Worktree %s, branch %s (base %s), job status %s. Do not create a new branch or force push.\n' "$WT" "$BRANCH" "$BASE" "$status"
   printf 'Recovery preparation: wip=%s, pushed=%s. If either failed, inspect git and finish saving the work.\n' "$wip" "$pushed"

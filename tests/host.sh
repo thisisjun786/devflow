@@ -4,6 +4,9 @@
 host_setup() {
   export HOME="$CASE_DIR/host home" HOST_FIXTURES="$ROOT/tests/fixtures"
   export DV_HOST_SHELL="$HOST_FIXTURES/host-shell"
+  # Never run an installed omp against a fixture HOME during sync.
+  export DV_OMP_BIN="$HOME/system/omp"
+  unset DV_OMP_COMPACT_TOKENS
   mkdir -p "$HOME" "$CASE_DIR/host-bin" "$HOME/system"
   printf 'export PATH="$HOME/system:/usr/bin:/bin"\n' > "$HOME/.profile"
   cp "$HOME/.profile" "$HOME/.zshenv"
@@ -128,6 +131,52 @@ case_host_sync_failure() {
   test ! -e "$HOME/.local/go/go"
   if HOST_BAD_VERSION=0.0.0 "$HOST_DV" host sync > "$CASE_DIR/bad.txt" 2>&1; then return 1; fi
   test ! -e "$HOME/.local/go/go"
+}
+case_host_omp_compaction() {
+  host_setup
+  host_fake "$DV_OMP_BIN" 1.2.3
+  "$HOST_DV" host check --json > "$CASE_DIR/before.json"
+  jq -e '.omp.compaction | .expected==200000 and .login.value==0 and .ssh.status=="mismatch"' "$CASE_DIR/before.json"
+  "$HOST_DV" host check > "$CASE_DIR/before.txt"
+  grep -F 'WARNING: omp compaction.thresholdTokens' "$CASE_DIR/before.txt"
+  test ! -e "$HOME/omp-writes"
+  "$HOST_DV" host sync > "$CASE_DIR/sync.txt"
+  test "$(cat "$HOME/omp-threshold")" = 200000
+  grep -Fx 'config set compaction.thresholdTokens 200000' "$HOME/omp-writes"
+  cp "$HOME/omp-writes" "$CASE_DIR/writes.before"
+  "$HOST_DV" host sync > "$CASE_DIR/sync2.txt"
+  cmp "$HOME/omp-writes" "$CASE_DIR/writes.before"
+  "$HOST_DV" host check --json > "$CASE_DIR/after.json"
+  jq -e '.omp.compaction | .login.value==200000 and .login.status=="ok" and .ssh.status=="ok"' "$CASE_DIR/after.json"
+  "$HOST_DV" host check > "$CASE_DIR/after.txt"
+  grep -F 'omp compaction.thresholdTokens expected=200000' "$CASE_DIR/after.txt"
+  if grep -F 'WARNING: omp compaction.thresholdTokens' "$CASE_DIR/after.txt"; then return 1; fi
+  export DV_OMP_COMPACT_TOKENS=150000
+  "$HOST_DV" host sync > "$CASE_DIR/override.txt"
+  test "$(cat "$HOME/omp-threshold")" = 150000
+  test "$(wc -l < "$HOME/omp-writes" | tr -d ' ')" = 2
+  "$HOST_DV" host check --json > "$CASE_DIR/override.json"
+  jq -e '.omp.compaction | .expected==150000 and .ssh.value==150000 and .ssh.status=="ok"' "$CASE_DIR/override.json"
+}
+case_host_omp_compaction_failure() {
+  host_setup
+  host_fake "$DV_OMP_BIN" 1.2.3
+  if HOST_OMP_GET_FAIL=1 "$HOST_DV" host sync > "$CASE_DIR/get-fail.txt" 2>&1; then return 1; fi
+  test ! -e "$HOME/omp-writes"
+  HOST_OMP_GET_FAIL=1 "$HOST_DV" host check --json > "$CASE_DIR/unavailable.json"
+  jq -e '.omp.compaction.ssh | .status=="unavailable" and .value==null' "$CASE_DIR/unavailable.json"
+  if HOST_OMP_SET_FAIL=1 "$HOST_DV" host sync > "$CASE_DIR/set-fail.txt" 2>&1; then return 1; fi
+  test ! -e "$HOME/omp-threshold"
+  if DV_OMP_COMPACT_TOKENS=invalid "$HOST_DV" host sync > "$CASE_DIR/invalid.txt" 2>&1; then return 1; fi
+  grep -F 'DV_OMP_COMPACT_TOKENS' "$CASE_DIR/invalid.txt"
+}
+case_host_omp_compaction_missing() {
+  host_setup
+  "$HOST_DV" host sync > "$CASE_DIR/missing.txt"
+  test ! -e "$HOME/omp-writes"
+  test ! -e "$HOME/.omp"
+  "$HOST_DV" host check --json > "$CASE_DIR/missing.json"
+  jq -e '.omp.compaction | .login.status=="missing" and .ssh.status=="missing"' "$CASE_DIR/missing.json"
 }
 case_host_path_guard() {
   host_setup

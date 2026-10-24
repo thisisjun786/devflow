@@ -57,6 +57,7 @@ fi
 : "${DV_CLAUDE_EFFORT:=xhigh}"
 : "${DV_DEVIN_MODEL:=fusion-gpt-6-astra-xhigh-sidekick-swe-2-high}"
 : "${DV_OMP_MODEL:=inferhub/deepseek-v4.1-flash}" # provider/model; custom providers live in ~/.omp/agent/models.yml
+: "${DV_OMP_COMPACT_TOKENS:=200000}" # host sync: positive fixed compaction threshold; host check reports drift
 : "${DV_OMP_RESTART_GAP:=180}" # minimum seconds between text-tool session restarts per job
 : "${DV_OMP_RESTART_SETTLE:=2}" # seconds after /new before sending the state summary
 : "${DV_AGY_MODEL:=gemini-4-argon}" # Argon at medium effort; the TUI ignores gemini-4-argon-medium

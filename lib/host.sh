@@ -131,9 +131,39 @@ host_probe_codex() (
     -c 'web_search="disabled"' 'Reply with exactly OK. Do not use any tools.' </dev/null >/dev/null 2>&1 || rc=$?
   exit "$rc"
 )
+host_omp_compaction() {
+  local path=$1 bin value=null status=missing output
+  [[ "$DV_OMP_COMPACT_TOKENS" =~ ^[1-9][0-9]{0,8}$ ]] || fail 'DV_OMP_COMPACT_TOKENS must be a positive integer (at most 9 digits)'
+  bin=$(host_resolve "$path" "$DV_OMP_BIN")
+  if [ -n "$bin" ] && [ -x "$bin" ]; then
+    status=unavailable
+    if output=$(PATH="$path" host_limit 10 "$bin" config get compaction.thresholdTokens --json 2>/dev/null) &&
+      printf '%s\n' "$output" | jq -e '.key=="compaction.thresholdTokens" and has("value") and
+        ((.value|type)=="number" or .value==null)' >/dev/null 2>&1; then
+      value=$(printf '%s\n' "$output" | jq -c .value)
+      status=mismatch
+      [ "$value" != "$DV_OMP_COMPACT_TOKENS" ] || status=ok
+    fi
+  fi
+  jq -cn --arg path "$bin" --argjson value "$value" --arg status "$status" \
+    '{path:$path,value:$value,status:$status}'
+}
+host_omp_compaction_sync() {
+  local measured status bin
+  measured=$(host_omp_compaction "$PATH") || return 1
+  status=$(printf '%s\n' "$measured" | jq -r .status)
+  case "$status" in
+    missing|ok) return 0 ;;
+    unavailable) fail 'could not read omp compaction.thresholdTokens; configuration unchanged' ;;
+  esac
+  bin=$(printf '%s\n' "$measured" | jq -r .path)
+  host_limit 10 "$bin" config set compaction.thresholdTokens "$DV_OMP_COMPACT_TOKENS" ||
+    fail 'could not set omp compaction.thresholdTokens'
+}
 host_check() {
   local json=0 probe=0 rows login_path ssh_path name version install scope login ssh tools_json auth='{}' result
   local proxy=false codex_login codex_ssh probe_result='{"status":"not-requested"}' rc=0 bin
+  local omp_login omp_ssh
   for arg in "$@"; do
     case "$arg" in --json) json=1 ;; --probe-codex) probe=1 ;; *) fail 'usage: dv host check [--json] [--probe-codex]' ;; esac
   done
@@ -159,6 +189,8 @@ host_check() {
     grep -Eq 'opencodex|OPENCODEX_API_AUTH_TOKEN' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null; then proxy=true; fi
   codex_login=$(host_codex_launcher "$login_path" "$proxy")
   codex_ssh=$(host_codex_launcher "$ssh_path" "$proxy")
+  omp_login=$(host_omp_compaction "$login_path") || return 1
+  omp_ssh=$(host_omp_compaction "$ssh_path") || return 1
   if [ "$probe" = 1 ]; then
     bin=$(printf '%s' "$codex_ssh" | jq -r .path)
     if [ "$(printf '%s' "$codex_ssh" | jq -r .status)" != ok ]; then
@@ -172,7 +204,9 @@ host_check() {
     --arg configured "$DV_CODEX_BIN" --argjson proxy "$proxy" --argjson auth "$auth" \
     --argjson login "$codex_login" --argjson ssh "$codex_ssh" --argjson probe "$probe_result" --argjson onboarding "$(claude_onboarding)" \
     --argjson watcher "$(self_update_watch_status)" --argjson disk "$(disk_info)" --argjson tmp "$(tmp_quota_info)" --argjson limits "$(job_host_info)" \
-    '{host:$host,shell:$shell,tools:.,auth:$auth,watcher:$watcher,tmp:$tmp,job_limits:$limits,codex:{configured:$configured,proxy:$proxy,login:$login,ssh:$ssh,probe:$probe},claude:{onboarding:$onboarding}} + $disk')
+    --argjson omp_login "$omp_login" --argjson omp_ssh "$omp_ssh" --argjson compact_tokens "$DV_OMP_COMPACT_TOKENS" \
+    '{host:$host,shell:$shell,tools:.,auth:$auth,watcher:$watcher,tmp:$tmp,job_limits:$limits,codex:{configured:$configured,proxy:$proxy,login:$login,ssh:$ssh,probe:$probe},claude:{onboarding:$onboarding},
+      omp:{compaction:{expected:$compact_tokens,login:$omp_login,ssh:$omp_ssh}}} + $disk')
   if [ "$json" = 1 ]; then printf '%s\n' "$result"
   else
     printf 'Host: %s (local login / non-interactive SSH shell startup)\n' "$DV_HOST"
@@ -183,6 +217,10 @@ host_check() {
     printf '%s\n' "$result" | jq -r '.tools[] | "\(.name) expected=\(.expected)\n  login: \(.login.status) \(.login.version) \(.login.path) \(.login.reason)\n  ssh:   \(.ssh.status) \(.ssh.version) \(.ssh.path) \(.ssh.reason)"'
     printf '%s\n' "$result" | jq -r '.auth | to_entries[] | "auth \(.key): login=\(.value.login) ssh=\(.value.ssh)"'
     printf '%s\n' "$result" | jq -r '.claude.onboarding | "claude onboarding: hasCompletedOnboarding=\(.hasCompletedOnboarding) skipDangerousModePermissionPrompt=\(.skipDangerousModePermissionPrompt)"'
+    printf '%s\n' "$result" | jq -r '.omp.compaction |
+      "omp compaction.thresholdTokens expected=\(.expected)\n  login: \(.login.status) \(.login.value // "unset")\n  ssh:   \(.ssh.status) \(.ssh.value // "unset")",
+      (if any(.login,.ssh; .status=="mismatch" or .status=="unavailable") then
+        "WARNING: omp compaction.thresholdTokens differs or is unavailable; run dv host sync" else empty end)'
     printf '%s\n' "$result" | jq -r '.codex | "DV_CODEX_BIN=\(.configured) proxy=\(.proxy)\n  login: \(.login.status) \(.login.path)\n  ssh:   \(.ssh.status) \(.ssh.path)\n  codex probe: \(.probe.status)"'
   fi
   [ "$rc" = 0 ]
@@ -357,6 +395,7 @@ host_sync() (
       *) fail "unsupported installer: $install" ;;
     esac
   done <<< "$rows"
+  host_omp_compaction_sync
   host_path_update "$HOME/.profile" "$brew"; host_path_update "$HOME/.zshenv" "$brew"
   if [ -z "$missing_apt" ]; then :
   elif [ "$os" = darwin ]; then
