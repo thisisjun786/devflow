@@ -29,6 +29,10 @@ stall_omp_count() {
   jq -se --argjson n "$1" '[.[]|select(.[0:2]==["agent","prompt"])]|length==$n' "$CASE_DIR/herdr/calls"
 }
 stall_omp_prompts() {
+  jq -Rse --arg pattern "$STALL_OMP_TEXT_TOOL" '
+    . as $input | (test($pattern) | not) and
+    all(["[tool_use", "tool_use", "<invoke", "<function_calls>", "<tool_call>", "antml", " _"][];
+      . as $forbidden | $input | contains($forbidden) | not)' "$DV_STATE/ST-1/sent-input"
   jq -se '[.[]|select(.[0:2]==["agent","prompt"])|.[3]] |
     length>0 and length%2==0' "$CASE_DIR/herdr/calls" >/dev/null
   jq -se --arg state "$DV_STATE/ST-1" --arg wt "$REPO" '
@@ -37,14 +41,19 @@ stall_omp_prompts() {
       $calls[$i][2:]==["w-ST-1:p1","/new"] and
       ($calls[$i+1][3:] | join("\n") | contains("ST-1") and contains($state+"/brief.md") and
         contains($state+"/report.md") and contains($wt) and contains("fix/st-1") and
-        contains("base main") and contains("real tool calls") and contains("transcripts") and
-        contains("dv done ST-1")))' "$CASE_DIR/herdr/calls"
+        contains("base main") and contains("The previous session ended without running its last step.") and
+        contains("transcripts") and contains("dv done ST-1")))' "$CASE_DIR/herdr/calls"
 }
 stall_omp_origin() {
   git init -q --bare "$CASE_DIR/remote.git"
   git -C "$REPO" config url."$CASE_DIR/remote.git".insteadOf https://github.com/test/repo.git
   git -C "$REPO" remote add origin https://github.com/test/repo.git
   git -C "$REPO" push -qu origin main fix/st-1
+}
+case_stall_omp_restart() {
+  stall_omp_fixture
+  stall_omp_scan; stall_omp_count 2
+  stall_omp_prompts
 }
 case_stall_omp_once() {
   stall_omp_fixture
@@ -66,7 +75,7 @@ case_stall_omp_once() {
   test ! -e "$DV_STATE/ST-1/revive"
   test ! -f "$DV_STATE/ST-1/stall-recovery.json"
   test ! -s "$DV_HOME/kick.q"
-  grep -F 'Call tools only through tool_use (actual tool calls), never as text. Do not prefix tool names with _ (for example, use bash).' "$DV_STATE/ST-1/sent-input"
+  grep -F 'The previous session ended without running its last step.' "$DV_STATE/ST-1/sent-input"
 }
 case_stall_omp_patterns() {
   stall_omp_fixture
@@ -876,6 +885,8 @@ stall_recovery_worker() (
   else dv send SR-1 'resume after failed event' || rc=$?; fi
   printf '%s\n' "$rc" > "$CASE_DIR/$kind.exit"
 )
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 stall_recovery_race() {
   local first=$1 second=$2 tries calls count pid
   repo stalled-recovery; herdr_setup; bidding_functions

@@ -42,6 +42,9 @@ case_screen_markers() {
     dv status ST-1 --json | jq -e '.[0] | .goal_active and (.goal_stalled|not)'
   done
 }
+# Fixture functions are called indirectly by loaded helpers.
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034,SC2317,SC2329
 case_screen_goal_markers() {
   bidding_functions
   local marker
@@ -64,6 +67,9 @@ case_screen_goal_markers() {
     return 1
   fi
 }
+# Fixture functions are called indirectly by loaded helpers.
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034,SC2317,SC2329
 case_screen_prompt_markers() {
   repo prompt; herdr_setup; bidding_functions
   local marker pattern

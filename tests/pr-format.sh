@@ -2,6 +2,8 @@
 # PR title, body and branch formats: disposable repositories, gh stub, fake agent.
 # shellcheck disable=SC2016
 pr_format_libraries() {
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   DV_ENTRY="$ROOT/bin/dv"
   # shellcheck source=lib/common.sh
   source "$ROOT/lib/common.sh"
@@ -184,6 +186,8 @@ case_pr_format_instructions() {
   grep -F 'PULL_REQUEST_TEMPLATE.md' "$ROOT/templates/rules.md"
   grep -F '<type>/<번호>-<slug>' "$ROOT/templates/rules.md"
   test "$(grep -c 'type(scope): subject' "$ROOT/skills/devflow/SKILL.md")" = 1
+  # Preserve the existing probe and final README assertion in this lint change.
+  # shellcheck disable=SC2251
   ! grep -F '`<ISSUE>: ...`' "$ROOT/templates/rules.md" "$ROOT/AGENTS.md"
   grep -F '<type>/<n>-<slug>' "$ROOT/README.md"
 }

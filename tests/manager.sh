@@ -2,6 +2,8 @@
 # shellcheck disable=SC2016
 manager_setup() {
   repo manager
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   export DV_MANAGER_HOST="$DV_HOST" DV_MANAGER_AGENT=hermes DV_HERMES_BIN="$ROOT/tests/fixtures/manager-hermes"
   export DV_HOSTS='' DV_PULL_HOSTS='' DV_WORKER_CMD='' DV_WATCH_INTERVAL=0.05 DV_RECONCILE_INTERVAL=1800
   export DV_MANAGER_MAX_WAIT=120
@@ -316,6 +318,37 @@ case_manager_local() {
   manager_watch_until 2
   jq -se '.[1].resume=="session-1"' "$CASE_DIR/hermes/calls"
 }
+manager_remote_repo_case() {
+  manager_setup
+  git -C "$REPO" remote add origin https://github.com/example/project.git
+  dv manager start "$REPO"
+  export SSH_MANAGER_REPO=$1
+  local dir watcher
+  dir=$(dirname "$(manager_meta)")
+  test ! -d /Users/x/code/repo
+  mkdir -p "$DV_HOME/submissions/M-1"
+  jq -cn '{repo:"/Users/x/code/repo",host:"remote-box",status:"completed"}' > "$DV_HOME/submissions/M-1/task.json"
+  # Hold either route so its durable queue record remains available to inspect.
+  touch "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/hold-worker"
+  dv-kick pr-ready M-1 'remote checkout event' remote-box abc
+  dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
+  manager_wait_calls 2
+  if [ "$1" = success ]; then
+    jq -e '.event.id=="remote-box:M-1:pr-ready:abc"' "$dir"/pending/*.json
+    test "$(find "$DV_HOME/pending" -name '*.json' | wc -l | tr -d ' ')" = 0
+    jq -se '.[1].resume=="session-1"' "$CASE_DIR/hermes/calls"
+  else
+    jq -e '.id=="remote-box:M-1:pr-ready:abc"' "$DV_HOME/pending/0.json"
+    test "$(find "$dir/pending" -name '*.json' | wc -l | tr -d ' ')" = 0
+    jq -se '.[1].resume==""' "$CASE_DIR/hermes/calls"
+  fi
+  # Even a failed lookup must reach SSH; returning the path happens to fall back too.
+  test -f "$CASE_DIR/manager-origin-lookup"
+  rm "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/hold-worker"
+  touch "$DV_HOME/stop"; wait "$watcher"
+}
+case_manager_remote_repo() { manager_remote_repo_case success; }
+case_manager_remote_repo_failure() { manager_remote_repo_case failure; }
 case_manager_stop_pending() {
   manager_setup
   dv manager start "$REPO"; dv manager stop "$REPO"
@@ -392,6 +425,8 @@ case_manager_unknown_repo() {
   manager_watch_until 2
   jq -se '.[1].resume==""' "$CASE_DIR/hermes/calls"
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_manager_reused_issue() {
   manager_setup
   git -C "$REPO" remote add origin https://github.com/example/first.git
@@ -436,6 +471,96 @@ case_manager_moved_checkout() {
   manager_event M-1 "$REPO"
   manager_watch_until 2
   jq -se --arg repo "$root" '.[1].resume=="session-1" and .[1].cwd==$repo and (.[1].args|index("--no-restore-cwd")!=null)' "$CASE_DIR/hermes/calls"
+}
+case_manager_stale_lock() {
+  manager_setup
+  dv manager start "$REPO"
+  manager_functions
+  local dir runner active=0 manager_pids='' pids=''
+  dir=$(dirname "$(manager_meta)")
+  touch "$CASE_DIR/hermes/hold-resume" "$dir/run.lock/keep"
+  manager_event M-1 "$REPO"
+  manager_enqueue "$(sed -n '1p' "$DV_HOME/kick.q")" "$CASE_DIR/brief" 0
+  # Give the fake turn its own process group, like a service control group.
+  set -m
+  manager_dispatch
+  runner=$!
+  set +m
+  manager_wait_calls 2
+  wait_file "$CASE_DIR/hermes/active-session-1"
+  for _ in {1..200}; do
+    [ -f "$CASE_DIR/hermes/lock" ] || break
+    sleep 0.05
+  done
+  test ! -f "$CASE_DIR/hermes/lock"
+  test "$(cat "$dir/run.lock/pid")" = "$runner"
+  manager_dispatch
+  test "$(cat "$dir/run.lock/pid")" = "$runner"
+  test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 2
+  kill -KILL -- "-$runner"
+  wait "$runner" 2>/dev/null || true
+  if kill -0 "$runner" 2>/dev/null; then return 1; fi
+  test "$(cat "$dir/run.lock/pid")" = "$runner"
+  test -f "$dir/pending/$(manager_job_name 0 worker:M-1:pr-ready:abc).json"
+  # During the handoff a live claimant protects even a dead parent owner.
+  printf '%s\n' "$$" > "$dir/run.lock/claim"
+  manager_dispatch
+  test "$(cat "$dir/run.lock/pid")" = "$runner"
+  jq -se 'all(.[]; .kind!="stale_lock_cleared")' "$dir/events.log"
+  printf '%s\n' "$runner" > "$dir/run.lock/claim"
+  # SIGKILL cannot release the stub's bookkeeping marker either.
+  rm "$CASE_DIR/hermes/hold-resume" "$CASE_DIR/hermes/active-session-1"
+  manager_event M-2 "$REPO"
+  manager_enqueue "$(sed -n '2p' "$DV_HOME/kick.q")" "$CASE_DIR/brief" 1
+  manager_dispatch
+  manager_wait_calls 3
+  wait "$!"
+  jq -se 'length==3 and .[1].resume=="session-1" and .[2].resume=="session-1"' "$CASE_DIR/hermes/calls"
+  grep -F M-1 "$CASE_DIR/hermes/prompt-3"
+  grep -F M-2 "$CASE_DIR/hermes/prompt-3"
+  test -f "$dir/pending/$(manager_job_name 0 worker:M-1:pr-ready:abc).done"
+  test -f "$dir/pending/$(manager_job_name 1 worker:M-2:pr-ready:abc).done"
+  jq -se --arg pid "$runner" '[.[]|select(.kind=="stale_lock_cleared")]|length==1 and .[0].pid==$pid' "$dir/events.log"
+  jq -se '[.[]|select(.kind=="event_handled")]|length==2 and all(.[]; .route=="manager" and .exit_code==0)' "$dir/events.log"
+  test -f "$dir/run.lock/keep"
+  test ! -f "$dir/run.lock/pid"
+  test ! -f "$CASE_DIR/hermes/overlap"
+}
+case_manager_surviving_runner() {
+  manager_setup
+  dv manager start "$REPO"
+  manager_functions
+  local dir runner active=0 manager_pids='' pids=''
+  dir=$(dirname "$(manager_meta)")
+  touch "$CASE_DIR/hermes/hold-resume"
+  manager_event M-1 "$REPO"
+  manager_enqueue "$(sed -n '1p' "$DV_HOME/kick.q")" "$CASE_DIR/brief" 0
+  manager_dispatch
+  runner=$!
+  manager_wait_calls 2
+  # Kill only the outer dv process: the runner subshell and Hermes survive.
+  kill -KILL "$runner"
+  wait "$runner" 2>/dev/null || true
+  manager_event M-2 "$REPO"
+  manager_enqueue "$(sed -n '2p' "$DV_HOME/kick.q")" "$CASE_DIR/brief" 1
+  manager_dispatch
+  test "$(cat "$dir/run.lock/pid")" = "$runner"
+  kill -0 "$(cat "$dir/run.lock/claim")"
+  test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 2
+  jq -se 'all(.[]; .kind!="stale_lock_cleared")' "$dir/events.log"
+  rm "$CASE_DIR/hermes/hold-resume"
+  wait_file "$dir/pending/$(manager_job_name 0 worker:M-1:pr-ready:abc).done"
+  for _ in {1..200}; do
+    [ -f "$dir/run.lock/pid" ] || break
+    sleep 0.05
+  done
+  test ! -f "$dir/run.lock/pid"
+  manager_dispatch
+  manager_wait_calls 3
+  wait "$!"
+  jq -se 'length==3 and .[1].resume=="session-1" and .[2].resume=="session-1"' "$CASE_DIR/hermes/calls"
+  test -f "$dir/pending/$(manager_job_name 1 worker:M-2:pr-ready:abc).done"
+  test ! -f "$CASE_DIR/hermes/overlap"
 }
 case_manager_runner_ownership() {
   manager_setup
