@@ -9,6 +9,7 @@ qa_fixture() {
   trap qa_teardown EXIT
   export DV_QA_AGENT_CMD="$ROOT/tests/fixtures/qa-agent" DV_QA=0
   export DV_QA_COALESCE=0 DV_QA_BASE=main DV_MANAGER_HOST="$DV_HOST" DV_HOSTS="$DV_HOST"
+  export DV_QA_SCAN_MIN=0
   export DV_MIN_DISK_GB=0 DV_MIN_MEMORY_MB=0 DV_MAX_JOBS=2
   export DV_AGENT_READY_codex=true DV_AGENT_READY_claude=true
   export DV_HERMES_BIN="$ROOT/tests/fixtures/manager-hermes"
@@ -213,6 +214,7 @@ case_qa_transport_retry() {
   mkdir -p "$DV_HOME/submissions/REMOTE-1"
   jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"working",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
+  qa_scan_flush
   jq -e '.repository=="test/repo"' "$DV_HOME"/qa/*/pending.json
 }
 case_qa_recovered_capacity() {
@@ -309,11 +311,14 @@ case_qa_bound_event() {
   mkdir -p "$DV_HOME/submissions/REMOTE-1"
   jq -n --arg repo "$REPO" '{repo:$repo,host:"remote-host",status:"completed",token:"issued",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > "$DV_HOME/submissions/REMOTE-1/task.json"
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"issued"}'
+  qa_scan_flush
   jq -e '.repository=="test/repo"' "$DV_HOME"/qa/*/pending.json
   rm "$DV_HOME"/qa/*/pending.json
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"forged"}'
+  qa_scan_flush
   test ! -f "$DV_HOME"/qa/*/pending.json
   qa_enqueue '{"host":"remote-host","issue":"REMOTE-1","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","token":"issued"}'
+  qa_scan_flush
   test ! -f "$DV_HOME"/qa/*/pending.json
 }
 

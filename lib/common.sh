@@ -8,6 +8,8 @@ if [ -f "$DV_CONFIG" ]; then
 fi
 # shellcheck source=config.example.sh
 source "$DV_ROOT/config.example.sh"
+# shellcheck source=lib/ghcache.sh
+source "$DV_ROOT/lib/ghcache.sh"
 # shellcheck source=lib/job-limits.sh
 source "$DV_ROOT/lib/job-limits.sh"
 # shellcheck source=lib/search.sh
