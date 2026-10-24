@@ -155,6 +155,11 @@ case_qa_restart() {
   qa_event latest
   dv-watch >> "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   qa_wait_events 2
+  # Queue acknowledgment now records a wanted scan; the pass drains it later.
+  local qa_record
+  for qa_record in "$DV_HOME"/qa/*/running.json; do
+    wait_file "${qa_record%/running.json}/pending.json"
+  done
   dv qa status --json | jq -e 'length==1 and .[0].pending and .[0].running'
   test "$(wc -l < "$CASE_DIR/qa-runs" | tr -d ' ')" = 1
   touch "$CASE_DIR/qa-release"

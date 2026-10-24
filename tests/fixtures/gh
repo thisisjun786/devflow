@@ -10,13 +10,13 @@ if [ "${1:-}:${2:-}" = api:--include ] && [[ "${3:-}" != */events\?* ]]; then
   trap 'rm -f "$body"' EXIT
   case "$endpoint" in
     */comments\?per_page=100\&page=*|*/reviews\?per_page=100\&page=*)
-      GH_STUB_BODY=1 "$0" api --paginate "${endpoint%%\?*}" > "$body"
+      GH_STUB_BODY=1 "${GH_STUB_BODY_CMD:-$0}" api --paginate "${endpoint%%\?*}" > "$body"
       page=${endpoint##*&page=}
       jq -s --argjson start "$(((page - 1) * 100))" 'add | .[$start:$start+100]' "$body" > "$body.page"
       mv "$body.page" "$body" ;;
     repos/*/commits/*)
-      GH_STUB_BODY=1 "$0" api "$endpoint" --jq .sha | jq -Rn '{sha:input}' > "$body" ;;
-    *) GH_STUB_BODY=1 "$0" api "$endpoint" > "$body" ;;
+      GH_STUB_BODY=1 "${GH_STUB_BODY_CMD:-$0}" api "$endpoint" --jq .sha | jq -Rn '{sha:input}' > "$body" ;;
+    *) GH_STUB_BODY=1 "${GH_STUB_BODY_CMD:-$0}" api "$endpoint" > "$body" ;;
   esac
   etag=$(cksum < "$body" | awk '{print $1 "-" $2}')
   if [ -f "$GH_STUB_DIR/cache-fail" ]; then printf 'HTTP/2.0 503 Unavailable\r\n\r\n'; exit 1; fi

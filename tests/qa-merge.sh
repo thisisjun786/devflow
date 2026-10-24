@@ -19,7 +19,7 @@ case_qa_scan_delayed() {
   export DV_QA_SCAN_MIN=60
   qa_enqueue '{}'; qa_scan_flush
   clock=1001
-  for kind in qa-repository merged landed done failed submitted bid-changed issue-opened issue-closed; do
+  for kind in qa-repository merged landed 'done' failed submitted bid-changed issue-opened issue-closed; do
     qa_enqueue "{\"kind\":\"$kind\"}"
   done
   qa_scan_flush
@@ -305,7 +305,7 @@ case_qa_merge_event_wake() {
   sleep 2
   jq -e '[.prs[].number]==[7]' "$request"
   count=$(grep -c 'pulls?state=closed' "$GH_STUB_DIR/calls")
-  for kind in merged done landed failed submitted bid-changed issue-opened issue-closed; do
+  for kind in merged 'done' landed failed submitted bid-changed issue-opened issue-closed; do
     dv-kick "$kind" WAKE "$kind" test-host '' "qa-$kind"
     for _ in {1..100}; do
       if [ "$(grep -c 'pulls?state=closed' "$GH_STUB_DIR/calls")" -gt "$count" ]; then break; fi
