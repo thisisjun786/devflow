@@ -19,7 +19,7 @@
     "lib/herdr.sh": ["herdr_*", "task_herdr_*", "code_herdr_failed_*", "send_branch_herdr", "capacity_terminal*", "capacity_legacy_terminal"],
     "lib/host.sh": ["host_*", "claude_*host", "disk_host", "update_host", "bid_*"],
     "lib/host-capacity.sh": ["learned_*", "capacity_*", "autofill_watch"],
-    "lib/manager.sh": ["manager_*", "watch_stuck*", "watch_capacity*", "metrics_manager*", "autofill_manager_alarm"],
+    "lib/manager.sh": ["manager_*", "watch_quiet_events", "watch_stuck*", "watch_capacity*", "metrics_manager*", "autofill_manager_alarm"],
     "lib/metrics.sh": ["metrics_*"],
     "lib/portable.sh": ["portable_*", "bid_*", "host_*"],
     "lib/polish.sh": ["polish_*", "pr_public_body", "pr_prepared_body", "pr_body_update"],

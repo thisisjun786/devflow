@@ -112,7 +112,8 @@ fi
 : "${DV_HOSTS=lina-os hx-linux amd-linux go2-linux}" # SSH aliases for status/bidding; add gos-linux explicitly as the last fallback
 : "${DV_MANAGER_HOST:=lina-os}" # submit/queue manager, independent of the local kick host
 : "${DV_MANAGER_AGENT:=hermes}" # persistent per-repository Hermes session
-: "${DV_MANAGER_MAX_WAIT:=120}" # busy seconds before other issues use plain workers
+: "${DV_MANAGER_MAX_WAIT:=1800}" # busy seconds before other issues use plain one-shot workers
+: "${DV_MANAGER_ROTATE_CHECK=}" # optional hook <session_id>; exit 10 starts the next manager turn in a fresh session
 : "${DV_AUTOFILL_REPOS=}" # manager: space-separated owner/repo allowlist; empty disables
 # DV_AUTOFILL_BRIEF_owner_repo=/path/brief.md (lowercase; / . - become _).
 # Default template: enabled repo's .devflow/brief.md on its default branch.
