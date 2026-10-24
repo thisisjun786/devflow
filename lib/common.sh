@@ -192,6 +192,26 @@ require_worktree() {
   [ "$(git -C "$WT" symbolic-ref --short HEAD)" = "$BRANCH" ] || fail 'worktree branch changed'
 }
 require_clean() { [ -z "$(git -C "$1" status --porcelain)" ] || fail "uncommitted files: $1"; }
+# GitHub transports share a case-insensitive identity, but only at their
+# default ports. Preserve other hosts/ports and case-sensitive local paths.
+repo_identity() {
+  local repo=$1 lower path=''
+  while [[ "$repo" = */ ]]; do repo=${repo%/}; done
+  lower=$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')
+  case "$lower" in
+    https://github.com/*|https://github.com:443/*|http://github.com/*|http://github.com:80/*|\
+    ssh://git@github.com/*|ssh://git@github.com:22/*|ssh://github.com/*|ssh://github.com:22/*)
+      path=${lower#*://}; path=${path#*/} ;;
+    git@github.com:*) path=${lower#git@github.com:} ;;
+    github.com/*) path=${lower#github.com/} ;;
+  esac
+  path=${path%.git}
+  if [[ "$path" =~ ^[a-z0-9][a-z0-9-]*/[a-z0-9._-]+$ ]]; then
+    printf 'github.com/%s\n' "$path"
+  else
+    printf '%s\n' "${repo%.git}"
+  fi
+}
 is_github() {
   local url
   url=$(git -C "$REPO" config --get remote.origin.url) || return 1
