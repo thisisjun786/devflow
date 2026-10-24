@@ -238,4 +238,10 @@ case_reconcile_submissions_skips_settled() {
   reconcile_submissions h1 "$rows"
   jq -e '.status=="completed" and .head=="abc"' "$DV_HOME/submissions/LN-live/task.json"
   test "$(wc -l < "$calls")" = 1
+  # The scan must keep file names whole when DV_HOME has spaces.
+  local spaced="$CASE_DIR/home space"
+  mkdir -p "$spaced/submissions/LN-sp"
+  jq -n '{issue:"LN-sp",status:"working",host:"h1",token:"t"}' > "$spaced/submissions/LN-sp/task.json"
+  DV_HOME=$spaced reconcile_submissions h1 '[{"issue":"LN-sp","status":"landed","host":"h1","award_token":"t","head":"def"}]'
+  jq -e '.status=="completed" and .head=="def"' "$spaced/submissions/LN-sp/task.json"
 }

@@ -96,8 +96,8 @@ reconcile_submissions() (
   # in one pass and outside the lock.
   local open
   open=$(for dir in "$DV_HOME"/submissions/*/; do
-      [ -f "$dir/task.json" ] && printf '%s\n' "$dir/task.json"
-    done | xargs -r jq -r --arg host "$host" 'select((.status=="working" or .status=="input-required" or
+      [ -f "$dir/task.json" ] && printf '%s\0' "$dir/task.json"
+    done | xargs -0 -r jq -r --arg host "$host" 'select((.status=="working" or .status=="input-required" or
       (.status=="submitted" and .host!=null)) and .host==$host) | .issue // empty' 2>/dev/null)
   [ -n "$open" ] || return 0
   # The scan above needs no lock: each rewrite below re-checks the same
