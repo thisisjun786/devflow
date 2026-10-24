@@ -2819,6 +2819,8 @@ registered_cases() {
   runner_contract runner_selection runner_mapping readme_startup_guidance readme_manager_max_wait
   printf '%s\n' qa_landed_admission_race \
     qa_scan_batch qa_scan_delayed qa_scan_retry qa_scan_base_event \
+    qa_merge_empty_observed qa_merge_whitespace_observed qa_merge_invalid_observed qa_merge_shape_observed qa_merge_multiple_observed \
+    qa_merge_empty_pending qa_merge_whitespace_pending qa_merge_invalid_pending qa_merge_shape_pending qa_merge_multiple_pending qa_merge_scan_pending qa_merge_recovery_retry \
     gh_cache_conditional gh_cache_fail_closed gh_cache_immutable review_cache_snapshot review_cache_pass_counts
   printf '%s\n' watch_quiet_events manager_rotate manager_rotate_keep
   printf '%s\n' \
