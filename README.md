@@ -665,8 +665,12 @@ checkout의 `.devflow`에 `DV_QA=1`인 저장소를 감시합니다(기본값 `0
 대입만 읽고 `.devflow`의 shell 코드는 실행하지 않습니다.
 
 watcher는 기존 큐의 `merged`·`landed`·`done`·`failed`·`submitted`·`bid-changed`·
-`issue-opened`·`issue-closed` 이벤트가 처리될 때 GitHub의 병합
-PR을 조회하고, 각 병합 커밋이 설정한 base에 포함됐는지 확인합니다.
+`issue-opened`·`issue-closed` 이벤트가 처리되면 스캔 요청을 저장합니다.
+한 watcher pass에서 요청을 모아 한 번만 GitHub의 병합 PR을 조회하고,
+각 병합 커밋이 설정한 base에 포함됐는지 확인합니다. 이벤트 스캔 간격은
+`DV_QA_SCAN_MIN`(기본 60초) 이상이며, 새 base Push/병합을 담은
+`qa-repository` 알림은 다음 스캔을 즉시 깨웁니다. 지연되거나 실패한 요청은
+재시작 후에도 보존하며, 시작 시 복구와 30분 reconciliation도 같은 pass에 합칩니다.
 외부 병합도 기존 watcher tick에서 읽는 GitHub 저장소 이벤트 피드로 자동 입력됩니다.
 조건부 ETag 요청으로 바뀌지 않은 피드는 다시 처리하지 않습니다. base의 Push/병합 PR과
 issue opened/closed 이벤트가 도착하면 기존 큐에 식별자가 고정된 알림을 저장한 뒤
@@ -678,6 +682,10 @@ GitHub 이벤트 공개 지연이나 최근 100개 feed 범위를 넘는 누락�
 GitHub UI나 `gh pr merge`로 직접 병합해도 QA를 등록합니다. 승인 기준은 활성 저장소와 base이며,
 개발 작업의 완료 상태나 award token은 필요하지 않습니다. 이벤트나 원격 status가
 새 저장소를 승인할 수 없습니다. API 조회가 실패하면 관측 지점을 보존하고 재시도합니다.
+base commit·closed PR 목록과 PR 리뷰의 세 목록은 `$DV_HOME/gh-cache/`에
+응답과 ETag를 함께 저장합니다. 다음 요청은 조건부 GET으로 재검증하고, 304일 때만
+저장한 본문을 재사용합니다. 두 full SHA 사이의 compare 응답은 영구 재사용합니다.
+리뷰 목록은 페이지별로 재검증하며, API 오류는 과거 리뷰로 대신 승인하지 않습니다.
 
 `DV_QA_COALESCE`(기본 600초) 동안 새 병합이 없으면 모인 PR 전부를 나열한
 QA 하나를 최신 관측 base head에 제출합니다. 실행 중 추가 병합은 다음 요청으로

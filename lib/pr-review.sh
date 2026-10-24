@@ -13,9 +13,9 @@ review_snapshot() {
   summaries=$(mktemp "$S/.summaries.XXXXXX")
   # Read the summary first: a newly submitted REST review can supersede an
   # older running summary. Security-only activity never satisfies code review.
-  if ! gh api --paginate "${endpoint%/pulls/*}/issues/${endpoint##*/}/comments" | jq -se 'add // [] | select(type=="array")' > "$summaries" ||
-    ! gh api --paginate "$endpoint/reviews" | jq -se 'add // [] | select(type=="array")' > "$reviews" ||
-    ! gh api --paginate "$endpoint/comments" | jq -se 'add // [] | select(type=="array")' > "$comments"; then
+  if ! gh_get_cached_pages "${endpoint%/pulls/*}/issues/${endpoint##*/}/comments" > "$summaries" ||
+    ! gh_get_cached_pages "$endpoint/reviews" > "$reviews" ||
+    ! gh_get_cached_pages "$endpoint/comments" > "$comments"; then
     rm -f "$reviews" "$comments" "$summaries"; return 1
   fi
   tmp=$(mktemp "$S/.review-snapshot.XXXXXX")

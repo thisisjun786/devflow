@@ -2507,6 +2507,8 @@ source "$ROOT/tests/qa.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/qa-merge.sh"
 # shellcheck source=/dev/null
+source "$ROOT/tests/gh-cache.sh"
+# shellcheck source=/dev/null
 source "$ROOT/tests/metrics.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/pr-worker.sh"
@@ -2815,6 +2817,9 @@ registered_cases() {
   pr_title_format pr_branch_names pr_body_template pr_format_delivery pr_format_legacy pr_format_start pr_format_instructions \
   reconcile_stale_prs reconcile_merged_unverified land_already_merged land_already_merged_guards qa_clean_url park_prerequisites park_repark_blockers park_agent_exit park_exec_exit park_open_pr park_pr_prerequisites park_pr_wait park_pr_stale_send park_pr_wait_resume park_pr_reconcile reconcile_merged_cleanup_retry \
   runner_contract runner_selection runner_mapping readme_startup_guidance readme_manager_max_wait
+  printf '%s\n' qa_landed_admission_race \
+    qa_scan_batch qa_scan_delayed qa_scan_retry qa_scan_base_event \
+    gh_cache_conditional gh_cache_fail_closed gh_cache_immutable review_cache_snapshot review_cache_pass_counts
   printf '%s\n' watch_quiet_events manager_rotate manager_rotate_keep
   printf '%s\n' \
     qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter \
