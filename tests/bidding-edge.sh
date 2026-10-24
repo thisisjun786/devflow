@@ -70,7 +70,7 @@ case_award_stale_failure() {
   mkdir -p "$DV_STATE/.awards/STALE-1" "$DV_STATE/STALE-1"
   printf '{"token":"new","status":"working"}\n' > "$DV_STATE/.awards/STALE-1/receipt.json"
   printf '0\n' > "$DV_STATE/STALE-1/agent.exit"
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() { shift; "cmd_$1" "${@:2}"; }
   old=$(event_json failed STALE-1 'old failure' ssh-alias h '' old)
   current=$(event_json failed STALE-1 'new failure' ssh-alias h '' new)
@@ -111,7 +111,7 @@ case_award_early_absent() {
   dv submit "$REPO" ABSENT-1 edge --brief "$CASE_DIR/brief"
   local dir="$DV_HOME/submissions/ABSENT-1"
   # First RPC loses the request entirely; the receipt reports absent before expiry.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() {
     case "$2" in
       bid) printf '{"status":"submitted","score":100}\n' ;;
@@ -198,6 +198,8 @@ case_config_work_existing() {
   chmod 755 "$CASE_DIR/scratch"
   test "$actual" = "$CASE_DIR/scratch/dv-wt"
   # Explicit configuration must survive the default selection.
+  # Generated configuration; config.example.sh is checked separately.
+  # shellcheck disable=SC1091
   ( source "$CASE_DIR/example.sh"; test "$DV_WORK" = "$CASE_DIR/work" )
 }
 work_bid_setup() {
@@ -207,6 +209,8 @@ work_bid_setup() {
   export DV_MAX_JOBS=8 DV_CODEX_MODE=exec DV_AGENT_CMD_codex=''
   work_bid_probes
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 work_bid_probes() {
   # No auth, resource probes or terminal required for these synthetic bids.
   WORK_BID_CORES=16

@@ -885,6 +885,8 @@ stall_recovery_worker() (
   else dv send SR-1 'resume after failed event' || rc=$?; fi
   printf '%s\n' "$rc" > "$CASE_DIR/$kind.exit"
 )
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 stall_recovery_race() {
   local first=$1 second=$2 tries calls count pid
   repo stalled-recovery; herdr_setup; bidding_functions

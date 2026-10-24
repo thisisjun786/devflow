@@ -23,6 +23,8 @@ CLIENT
 }
 case_teardown_wait_client() { teardown_wait_fixture state/T-1/appserver/client.pid; }
 case_teardown_wait_host_agent() { teardown_wait_fixture hosts/test-host/state/T-1/agent.pid; }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_teardown_preserve_live_client() {
   local fixture="$CASE_DIR/teardown" pid refused=false
   mkdir -p "$fixture/state/T-1/appserver" "$fixture/home"
@@ -258,7 +260,7 @@ appserver_legacy_guard() {
 case_appserver_legacy_budget() { appserver_legacy_guard budget; }
 case_appserver_legacy_episode() { appserver_legacy_guard episode; }
 case_appserver_legacy_idle() { appserver_legacy_guard idle; }
-case_appserver_legacy_done() { appserver_legacy_guard done; }
+case_appserver_legacy_done() { appserver_legacy_guard 'done'; }
 case_appserver_legacy_inactive() { appserver_legacy_guard inactive; }
 case_appserver_legacy_question() { appserver_legacy_guard question; }
 appserver_scratch_root() {
@@ -916,6 +918,8 @@ appserver_sender_legacy() (
 )
 case_appserver_sender_legacy_idle() { appserver_sender_legacy idle; }
 case_appserver_sender_legacy_partial() { appserver_sender_legacy partial; }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_appserver_sender_close() (
   DV_ROOT=$ROOT
   source "$ROOT/lib/appserver.sh"
@@ -980,6 +984,8 @@ ENV
   appserver_setup
   test -f "$CASE_DIR/upgrade-split"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031,SC2030
 case_appserver_rpc_timeout() (
   # Isolate the short RPC deadline from socket/thread startup. The peer stays
   # connected and consumes the request, but deliberately never sends a reply.
@@ -1204,6 +1210,8 @@ case_appserver_episode() {
   dv status --live AS-1 --json | jq -e '.[0] | .recoveries==2 and .last_recovery_reason=="stalled"'
   dv status --live AS-1 | grep 'recoveries=2.*last_recovery_reason=stalled'
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 case_appserver_budget() {
   appserver_setup
   local attempt

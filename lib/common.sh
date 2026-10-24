@@ -134,8 +134,11 @@ issue_lock() {
   trap 'rmdir "$S/.operation" 2>/dev/null || true' EXIT
 }
 owned_lock() {
-  local path=$1 owner=$2 tries=0 holder
+  local path=$1 owner=$2 tries=0 holder parent
+  parent=$(dirname "$path")
   while :; do
+    # A competing reaper may have finished and removed the parent directory.
+    [ -d "$parent" ] || return 1
     # mkdir alone is not an ownership claim: uutils 0.8.0 can report success
     # to both concurrent creators. A hard link gives exactly one caller owner.
     mkdir "$path" 2>/dev/null || true
@@ -152,14 +155,23 @@ owned_lock() {
   done
 }
 owned_unlock() {
-  local path=$1 owner=$2
-  # Only the remover of this exact owner's marker may unlink the claim.
-  # This also elects a single reaper when several callers find a dead owner.
-  if rm "$path/pid-$owner" 2>/dev/null; then
+  local path=$1 owner=$2 reaper
+  [ "$(cat "$path/owner" 2>/dev/null)" = "$owner" ] || return 0
+  # Serialize release of this generation even if its pid marker is missing.
+  # This is itself an owned lock, so a killed reaper can also be recovered.
+  reaper="$path/reap-$owner"
+  owned_lock "$reaper" "$$" || return 0
+  # A delayed reaper must never unlink a successor's claim.
+  if [ "$(cat "$path/owner" 2>/dev/null)" = "$owner" ]; then
     rm "$path/owner"
-    # A contender may already have populated the directory for its next claim.
-    rmdir "$path" 2>/dev/null || true
+    rm -f "$path/pid-$owner"
   fi
+  # We are the live, exclusive reaper: release its claim before its marker.
+  # Calling owned_unlock here would create another release lock indefinitely.
+  rm -f "$reaper/owner" "$reaper/pid-$$"
+  rmdir "$reaper" 2>/dev/null || true
+  # A contender may already have populated the directory for its next claim.
+  rmdir "$path" 2>/dev/null || true
 }
 require_worktree() {
   [ -d "$WT" ] || fail 'worktree is missing'

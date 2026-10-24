@@ -615,7 +615,7 @@ cmd_status() {
         continue
       fi
       # tmux captures share one line and can be tens of KB: keep status cheap and argv-safe.
-      last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r' || true)
+      last=$(tail -n 1 "$(dirname "$path")/log" 2>/dev/null | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\x1b\][^\x07]*\x07//g' | tail -c 200 | LC_ALL=C tr -d '\000-\010\013\014\016-\037\r' || true)
       if [ "$backend" = appserver ]; then
         # A done, landed, cancelled or cleaned job with no client is finished.
         # Its thread no longer matters, and opening a connection per old job made
@@ -636,7 +636,7 @@ cmd_status() {
       elif [ "$backend" = qa ]; then
         agent_status=$(jq -r .status "$path")
         if qa_job_alive "$(dirname "$path")"; then alive=true
-        elif [ "$agent_status" = running ]; then agent_status=failed
+        elif [ "$agent_status" = running ] || [ "$agent_status" = waiting-capacity ]; then agent_status=failed
         fi
       elif [ "$backend" = herdr ]; then
         pane=$(jq -r '.herdr_pane // empty' "$path")
@@ -656,7 +656,7 @@ cmd_status() {
               printf '%s\n' "$info" | jq -e --slurpfile pending "$pending" '.state_change_seq==$pending[0].seq' >/dev/null 2>&1; then question_pending=true; fi
           fi
           if live_last=$(herdr_read "$pane" --lines 1 2>/dev/null); then
-            last=$(printf '%s\n' "$live_last" | tail -n 1 | tail -c 200 | tr -d '\000-\010\013\014\016-\037\r')
+            last=$(printf '%s\n' "$live_last" | tail -n 1 | tail -c 200 | LC_ALL=C tr -d '\000-\010\013\014\016-\037\r')
           fi
         fi
       elif command -v tmux >/dev/null && tmux_dv has-session -t "=dv-$(jq -r .issue "$path")" 2>/dev/null; then
@@ -707,7 +707,9 @@ cmd_status() {
         if .status=="waiting-capacity" and .agent_dead!=true then .agent_status="waiting-capacity" else . end')
       if [ "$agent_status" = failed ] &&
         { [ "$agent_dead" = true ] || { { [ "$backend" = exec ] || [ "$backend" = qa ]; } && [ "$alive" = false ]; }; }; then
-        row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed" else . end')
+        row=$(printf '%s\n' "$row" | jq -c 'if .status=="running" then .status="failed"
+          elif .status=="waiting-capacity" and .backend=="qa" then .status="failed" | .agent_status="failed" | .capacity_retry_at=null
+          else . end')
       fi
       if [ "$agent_exit_code" != null ]; then
         row=$(printf '%s\n' "$row" | jq -c --argjson code "$agent_exit_code" '.agent_exit_code=$code')

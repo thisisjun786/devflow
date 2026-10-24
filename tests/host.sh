@@ -2,6 +2,8 @@
 # Shell snippets are deliberately expanded by the isolated child shell.
 # shellcheck disable=SC2016
 host_setup() {
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   export HOME="$CASE_DIR/host home" HOST_FIXTURES="$ROOT/tests/fixtures"
   export DV_HOST_SHELL="$HOST_FIXTURES/host-shell"
   # Never run an installed omp against a fixture HOME during sync.
@@ -261,6 +263,8 @@ case_host_real_shells() {
     test "$path" = "$HOME/system:/usr/bin:/bin"
   fi
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_host_sync_darwin() {
   host_setup
   # Apple Silicon with Homebrew. Apple ships git, zsh and sqlite3, not these.

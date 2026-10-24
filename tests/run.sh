@@ -3,6 +3,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export ROOT
 
+# tests/shellcheck.sh checks each tests/*.sh directly. Only test-suite imports
+# use source=/dev/null below, keeping ShellCheck out of one unbounded graph.
+
 seed_host_capacity() {
   local cores=$1 cap=${2:-8}
   mkdir -p "$DV_STATE/.host-capacity"
@@ -266,6 +269,8 @@ AGENT
   else export DV_AGENT_CMD_codex="$ROOT/tests/fixtures/agent"; fi
   if [ "$recovery" = stall ]; then
     stall_functions
+    # Read by stall_scan from tests/stall.sh.
+    # shellcheck disable=SC2034
     STALL_ROW=$(dv status FS-1 --json | jq -c '.[0]')
     stall_scan; stall_tick; stall_count 1
     dv _stall-recover FS-1 "$(jq -r '.[].id' "$DV_HOME/stalls.json")" ''
@@ -1899,9 +1904,9 @@ case_polish_parallel() {
   test ! -d "$DV_STATE/POL-1/.polish"
 }
 
-# shellcheck source=tests/codex-startup.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/codex-startup.sh"
-# shellcheck source=tests/codex-trust.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/codex-trust.sh"
 
 failed_start_fixture() {
@@ -2447,73 +2452,73 @@ case_bid_readonly_no_tmux() { bid_without_tmux bid_readonly; }
 case_bid_rejections_no_tmux() { bid_without_tmux bid_rejections; }
 # Parse the complete driver before running it. Editing the file while an old
 # runner was reading its tail previously produced a truncated `e` command.
-# shellcheck source=tests/host.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/host.sh"
-# shellcheck source=tests/autofill.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/autofill.sh"
-# shellcheck source=tests/host-capacity.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/host-capacity.sh"
-# shellcheck source=tests/learned-capacity.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/learned-capacity.sh"
-# shellcheck source=tests/delivery.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/delivery.sh"
-# shellcheck source=tests/pr-body.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/pr-body.sh"
-# shellcheck source=tests/pr-format.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/pr-format.sh"
-# shellcheck source=tests/claude.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/claude.sh"
-# shellcheck source=tests/followups.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/followups.sh"
-# shellcheck source=tests/watcher.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/watcher.sh"
-# shellcheck source=tests/stall.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/stall.sh"
-# shellcheck source=tests/screen-locale.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/screen-locale.sh"
-# shellcheck source=tests/pr-wait-caller.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/pr-wait-caller.sh"
-# shellcheck source=tests/bidding-edge.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/bidding-edge.sh"
-# shellcheck source=tests/bidding-order.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/bidding-order.sh"
-# shellcheck source=tests/manager.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/manager.sh"
-# shellcheck source=tests/revive.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/revive.sh"
-# shellcheck source=tests/appserver.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/appserver.sh"
-# shellcheck source=tests/codex-exec.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/codex-exec.sh"
-# shellcheck source=tests/dsh.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/dsh.sh"
-# shellcheck source=tests/send-branch.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/send-branch.sh"
-# shellcheck source=tests/codex-exec-review.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/codex-exec-review.sh"
-# shellcheck source=tests/portability.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/portability.sh"
-# shellcheck source=tests/qa.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/qa.sh"
-# shellcheck source=tests/qa-merge.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/qa-merge.sh"
-# shellcheck source=tests/metrics.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/metrics.sh"
-# shellcheck source=tests/pr-worker.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/pr-worker.sh"
-# shellcheck source=tests/self-update.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/self-update.sh"
-# shellcheck source=tests/disk.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/disk.sh"
-# shellcheck source=tests/tmp.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/tmp.sh"
-# shellcheck source=tests/stack.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/stack.sh"
-# shellcheck source=tests/watcher-stuck.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/watcher-stuck.sh"
-# shellcheck source=tests/stale-jobs.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/stale-jobs.sh"
-# shellcheck source=tests/task.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/task.sh"
 task_content_setup() {
   task_setup
@@ -2619,15 +2624,17 @@ case_task_mixed_files() {
   cmp "$wt/out/nested/payload.bin" "$landed/nested/payload.bin"
   test ! -f "$GH_STUB_DIR/calls"
 }
-# shellcheck source=tests/capacity.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/capacity.sh"
-# shellcheck source=tests/status-nonblocking.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/status-nonblocking.sh"
-# shellcheck source=tests/heavy.sh
+# shellcheck source=/dev/null
+source "$ROOT/tests/reconcile-recovery.sh"
+# shellcheck source=/dev/null
 source "$ROOT/tests/heavy.sh"
-# shellcheck source=tests/process-cleanup.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/process-cleanup.sh"
-# shellcheck source=tests/process-supervisor.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/process-supervisor.sh"
 runner_stub() {
   mkdir -p "$CASE_DIR/runner-bin"
@@ -2741,14 +2748,15 @@ case_readme_manager_max_wait() {
   grep -F "관리자 턴이 \`DV_MANAGER_MAX_WAIT\`(기본 ${default_wait}초" "$ROOT/README.md"
   grep -F '더 짧은 대기가 필요하면 `DV_MANAGER_MAX_WAIT`를 더 낮게 설정' "$ROOT/README.md"
 }
-# shellcheck source=tests/job-limits.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/job-limits.sh"
-# shellcheck source=tests/search-scope.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/search-scope.sh"
 registered_cases() {
   printf '%s\n' dsh_success dsh_restart dsh_fallback dsh_resume dsh_stall dsh_capacity dsh_not_ready dsh_key
   printf '%s\n' dsh_quota dsh_crash_fallback dsh_completion_gate dsh_last_status dsh_jail dsh_jail_unavailable dsh_host_sync dsh_host_probe
   printf '%s\n' dsh_delivery dsh_herdr_fallback
+  printf '%s\n' owned_lock_missing_marker owned_unlock_reaper_race owned_unlock_marker_race owned_lock_dead_reaper owned_lock_recovery_race status_cut_utf8_log_bsd status_cut_utf8_pane_bsd status_cut_utf8_native reconcile_timeout_default
   printf '%s\n' search_defaults search_override search_large search_tmux search_agents job_oom_evidence search_oom_retry search_oom_revive
   printf '%s\n' job_nproc job_failure job_failure_reset job_supervisor_retry job_generic_exit job_auto_exec job_host job_fallback job_launchd job_tasks job_memory job_agent_retry
   printf '%s\n' review_future_deadline review_future_deadline_retried review_near_deadline
@@ -2783,7 +2791,7 @@ registered_cases() {
   stack_unfinished_auto_land stack_auto_done_guard stack_auto_done_merge stack_resume_done_episode stack_waiting_without_head stack_waiting_clock stack_safety_local stack_resume_headless stack_stalled stack_resume_guards stack_resume_failed stack_resume_interrupted stack_land_requeue stack_land_retry stack_remote_safety stack_wait stack_chain stack_diamond stack_parallel stack_local_body stack_dependency_punctuation stack_closed_base stack_api_failure stack_dirty stack_remote stack_reconcile stack_queue_concurrent stack_checks stack_push_retry stack_defer stack_dependencies_present stack_dependencies_present_conflict stack_missing_base stack_squash_base stack_rebase_base \
   appserver_reexec_accepted appserver_reexec_refused appserver_reexec_unknown appserver_legacy_capacity appserver_legacy_budget appserver_legacy_episode appserver_legacy_idle appserver_legacy_done appserver_legacy_inactive appserver_legacy_question appserver_scratch_root appserver_scratch_tmpdir appserver_scratch_long appserver_stale_done_recover appserver_pr_idle_recover appserver_recovery_uncertain appserver_recovery_events appserver_recovery_early_progress appserver_capacity_notification appserver_idle_done appserver_goal_done appserver_idle_blocked appserver_episode appserver_budget appserver_budget_restart appserver_capacity appserver_rate_limit appserver_recovery_guards appserver_start appserver_accepted appserver_refused appserver_unknown appserver_idle_send appserver_states appserver_large_reply appserver_read_partial appserver_status_done_clean appserver_status_done_stopped appserver_status_clean_stopped appserver_status_running_stopped appserver_status_done_communication appserver_status_landed_cheap appserver_failed appserver_retried_error appserver_stall appserver_question appserver_auto appserver_no_goal appserver_clean_guard appserver_reconnect appserver_active_stall appserver_unknown_restart appserver_question_multiple appserver_question_retry appserver_malformed appserver_watch appserver_fallback appserver_exec_override appserver_goal_override appserver_submit_auto appserver_exec appserver_pipeline appserver_pr_pending appserver_preserve_config appserver_detached appserver_detached_fallback appserver_websocket appserver_active_error_send appserver_interrupt_pending appserver_interrupt_timeout appserver_done_refused appserver_done_unknown appserver_land_active \
   qa_match_unlisted qa_match_closed qa_match_pr qa_match_error qa_match_http_failure qa_title_error_object qa_title_second_page qa_title_page_failure qa_title_page_error qa_title_empty_response qa_title_full_last_page qa_finding_format qa_title_rejected \
-  qa_request_retry qa_empty_reply_retry qa_invalid_reply_retry qa_second_lookup_retry qa_request_blocked qa_empty_reply_blocked qa_base_request_blocked qa_pr_lookup_retry qa_base_lookup_retry qa_pr_lookup_blocked qa_base_lookup_blocked qa_milestone_graphql qa_no_milestone qa_no_milestone_match qa_milestone_blocked qa_milestone_ambiguous qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids qa_transport_retry qa_recovered_capacity qa_dead_runner qa_explicit_match qa_config_data qa_unbound_event qa_bound_event \
+  qa_request_retry qa_empty_reply_retry qa_invalid_reply_retry qa_second_lookup_retry qa_request_blocked qa_empty_reply_blocked qa_base_request_blocked qa_pr_lookup_retry qa_base_lookup_retry qa_pr_lookup_blocked qa_base_lookup_blocked qa_milestone_graphql qa_no_milestone qa_no_milestone_match qa_milestone_blocked qa_milestone_ambiguous qa_landed qa_coalesce qa_optout qa_duplicate qa_new_finding qa_batch qa_restart qa_fresh_codex qa_fresh_claude qa_merged_base qa_repository_ids qa_transport_retry qa_recovered_capacity qa_dead_runner qa_dead_capacity_runner qa_explicit_match qa_config_data qa_unbound_event qa_bound_event \
   metrics_cli metrics_activity metrics_lifecycle metrics_handled metrics_manager metrics_idle metrics_external_merge metrics_agent_counts metrics_remote metrics_timestamp metrics_missing_worktree metrics_queue_activity metrics_terminal metrics_pull_time metrics_queue_corruption metrics_concurrent metrics_nonblocking metrics_collector_restart metrics_exec metrics_exec_events metrics_manager_batch metrics_manager_fallback metrics_timeout_snapshot metrics_stall_overlap \
   review_receipt_ambiguous review_receipt_metadata review_receipt_incomplete review_receipt review_receipt_guards review_receipt_findings review_receipt_wait review_receipt_arrives review_summary_new_findings review_summary_latest_low review_summary_complete_low review_legacy_bot stack_review_update stack_review_recover review_clean_summary review_summary_guards review_summary_api_failure review_other_bot review_ci_first review_badges review_current review_summary review_land_missing review_land_latest review_timeout review_rounds review_e2e review_followup review_followup_no_milestone review_followup_source review_followup_title review_retry_arrives review_done_live review_api_failure review_latest_inline pr_worker_stale_recovery pr_worker_foreground pr_worker_large_comments pr_worker_done_gate pr_worker_red pr_worker_loop pr_worker_cap pr_worker_stale pr_worker_live_checks pr_worker_comments_failure pr_worker_handoff pr_worker_revive pr_worker_revive_policy pr_worker_requires_review pr_worker_revive_exec pr_worker_exit_race pr_worker_exec_missing_pr pr_worker_native_exec \
   exec_cleanup_success exec_cleanup_failure exec_cleanup_signal exec_exhausted_rebids exec_land_running exec_land_github_running exec_land_failed \
@@ -2791,9 +2799,9 @@ registered_cases() {
   portable_darwin_resources \
   symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_done_capacity revive_orphan_owner revive_orphan_close_failure revive_stale_marker revive_goal_owned_done revive_report_event revive_orphan_workspace revive_manual_done revive_capacity revive_release_event revive_legacy_idle revive_legacy_unknown revive_capacity_status revive_legacy_busy revive_legacy_uncertain revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_worktree_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal \
   manager_reexec manager_real_conflict manager_real_pending_conflict manager_conflict_restart manager_reserved_collision manager_note_busy watch_stuck_route watch_stuck_bid watch_stack_background_failure watch_stuck_empty watch_stuck_worker manager_collision manager_fallback_collision manager_hash_collision manager_legacy_replay manager_note manager_pool_independent watch_capacity_eight watch_stuck \
-  manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_stale_lock manager_surviving_runner manager_runner_ownership \
+  manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_remote_repo manager_remote_repo_failure manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_stale_lock manager_surviving_runner manager_runner_ownership \
   pr_wait_caller_killed pr_wait_caller_fallback pr_wait_caller_delayed pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks pr_wait_conflict watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote \
-  codex_allowlist codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid \
+  codex_allowlist bid_reject_repos codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid \
   question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure bid_schedule_lock_dead_owner award_early_absent bid_clean_capacity submit_local_origin \
   claude_stale_server claude_stale_server_empty claude_profile_onboarding claude_profile_trust claude_profile_create claude_profile_invalid claude_trust_mode claude_trust_acl claude_trust_copy_failure claude_profile_start claude_profile_host bid_order_ties bid_order_fallback bid_order_probes bid_order_reject_input bid_order_early_reject bid_order_early_errors claude_trust_create claude_trust_preserve claude_trust_parallel claude_trust_invalid claude_trust_atomic claude_onboarding claude_start claude_start_tmux claude_start_failed claude_host host_repair host_path_preserve host_real_shells host_check host_codex host_agents host_sync host_sync_darwin host_sync_failure host_path_guard bid_readonly submit_spread submit_failover submit_cancel submit_order submit_order_amd submit_order_amd_go2 submit_timeout submit_forward award_capacity admission_owner submit_scores bid_clone bid_rejections bid_rpc_timeout award_rejected_next award_new_round award_uncertain_round goal_exit_rebids goal_exit_agents award_timeout_lock bid_readonly_no_tmux bid_rejections_no_tmux bid_more_agents submit_route \
   stack_conflict question_codex_record question_record_limit question_record_fallback question_claude_record herdr_cleanup_owner question_pull_replay question_startup question_signal question_claude question_devin question_omp question_agy question_grok question_cursor question_banner_agents question_cli question_cli_off question_episodes question_grace question_exit question_wait_failure polish_success polish_code_missing polish_tilde_missing polish_indented_missing polish_quoted_code polish_inline_missing polish_url_missing polish_empty polish_failure polish_timeout polish_disabled polish_edit_failure polish_remote_edit polish_read_failure polish_pr_url polish_default polish_parallel start_done kick_failure kick_stale_lock local_land pr_land pr_public_body review_loop_rule blocked_event_ids clean parallel install install_linux_watch review watch reconcile reconcile_slow_host reconcile_local kick_local_host kick_pull watch_pull worker_prompt_host agent_cli agent_cli_off agent_cli_more agent_transcripts revive_transcript pr_ready base_merge watch_capacity land_checkout_race herdr_start_clean herdr_send_retry herdr_undetected herdr_goal_retry herdr_goal_timeout herdr_agents_land herdr_more_agents herdr_disabled_legacy herdr_missing herdr_home_no_tmux herdr_failure herdr_clean_safety codex_hook_trust codex_hook_actions codex_hook_modal codex_hook_after_prompt codex_goal_stalled codex_goal_enter codex_goal_enter_stalled codex_goal_screen_working codex_goal_history codex_repo_trust codex_tmux_startup codex_hook_recovered codex_start_recovered codex_done_delivery_status \
@@ -2926,6 +2934,6 @@ main() {
   printf 'pass=%s skip=%s fail=%s\n' "$pass" "$skip" "$fail"
   [ "$fail" -eq 0 ]
 }
-# shellcheck source=tests/review-loop.sh
+# shellcheck source=/dev/null
 source "$ROOT/tests/review-loop.sh"
 main "$@"

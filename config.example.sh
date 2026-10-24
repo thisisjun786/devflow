@@ -43,6 +43,7 @@ fi
 : "${DV_CAPACITY_MAX_WAIT:=21600}" # provider capacity wait deadline in seconds (6 h)
 : "${DV_CODEX_ENV_FILE=$HOME/.opencodex/codex-auth-env.sh}" # trusted host-local shell file; empty disables
 : "${DV_TRUSTED_REPOS=}" # newline-separated absolute repo roots; exact matches, no globs
+: "${DV_BID_REJECT_REPOS=}" # space-separated owner/name this host never bids on (e.g. keep a Mac free for app work)
 : "${DV_CLAUDE_BIN:=claude}"
 : "${DV_DEVIN_BIN:=$HOME/.local/bin/devin}"
 : "${DV_OMP_BIN:=omp}"
@@ -113,7 +114,7 @@ fi
 : "${DV_WORKER_CMD:=}" # shell command; receives prompt file path; default Hermes below
 : "${DV_HERMES_BIN:=hermes}"
 : "${DV_WATCH_INTERVAL:=3}" # local queue read interval, seconds
-: "${DV_STATUS_TIMEOUT:=10}" # background per-host status/reconcile deadline, seconds
+: "${DV_STATUS_TIMEOUT:=60}" # seconds for each host's status pass plus follow-up recovery/PR RPCs
 : "${DV_WORKER_RETRY:=15}" # seconds before retrying a failed queue worker
 : "${DV_MAX_WORKERS:=4}" # 1..8 ordinary/fallback workers; QA uses host DV_MAX_JOBS slots
 : "${DV_RECONCILE_INTERVAL:=1800}" # status safety net seconds; capped at min(DV_STALL_AFTER, 60)

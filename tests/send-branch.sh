@@ -31,6 +31,8 @@ send_branch_appserver() {
 }
 case_send_branch_appserver() { send_branch_appserver live; }
 case_send_branch_appserver_reconnect() { send_branch_appserver reconnect; }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 case_send_branch_exec() {
   send_branch_environment; exec_setup
   dv start "$REPO" EX-1 exec --mode exec; exec_wait
