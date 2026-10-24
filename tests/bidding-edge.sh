@@ -169,6 +169,30 @@ case_submit_local_origin() {
   dv submit "$REPO" URL-1 edge --brief "$CASE_DIR/brief"
   jq -e '.repo=="https://github.com/test/repo.git"' "$DV_HOME/submissions/URL-1/task.json"
 }
+case_submit_invalid_repo() {
+  repo invalid-repo
+  export DV_MANAGER_HOST="$DV_HOST" DV_HOSTS=''
+  # An owner/name shorthand is neither a checkout nor a URL, so bidding could
+  # never resolve it. Reject it before a submission or event is written.
+  if dv submit synthetic/widget SYN-INVALID invalid --brief "$CASE_DIR/brief" > "$CASE_DIR/invalid.log" 2>&1; then
+    cat "$CASE_DIR/invalid.log"
+    printf 'BUG: bare repository name was accepted\n'
+    return 1
+  fi
+  grep -F 'local checkout path or full repository URL' "$CASE_DIR/invalid.log"
+  test ! -e "$DV_HOME/submissions/SYN-INVALID"
+  dv queue --json | jq -e 'length==0'
+  test ! -e "$DV_HOME/kick.q"
+  # Existing local checkouts and full URLs still submit.
+  dv submit "$REPO" LOCAL-1 edge --brief "$CASE_DIR/brief"
+  jq -e --arg repo "$(cd "$REPO" && pwd -P)" '.repo==$repo' "$DV_HOME/submissions/LOCAL-1/task.json"
+  dv submit https://github.com/test/repo.git URL-1 edge --brief "$CASE_DIR/brief"
+  jq -e '.repo=="https://github.com/test/repo.git"' "$DV_HOME/submissions/URL-1/task.json"
+  dv submit ssh://git@github.com/test/repo.git SSH-1 edge --brief "$CASE_DIR/brief"
+  jq -e '.repo=="ssh://git@github.com/test/repo.git"' "$DV_HOME/submissions/SSH-1/task.json"
+  dv submit git@github.com:test/repo.git SCP-1 edge --brief "$CASE_DIR/brief"
+  jq -e '.repo=="git@github.com:test/repo.git"' "$DV_HOME/submissions/SCP-1/task.json"
+}
 
 # Map only the example's fixed /scratch path into this case's disposable tree.
 config_work_value() (
