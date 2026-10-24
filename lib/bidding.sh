@@ -151,6 +151,13 @@ bid_work_writable() {
   done
   [ -d "$path" ] && [ -w "$path" ] && [ -x "$path" ]
 }
+# Reduce a clone URL or owner/name entry to one comparable slug. GitHub is
+# case-insensitive and the same repository can arrive as https, ssh or scp,
+# with a trailing slash or a .git suffix, so drop those before comparing.
+bid_repo_slug() {
+  printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]' |
+    sed -E 's#/+$##; s#\.git$##; s#^(https?://|ssh://)?(git@)?github\.com[:/]##'
+}
 # A host may refuse whole repositories (DV_BID_REJECT_REPOS="owner/name ..."), so
 # work for one repo can be steered off a host without a per-issue pin (a Mac kept
 # for app work stops taking Core jobs). Matches a remote URL or a clone's origin.
@@ -158,11 +165,9 @@ bid_repo_rejected() {
   local repo=$1 url=$1 slug entry
   [ -n "$DV_BID_REJECT_REPOS" ] || return 1
   if [ -d "$repo" ]; then url=$(git -C "$repo" config --get remote.origin.url 2>/dev/null) || return 1; fi
-  # GitHub owner and repository names are case-insensitive.
-  slug=$(printf '%s\n' "$url" | sed -E 's#^(https?://|ssh://)?(git@)?github\.com[:/]##; s#\.git$##; s#/+$##' | tr '[:upper:]' '[:lower:]')
+  slug=$(bid_repo_slug "$url")
   for entry in $DV_BID_REJECT_REPOS; do
-    entry=$(printf '%s' "${entry%.git}" | tr '[:upper:]' '[:lower:]')
-    [ "$entry" != "$slug" ] || return 0
+    [ "$(bid_repo_slug "$entry")" != "$slug" ] || return 0
   done
   return 1
 }
