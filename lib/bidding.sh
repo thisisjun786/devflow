@@ -555,6 +555,7 @@ bid_event() (
     (if $token!="" then .token==$token else .host==$host end)' "$dir/task.json" >/dev/null; then
     case "$kind" in
       done|landed) bid_task_set "$dir" --arg head "$head" '.status="completed"|.head=$head|del(.reason)' ;;
+      closed) bid_task_set "$dir" --arg reason "$(jq -r '.message // "issue closed"' <<< "$line")" '.status="canceled"|.reason=$reason' ;;
       blocked)
         if jq -e '.kind=="qa"' "$dir/task.json" >/dev/null; then
           bid_task_set "$dir" '.status="failed"|.reason="QA blocked; inspect its report and log"'

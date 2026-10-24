@@ -5,6 +5,8 @@ dsh_setup() {
   repo dsh "${2:-}"
   export DV_DSH_BIN="$ROOT/tests/fixtures/dsh" DV_DSH_SCENARIO=${1:-success} DV_DSH_JAIL=off
   export DV_DSH_HOME="$HOME/.dsh-dv" DV_DSH_KEY_FILE="$HOME/dsh.env" DV_DSH_KEY_VAR=INFERHUB_API_KEY
+  export DV_DSH_SESSIONS="$DV_DSH_HOME/sessions"
+  unset DV_DSH_TOOL_MAX
   export DV_AGENT_CMD_omp="$ROOT/tests/fixtures/dsh-omp" DV_MIN_DISK_GB=0
   mkdir -p "$DV_DSH_HOME/profiles/headless" "$CASE_DIR/dsh-bin"
   printf '# profile\n' > "$DV_DSH_HOME/profiles/headless/cordis.patch.yml"
@@ -70,6 +72,56 @@ case_dsh_stall() {
   dsh_start_wait
   jq -se 'length==2 and (.[1].args|index("--session-id")!=null)' "$DV_STATE/DS-1/dsh-runs.jsonl"
   test ! -e "$DV_STATE/DS-1/overlap"
+  grep -F 'stalled:' "$DV_HOME/dsh-events.log"
+}
+case_dsh_silent_tool() {
+  dsh_setup silent-tool
+  export DV_STALL_AFTER=2
+  dsh_start_wait
+  test -f "$DV_STATE/DS-1/silent-finished"
+  test "$(cat "$DV_STATE/DS-1/dsh-count")" = 1
+  jq -e '.exec_status=="done" and .dsh_failures==0' "$DV_STATE/DS-1/meta"
+}
+case_dsh_session_activity() {
+  dsh_setup session-log
+  export DV_DSH_SESSIONS="$CASE_DIR/custom dsh sessions"
+  export DV_STALL_AFTER=2
+  dsh_start_wait
+  test -f "$DV_STATE/DS-1/silent-finished"
+  test "$(cat "$DV_STATE/DS-1/dsh-count")" = 1
+}
+case_dsh_session_scope() {
+  dsh_setup other-session-log
+  export DV_STALL_AFTER=2
+  dsh_start_wait
+  test ! -f "$DV_STATE/DS-1/silent-finished"
+  test "$(cat "$DV_STATE/DS-1/dsh-count")" = 2
+  grep -F 'stalled:' "$DV_HOME/dsh-events.log"
+}
+dsh_tool_cap() {
+  dsh_setup "$1"
+  export DV_STALL_AFTER=2 DV_DSH_TOOL_MAX=3
+  dsh_start_wait
+  test ! -f "$DV_STATE/DS-1/silent-finished"
+  jq -se 'length==2 and (.[1].args|index("--session-id")!=null)' "$DV_STATE/DS-1/dsh-runs.jsonl"
+  grep -F 'dsh tool exceeded DV_DSH_TOOL_MAX=3 seconds' "$DV_HOME/dsh-events.log"
+  test ! -e "$DV_STATE/DS-1/overlap"
+}
+case_dsh_tool_cap() { dsh_tool_cap tool-cap; }
+case_dsh_tool_cap_activity() { dsh_tool_cap tool-cap-active; }
+case_dsh_tool_cap_per_call() {
+  dsh_setup sequential-tools
+  export DV_STALL_AFTER=2 DV_DSH_TOOL_MAX=3
+  dsh_start_wait
+  test -f "$DV_STATE/DS-1/silent-finished"
+  test "$(cat "$DV_STATE/DS-1/dsh-count")" = 1
+}
+case_dsh_tool_cap_disabled() {
+  dsh_setup silent-tool
+  export DV_STALL_AFTER=2 DV_DSH_TOOL_MAX=0
+  dsh_start_wait
+  test -f "$DV_STATE/DS-1/silent-finished"
+  test "$(cat "$DV_STATE/DS-1/dsh-count")" = 1
 }
 case_dsh_capacity() {
   dsh_setup capacity

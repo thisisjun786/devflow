@@ -1,7 +1,111 @@
 #!/usr/bin/env bash
 # Bounded, watcher-owned host jobs. No network operation runs in the queue reader.
 # stall_scan_interval is computed by dv-watch from the configured scan cadence.
-# shellcheck disable=SC2154
+# shellcheck disable=SC2154,SC2153
+# shellcheck disable=SC2016
+# Reuse the host's detached PR sweep for issue lookups and worker shutdown.
+issue_reconcile_filter='((.kind // "code")=="code" and .cleaned_at==null and
+  (.status=="running" or .status=="waiting-capacity" or .status=="input-required" or
+   .status=="pr" or .status=="ready" or .status=="waiting-base"))'
+issue_reconcile_stop() {
+  local pid command deadline
+  if [ "$BACKEND" = appserver ]; then
+    appserver_require_stopped
+    if appserver_alive; then kill -TERM "$(cat "$S/appserver/client.pid")" || return 1; fi
+    deadline=$(( $(now) + DV_APPSERVER_TIMEOUT ))
+    while appserver_alive; do
+      [ "$(now)" -lt "$deadline" ] || return 1
+      sleep 0.1
+    done
+    return 0
+  fi
+  pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
+  if [ -n "$pid" ]; then
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ "$pid" -gt 1 ] || return 1
+    if kill -0 "$pid" 2>/dev/null && [ "$(ps -p "$pid" -o stat= 2>/dev/null | cut -c 1)" != Z ]; then
+      command=$(ps -p "$pid" -o args=) || return 1
+      case "$command" in
+        *"/bin/dv _agent $ISSUE"|*"/bin/dv _agent $ISSUE "*) kill -TERM "$pid" || return 1 ;;
+        *) return 1 ;;
+      esac
+      # The resource supervisor reaps its scope/tree before it exits.
+      deadline=$(( $(now) + DV_START_WAIT ))
+      while kill -0 "$pid" 2>/dev/null && [ "$(ps -p "$pid" -o stat= 2>/dev/null | cut -c 1)" != Z ]; do
+        [ "$(now)" -lt "$deadline" ] || return 1
+        sleep 0.1
+      done
+    fi
+  fi
+  case "$BACKEND" in
+    tmux) tmux_dv kill-session -t "=$SESSION" 2>/dev/null || true ;;
+    herdr) herdr_interrupt || return 1 ;;
+  esac
+}
+cmd_issue_reconcile() {
+  [ "$#" = 1 ] || fail 'usage: dv _issue-reconcile ISSUE'
+  load_issue "$1"
+  jq -e "$issue_reconcile_filter" "$S/meta" >/dev/null || return 0
+  is_github || return 0
+  # Serialize against pr, send and land, then re-read current metadata.
+  mkdir "$S/.operation" 2>/dev/null || return 0
+  trap 'rmdir "$S/.operation" 2>/dev/null || true' EXIT
+  jq -e "$issue_reconcile_filter" "$S/meta" >/dev/null || return 0
+  local slug number state prs linked head pr
+  slug=$(manager_identity "$REPO"); slug=${slug#github.com/}
+  number=$(jq -r '.source_issue // empty | tostring' "$S/meta")
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || number=${ISSUE##*-}
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || return 0
+  state=$(autofill_api api "repos/$slug/issues/$number") || return 1
+  jq -e '.state=="closed" and .pull_request==null' <<< "$state" >/dev/null || return 0
+  # Our own merged PR belongs to the existing landing reconciliation, even
+  # when its checks/cleanup need a retry or a live waiter still observes it.
+  if [ -f "$S/pr.json" ]; then
+    pr=$(jq -er .url "$S/pr.json") || return 1
+    state=$(cd "$REPO" && autofill_api pr view "$pr" --json state) || return 1
+    jq -e '.state=="OPEN" or .state=="CLOSED" or .state=="MERGED"' <<< "$state" >/dev/null || return 1
+    if jq -e '.state=="MERGED"' <<< "$state" >/dev/null; then return 0; fi
+  fi
+  # Query the branch as well as saved PR metadata: PR creation may have
+  # succeeded just before the worker could record its URL. Failures defer.
+  prs=$(autofill_api api --method GET --paginate "repos/$slug/pulls" \
+    -f state=open -f "head=${slug%%/*}:$BRANCH" -f per_page=100) || return 1
+  jq -es 'length>0 and all(.[]; type=="array")' <<< "$prs" >/dev/null || return 1
+  linked=$(jq -s --arg repo "$slug" --arg number "$number" '
+    [ .[][] | .body // "" |
+      scan("(?i)\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+(?:https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/|([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#)([1-9][0-9]*)\\b") |
+      select(((.[0] // .[1] // $repo)|ascii_downcase)==$repo and .[2]==$number)
+    ] | length>0' <<< "$prs") || return 1
+  [ "$linked" != true ] || return 0
+  require_worktree
+  [ "$BRANCH" != "$BASE" ] || fail 'cannot push the base branch'
+  issue_reconcile_stop || fail 'issue closed but worker stop is unconfirmed; retained for retry'
+  # Preserve dirty files in place; only existing commits go to the remote.
+  git -C "$WT" push origin "$BRANCH:refs/heads/$BRANCH" || return 1
+  head=$(git -C "$WT" rev-parse HEAD)
+  meta_set --arg head "$head" --argjson time "$(now)" \
+    '.status="closed" | .reason="issue closed" | .closed_at=$time | .head=$head'
+  cmd_kick closed "$ISSUE" 'issue closed'
+}
+reconcile_submissions() (
+  local host=$1 rows=$2 row issue dir
+  [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
+  bid_lock "$DV_HOME/.schedule-lock" "${BASHPID:-$$}" || return 1
+  trap 'owned_unlock "$DV_HOME/.schedule-lock" "${BASHPID:-$$}"' EXIT
+  while IFS= read -r row; do
+    issue=$(jq -r .issue <<< "$row")
+    [[ "$issue" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || continue
+    dir="$DV_HOME/submissions/$issue"
+    [ -f "$dir/task.json" ] || continue
+    bid_task_set "$dir" --arg host "$host" --argjson job "$row" '
+      if (.status=="working" or .status=="input-required" or (.status=="submitted" and .host!=null)) and
+        .host==$host and ($job.host // $host)==$host and
+        ((.token // "")==($job.award_token // "")) then
+        .status=(if $job.status=="landed" then "completed" elif $job.status=="closed" then "canceled" else "failed" end) |
+        .head=($job.head // .head) |
+        (if $job.reason!=null then .reason=$job.reason else del(.reason) end)
+      else . end' || return 1
+  done < <(jq -c '.[] | select(.status=="closed" or .status=="failed" or .status=="landed")' <<< "$rows")
+)
 reconcile_dir() { printf '%s/reconcile/%s\n' "$DV_HOME" "$(printf '%s' "$1" | cksum | awk '{print $1 "-" $2}')"; }
 reconcile_alive() {
   local pid=$1 host=$2
@@ -67,6 +171,7 @@ reconcile_host() {
   if [ "$status_due" = 1 ]; then
     rows=$(bid_rpc "$host" status --json < /dev/null) || return 1
     printf '%s\n' "$rows" | jq -e 'type=="array"' >/dev/null || return 1
+    reconcile_submissions "$host" "$rows" || return 1
     # Keep the existing shared stall/metrics episode file serialized. Lock
     # contention and recovery RPCs wait only in this bounded background job.
     (
@@ -77,7 +182,7 @@ reconcile_host() {
     stack_queue_host "$host" "$rows" || return 1
     # PRs merged or closed outside dv land: one quick RPC starts the job
     # host's detached sweep, which this pass's deadline cannot interrupt.
-    if printf '%s\n' "$rows" | jq -e "any(.[]; $pr_reconcile_filter)" >/dev/null; then
+    if printf '%s\n' "$rows" | jq -e "any(.[]; ($pr_reconcile_filter) or ($issue_reconcile_filter))" >/dev/null; then
       bid_rpc "$host" _pr-reconcile-start < /dev/null || true
     fi
     while IFS= read -r issue; do

@@ -2525,6 +2525,8 @@ source "$ROOT/tests/watcher-stuck.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/stale-jobs.sh"
 # shellcheck source=/dev/null
+source "$ROOT/tests/closed-issues.sh"
+# shellcheck source=/dev/null
 source "$ROOT/tests/task.sh"
 task_content_setup() {
   task_setup
@@ -2762,6 +2764,7 @@ registered_cases() {
   printf '%s\n' dsh_success dsh_restart dsh_followup_restart dsh_fallback dsh_resume dsh_stall dsh_capacity dsh_not_ready dsh_key
   printf '%s\n' dsh_quota dsh_crash_fallback dsh_completion_gate dsh_last_status dsh_jail dsh_jail_unavailable dsh_host_sync dsh_host_probe
   printf '%s\n' dsh_delivery dsh_herdr_fallback
+  printf '%s\n' dsh_silent_tool dsh_session_activity dsh_session_scope dsh_tool_cap dsh_tool_cap_activity dsh_tool_cap_per_call dsh_tool_cap_disabled
   printf '%s\n' owned_lock_missing_marker owned_unlock_reaper_race owned_unlock_marker_race owned_lock_dead_reaper owned_lock_recovery_race status_cut_utf8_log_bsd status_cut_utf8_pane_bsd status_cut_utf8_native status_cut_utf8_native_locale reconcile_timeout_default
   printf '%s\n' search_defaults search_override search_large search_tmux search_agents job_oom_evidence search_oom_retry search_oom_revive
   printf '%s\n' job_nproc job_failure job_failure_reset job_supervisor_retry job_generic_exit job_auto_exec job_host job_fallback job_launchd job_tasks job_memory job_agent_retry
@@ -2827,6 +2830,7 @@ registered_cases() {
     host_omp_compaction host_omp_compaction_failure host_omp_compaction_missing \
     stall_omp_once stall_omp_patterns stall_omp_forms stall_omp_wip stall_omp_pr stall_omp_unmerged stall_omp_negative stall_omp_guards \
     stall_omp_session stall_omp_transport stall_omp_gap stall_omp_config stall_omp_daily stall_omp_remote
+  printf '%s\n' reconcile_closed_issue reconcile_closed_event reconcile_submission_terminal reconcile_closed_guards reconcile_closed_push_retry reconcile_closed_submission_event reconcile_closed_waiter reconcile_closed_appserver reconcile_closed_tmux reconcile_closed_merged_pr
 }
 
 runner_error() { printf 'tests/run.sh: %s\n' "$*" >&2; return 2; }
