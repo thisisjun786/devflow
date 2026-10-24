@@ -77,6 +77,11 @@ if [ "$n" -gt 1 ]; then
     fi
   done < "$s/dsh-pids"
 fi
+if [ "${DV_DSH_SCENARIO:-success}" = followup ] && [ "$n" = 2 ]; then
+  # The follow-up turn ends cleanly without dv done, forcing a fresh restart.
+  printf '{"type":"status","phase":"turn_end","reason":{"kind":"completed"}}\n'
+  exit 0
+fi
 dv 'done' "$DV_ISSUE" >/dev/null
 printf '{"type":"status","phase":"turn_end","reason":{"kind":"completed"}}\n'
 printf '{"type":"final","text":"finished"}\n'

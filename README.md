@@ -63,7 +63,7 @@ omp·agy·grok·cursor는 Claude·Devin처럼 herdr pane(없으면 tmux)에서 �
 
 ## dsh 실행과 격리
 
-dsh는 항상 exec 백엔드로 실행합니다(`--mode auto|goal|exec` 모두 headless로 정규화). `agent.jsonl`, `agent.session`, `agent.activity`에 이벤트·첫 session ID·활동 시간을 기록하며, exit 0과 마지막 `status/turn_end`의 `reason.kind=completed`, 해당 실행의 `dv done`이 모두 있어야 완료입니다. crash/stall은 같은 cwd에서 `--session-id`로 한 번 재개합니다. 완료 없이 끝나면 기존 브랜치의 미커밋 작업을 WIP 커밋으로 저장하고 origin에 push한 뒤 새 세션에 브리프·보고서·Git 상태 요약을 전달합니다. PR 상태와 base 브랜치는 자동 push하지 않습니다. 복구되지 않은 시도가 연속 두 번이면 dsh 프로세스 트리를 종료하고 같은 state/worktree/branch에서 omp goal 작업을 시작합니다. provider capacity 대기는 실패 횟수에 포함하지 않습니다. dsh 준비 확인에 실패해도 omp가 준비되어 있으면 입찰·시작이 가능합니다. metadata의 `fallback_from/reason/at`과 `$DV_HOME/dsh-events.log`에서 전환을 확인합니다.
+dsh는 항상 exec 백엔드로 실행합니다(`--mode auto|goal|exec` 모두 headless로 정규화). `agent.jsonl`, `agent.session`, `agent.activity`에 이벤트·첫 session ID·활동 시간을 기록하며, exit 0과 마지막 `status/turn_end`의 `reason.kind=completed`, 해당 실행의 `dv done`이 모두 있어야 완료입니다. crash/stall은 같은 cwd에서 `--session-id`로 한 번 재개합니다. 완료 없이 끝나면 기존 브랜치의 미커밋 작업을 WIP 커밋으로 저장하고 origin에 push한 뒤 새 세션에 브리프·보고서·Git 상태 요약과 현재 요청(후속 `dv send` 지시 포함)을 전달합니다. PR 상태와 base 브랜치는 자동 push하지 않습니다. 복구되지 않은 시도가 연속 두 번이면 dsh 프로세스 트리를 종료하고 같은 state/worktree/branch에서 omp goal 작업을 시작합니다. provider capacity 대기는 실패 횟수에 포함하지 않습니다. dsh 준비 확인에 실패해도 omp가 준비되어 있으면 입찰·시작이 가능합니다. metadata의 `fallback_from/reason/at`과 `$DV_HOME/dsh-events.log`에서 전환을 확인합니다.
 
 `dv host sync`는 Node 24.9 이상에서 dsh 고정 버전(기본 `0.2.1-rc.3`)을 `~/.local/dsh`에 설치하고 `$DV_DSH_HOME/profiles/headless/cordis.patch.yml`을 원자적으로 갱신합니다. 같은 버전은 npm 설치를 건너뜁니다. `DV_DSH_KEY_FILE`(기본 `~/.omp/agent/.env`)의 `DV_DSH_KEY_VAR` 값을 실행 직전 자식 환경의 `INFERHUB_API_KEY`로 전달합니다. 파일은 source하지 않으며 키가 출력에 섞여도 저장 전에 가립니다. telemetry와 session-log/plugin-inventory 전송은 끕니다. `dv host check`는 버전·profile·키 존재·jail 상태만 확인합니다. 명시적인 `--probe-dsh`만 실제 도구 호출 한 번과 session resume를 시험하고 `.anonymous-user-id`가 생기지 않았는지 확인합니다.
 
@@ -665,8 +665,12 @@ checkout의 `.devflow`에 `DV_QA=1`인 저장소를 감시합니다(기본값 `0
 대입만 읽고 `.devflow`의 shell 코드는 실행하지 않습니다.
 
 watcher는 기존 큐의 `merged`·`landed`·`done`·`failed`·`submitted`·`bid-changed`·
-`issue-opened`·`issue-closed` 이벤트가 처리될 때 GitHub의 병합
-PR을 조회하고, 각 병합 커밋이 설정한 base에 포함됐는지 확인합니다.
+`issue-opened`·`issue-closed` 이벤트가 처리되면 스캔 요청을 저장합니다.
+한 watcher pass에서 요청을 모아 한 번만 GitHub의 병합 PR을 조회하고,
+각 병합 커밋이 설정한 base에 포함됐는지 확인합니다. 이벤트 스캔 간격은
+`DV_QA_SCAN_MIN`(기본 60초) 이상이며, 새 base Push/병합을 담은
+`qa-repository` 알림은 다음 스캔을 즉시 깨웁니다. 지연되거나 실패한 요청은
+재시작 후에도 보존하며, 시작 시 복구와 30분 reconciliation도 같은 pass에 합칩니다.
 외부 병합도 기존 watcher tick에서 읽는 GitHub 저장소 이벤트 피드로 자동 입력됩니다.
 조건부 ETag 요청으로 바뀌지 않은 피드는 다시 처리하지 않습니다. base의 Push/병합 PR과
 issue opened/closed 이벤트가 도착하면 기존 큐에 식별자가 고정된 알림을 저장한 뒤
@@ -678,6 +682,10 @@ GitHub 이벤트 공개 지연이나 최근 100개 feed 범위를 넘는 누락�
 GitHub UI나 `gh pr merge`로 직접 병합해도 QA를 등록합니다. 승인 기준은 활성 저장소와 base이며,
 개발 작업의 완료 상태나 award token은 필요하지 않습니다. 이벤트나 원격 status가
 새 저장소를 승인할 수 없습니다. API 조회가 실패하면 관측 지점을 보존하고 재시도합니다.
+base commit·closed PR 목록과 PR 리뷰의 세 목록은 `$DV_HOME/gh-cache/`에
+응답과 ETag를 함께 저장합니다. 다음 요청은 조건부 GET으로 재검증하고, 304일 때만
+저장한 본문을 재사용합니다. 두 full SHA 사이의 compare 응답은 영구 재사용합니다.
+리뷰 목록은 페이지별로 재검증하며, API 오류는 과거 리뷰로 대신 승인하지 않습니다.
 
 `DV_QA_COALESCE`(기본 600초) 동안 새 병합이 없으면 모인 PR 전부를 나열한
 QA 하나를 최신 관측 base head에 제출합니다. 실행 중 추가 병합은 다음 요청으로

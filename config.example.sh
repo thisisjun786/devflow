@@ -153,5 +153,6 @@ fi
 : "${DV_QA_AGENT:=codex}" # codex exec or claude (fresh session)
 : "${DV_QA_AGENT_CMD:=}" # optional command receiving the QA prompt path
 : "${DV_QA_COALESCE:=600}" # quiet seconds before bidding one QA for accumulated merges
+: "${DV_QA_SCAN_MIN:=60}" # minimum seconds between event scans; new base push/merge events wake once immediately
 : "${DV_QA_BASE:=}" # QA base; empty uses the registered repository's remote default
 : "${DV_MANAGER_LAST=1}" # 1: the manager host (lina-os) bids only after work hosts; 0: it competes on score like the others
