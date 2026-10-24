@@ -10,10 +10,6 @@ stall_omp_candidates() {
     (.done_at==null or (.status=="pr" and .done_head!=.head)) and
     (.issue|type)=="string" and (.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")))'
 }
-# Text forms seen from DeepSeek V4.1 Flash via InferHub (10-24 sample, 40
-# sessions): [tool_use id=.. name=..] with a JSON body, <tool_use id=..>,
-# <function_calls>/<invoke name=..> XML, antml-prefixed XML and <tool_call>.
-STALL_OMP_TEXT_TOOL='\[tool_use|<tool_use id=|<invoke|<function_calls>|<tool_call>|antml:invoke'
 # Read the newest session written by this launch. A later user/tool message or
 # an incomplete final JSON line supersedes the old assistant turn. Stream the
 # log so long sessions do not need to fit in memory or one shell argument.
@@ -27,23 +23,22 @@ stall_omp_turn() {
     if [ -z "$newest" ] || [ "$file" -nt "$newest" ]; then newest=$file; fi
   done < <(find "$dir" -maxdepth 1 -type f -name '*.jsonl' -newer "$S/agent.launched" 2>/dev/null)
   [ -n "$newest" ] || return 1
-  jq -Rner --arg session "$newest" --arg pattern "$STALL_OMP_TEXT_TOOL" '
+  jq -Rner --arg session "$newest" '
     reduce inputs as $line (null;
       (try ($line|fromjson) catch null) as $entry |
       if $entry==null or $entry.type=="message" then $entry else . end) |
     select(.type=="message" and (.id|type)=="string" and .id!="" and
       .message.role=="assistant" and .message.stopReason=="stop" and
       (.message.content|type)=="array") |
-    select(any(.message.content[]; .type=="text" and (.text|type)=="string" and (.text|test($pattern))) and
+    select(any(.message.content[]; .type=="text" and (.text|type)=="string" and (.text|test("\\S"))) and
       all(.message.content[]; .type!="toolCall")) |
     [$session,.id]|tojson' "$newest"
 }
-# A turn that printed its tool call as text poisons the session: once one is in
-# the history the model repeats the form in about a third of later turns
-# (10-24 measurement), so a nudge rarely recovers it. Start a fresh omp session
-# in the same omp process, pane, worktree and branch instead (/new), and give
-# it a short state summary. This is separate from the single revive budget;
-# restarts are recorded in omp-restarts.json and logged for the operator.
+# An unfinished job can stop after planning text or a tool call printed as
+# text. Both use a fresh omp session in the same process, pane, worktree and
+# branch (/new), with a short state summary. Completion is checked against
+# job state, not the wording of the last message. This is separate from the
+# single revive budget; omp-restarts.json reserves each ended turn once.
 stall_omp_resume() {
   local token=$1 turn row tmp time state="$S/omp-restarts.json" day today
   [ ! -e "$S/texttool-skip" ] || return 0

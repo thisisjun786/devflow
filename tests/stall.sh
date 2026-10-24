@@ -2,6 +2,8 @@
 # Sourced by run.sh: synthetic status and herdr fixtures, no live agents.
 # ROOT and DV_HOST come from the driver.
 # shellcheck disable=SC2153,SC2154,SC2016
+# Tool-call text must never be echoed into a fresh session's recovery prompt.
+STALL_OMP_TEXT_TOOL='\[tool_use|<tool_use id=|<invoke|<function_calls>|<tool_call>|antml:invoke'
 stall_omp_fixture() {
   export DV_OMP_RESTART_GAP=0 DV_OMP_RESTART_SETTLE=0
   stall_fixture; stall_functions
@@ -90,6 +92,43 @@ case_stall_omp_once() {
   test ! -s "$DV_HOME/kick.q"
   grep -F 'The previous session ended without running its last step.' "$DV_STATE/ST-1/sent-input"
 }
+case_stall_omp_plan_only() {
+  stall_omp_fixture
+  local text content n=0
+  for text in 'Search for the relevant methods.' 'Let me inspect the 4 conflicted files.' 'Finished the requested work.'; do
+    n=$((n + 1))
+    content=$(jq -cn --arg text "$text" '[{type:"text",text:$text}]')
+    stall_omp_message "plan-$n" "$content"
+    stall_omp_scan; stall_omp_count "$((n * 2))"
+    # The watcher and a separate recovery command share the same reservation.
+    stall_omp_scan
+    dv _stall-recover ST-1 --omp-texttool round-1
+    stall_omp_count "$((n * 2))"
+    jq '.status="pr"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+    mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  done
+  stall_omp_prompts
+  jq -e 'length==3' "$DV_STATE/ST-1/omp-restarts.json"
+  test ! -e "$DV_STATE/ST-1/revive"
+  test ! -e "$DV_STATE/ST-1/stall-recovery.json"
+  test ! -s "$DV_HOME/kick.q"
+}
+case_stall_omp_plan_negative() {
+  stall_omp_fixture
+  local reason content
+  for reason in toolUse length error aborted; do
+    jq -cn --arg reason "$reason" '{type:"message",id:"not-stopped",message:{role:"assistant",stopReason:$reason,
+      content:[{type:"text",text:"Let me inspect the files."}]}}' >> "$OMP_LOG"
+    stall_omp_scan; stall_omp_count 0
+  done
+  for content in '[]' '[{"type":"thinking","thinking":"Let me inspect the files."}]' \
+    '[{"type":"text","text":""}]' '[{"type":"text","text":" \n\t"}]' \
+    '[{"type":"text","text":"Let me inspect the files."},{"type":"toolCall","id":"x","name":"bash","arguments":{}}]'; do
+    stall_omp_message not-text-only "$content"
+    stall_omp_scan; stall_omp_count 0
+  done
+  test ! -e "$DV_STATE/ST-1/omp-restarts.json"
+}
 case_stall_omp_patterns() {
   stall_omp_fixture
   local marker content n=0
@@ -167,6 +206,7 @@ case_stall_omp_pr() {
 }
 case_stall_omp_unmerged() {
   stall_omp_fixture
+  stall_omp_message plan-merge '[{"type":"text","text":"Let me inspect the 4 conflicted files."}]'
   git -C "$REPO" checkout -qb other main
   printf 'other\n' > "$REPO/base"
   git -C "$REPO" commit -qam other
@@ -197,7 +237,11 @@ case_stall_omp_negative() {
     stall_omp_scan; stall_omp_count 0
   done
   stall_omp_message final '[{"type":"text","text":"Finished the requested work."}]'
+  jq '.done_at=1' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
   stall_omp_scan; stall_omp_count 0
+  jq 'del(.done_at)' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
   local role
   for role in user tool toolResult; do
     stall_omp_message superseded
@@ -213,6 +257,7 @@ case_stall_omp_negative() {
 }
 case_stall_omp_guards() {
   stall_omp_fixture
+  stall_omp_message plan-guard '[{"type":"text","text":"Search for the relevant methods."}]'
   local status change
   for status in working blocked unknown 'done'; do
     printf '%s\n' "$status" > "$CASE_DIR/herdr/w-ST-1/status"
@@ -243,7 +288,7 @@ case_stall_omp_session() {
   stall_omp_scan; stall_omp_count 0
   touch -t 202101010000 "$OMP_LOG"
   OMP_LOG="$OMP_DIR/new-session.jsonl"
-  stall_omp_message final '[{"type":"text","text":"Done"}]'
+  jq -cn '{type:"message",id:"new-input",message:{role:"user",content:[]}}' >> "$OMP_LOG"
   stall_omp_scan; stall_omp_count 0
   stall_omp_message turn-1
   stall_omp_scan; stall_omp_count 2
@@ -255,13 +300,14 @@ case_stall_omp_session() {
 }
 case_stall_omp_transport() {
   stall_omp_fixture
+  stall_omp_message plan-transport '[{"type":"text","text":"Let me inspect the files."}]'
   printf 'agent prompt\n' > "$CASE_DIR/herdr/fail"
   stall_omp_scan; stall_omp_count 1
   rm "$CASE_DIR/herdr/fail"
   stall_omp_scan; stall_omp_count 1
   test ! -f "$DV_STATE/ST-1/sent-input"
   grep -F 'rc=1 today=1' "$DV_HOME/omp-restarts.log"
-  stall_omp_message next
+  stall_omp_message next '[{"type":"text","text":"Search for the relevant methods."}]'
   # Fail the second prompt after delivering /new; neither may be retried.
   STALL_TIME=$(date +%s)
   send_text() {
@@ -280,7 +326,7 @@ case_stall_omp_gap() {
   stall_omp_fixture
   DV_OMP_RESTART_GAP=180
   cmd__stall_recover ST-1 --omp-texttool round-1; stall_omp_count 2
-  stall_omp_message next
+  stall_omp_message next '[{"type":"text","text":"Search for the relevant methods."}]'
   STALL_TIME=1179
   cmd__stall_recover ST-1 --omp-texttool round-1; stall_omp_count 2
   jq -e 'length==1' "$DV_STATE/ST-1/omp-restarts.json"
