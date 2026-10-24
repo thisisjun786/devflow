@@ -2226,7 +2226,7 @@ case_submit_route() {
   test "$(submit_agent RO-1)" = agy:goal
   grep -F 'Route: writing' "$CASE_DIR/route.err"
   dv submit "$REPO" RO-2 fix --brief "$CASE_DIR/small"
-  test "$(submit_agent RO-2)" = omp:goal
+  test "$(submit_agent RO-2)" = dsh:exec
   dv submit "$REPO" RO-3 plain --brief "$CASE_DIR/brief"
   test "$(submit_agent RO-3)" = codex:goal
   dv submit "$REPO" RO-4 plain --brief "$CASE_DIR/default"
@@ -2491,6 +2491,8 @@ source "$ROOT/tests/appserver.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/codex-exec.sh"
 # shellcheck source=/dev/null
+source "$ROOT/tests/dsh.sh"
+# shellcheck source=/dev/null
 source "$ROOT/tests/send-branch.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/codex-exec-review.sh"
@@ -2753,9 +2755,9 @@ source "$ROOT/tests/job-limits.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/search-scope.sh"
 registered_cases() {
-  printf '%s\n' qa_landed_admission_race
-  printf '%s\n' qa_scan_batch qa_scan_delayed qa_scan_retry qa_scan_base_event \
-    gh_cache_conditional gh_cache_fail_closed gh_cache_immutable review_cache_snapshot review_cache_pass_counts
+  printf '%s\n' dsh_success dsh_restart dsh_fallback dsh_resume dsh_stall dsh_capacity dsh_not_ready dsh_key
+  printf '%s\n' dsh_quota dsh_crash_fallback dsh_completion_gate dsh_last_status dsh_jail dsh_jail_unavailable dsh_host_sync dsh_host_probe
+  printf '%s\n' dsh_delivery dsh_herdr_fallback
   printf '%s\n' owned_lock_missing_marker owned_unlock_reaper_race owned_unlock_marker_race owned_lock_dead_reaper owned_lock_recovery_race status_cut_utf8_log_bsd status_cut_utf8_pane_bsd status_cut_utf8_native reconcile_timeout_default
   printf '%s\n' search_defaults search_override search_large search_tmux search_agents job_oom_evidence search_oom_retry search_oom_revive
   printf '%s\n' job_nproc job_failure job_failure_reset job_supervisor_retry job_generic_exit job_auto_exec job_host job_fallback job_launchd job_tasks job_memory job_agent_retry
@@ -2799,7 +2801,7 @@ registered_cases() {
   portable_darwin_resources \
   symlink_paths symlink_claude_stale_server symlink_claude_stale_server_empty symlink_revive_dead symlink_revive_tmux revive_wait_exit claude_bsd_stat_mode host_darwin_shells revive_done_capacity revive_orphan_owner revive_orphan_close_failure revive_stale_marker revive_goal_owned_done revive_report_event revive_orphan_workspace revive_manual_done revive_capacity revive_release_event revive_legacy_idle revive_legacy_unknown revive_capacity_status revive_legacy_busy revive_legacy_uncertain revive_dead revive_live revive_failure revive_goal_failure revive_transport revive_tmux revive_missing_pane revive_missing_pane_live revive_missing_pane_unknown revive_legacy_exit revive_start_failure revive_undetected revive_worktree_guard revive_goal_no_done revive_override revive_tmux_retained revive_tmux_live revive_codex_goal \
   manager_reexec manager_real_conflict manager_real_pending_conflict manager_conflict_restart manager_reserved_collision manager_note_busy watch_stuck_route watch_stuck_bid watch_stack_background_failure watch_stuck_empty watch_stuck_worker manager_collision manager_fallback_collision manager_hash_collision manager_legacy_replay manager_note manager_pool_independent watch_capacity_eight watch_stuck \
-  manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_remote_repo manager_remote_repo_failure manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_stale_lock manager_surviving_runner manager_runner_ownership \
+  manager_batch manager_batch_order manager_latency manager_busy manager_notice manager_busy_default manager_capacity_restart manager_fallback_restart manager_fallback_serial manager_start manager_identity manager_serial manager_parallel manager_fallback manager_no_id manager_unmanaged manager_local manager_remote_repo manager_remote_repo_failure manager_remote_repo_local_collision manager_stop_pending manager_concurrent_start manager_failed_event manager_restart_queue manager_unmanaged_override manager_unknown_repo manager_reused_issue manager_moved_checkout manager_stale_lock manager_surviving_runner manager_runner_ownership \
   pr_wait_caller_killed pr_wait_caller_fallback pr_wait_caller_delayed pr_late_checks pr_wait_stale pr_wait_killed pr_wait_live pr_wait_detached pr_wait_fallback pr_wait_concurrent pr_wait_head pr_wait_failed_checks pr_wait_conflict watch_retry watch_retry_restart watch_inflight_replay watch_killed reconcile_delivery reconcile_corrected_head status_done_head reconcile_waiter reconcile_waiter_remote \
   codex_allowlist bid_reject_repos codex_persisted_trust codex_trust_conflict codex_trust_duplicate codex_trust_parallel codex_provider_missing codex_provider_env codex_folder_trust codex_folder_after_prompt codex_trust_formats codex_trust_refuse codex_trust_linked codex_trust_clone_bid \
   question_async_ack question_overlap question_claude_overlap question_delivery_retry polish_public_delayed polish_public_during_run polish_public_published question_async question_answered question_during_grace question_claude_answered question_delivery_failure question_stderr question_tmux_off codex_trust_alias claude_trust_alias host_descendant_timeout host_npm_failure host_npm_failure_symlink host_checksum host_path_newline host_auth_override host_npm_origin pr_body_update reconcile_alias award_retry_rejection award_stale_failure bid_schedule_lock_dead_owner award_early_absent bid_clean_capacity submit_local_origin \
@@ -2810,6 +2812,9 @@ registered_cases() {
   pr_title_format pr_branch_names pr_body_template pr_format_delivery pr_format_legacy pr_format_start pr_format_instructions \
   reconcile_stale_prs reconcile_merged_unverified land_already_merged land_already_merged_guards qa_clean_url park_prerequisites park_repark_blockers park_agent_exit park_exec_exit park_open_pr park_pr_prerequisites park_pr_wait park_pr_stale_send park_pr_wait_resume park_pr_reconcile reconcile_merged_cleanup_retry \
   runner_contract runner_selection runner_mapping readme_startup_guidance readme_manager_max_wait
+  printf '%s\n' qa_landed_admission_race \
+    qa_scan_batch qa_scan_delayed qa_scan_retry qa_scan_base_event \
+    gh_cache_conditional gh_cache_fail_closed gh_cache_immutable review_cache_snapshot review_cache_pass_counts
   printf '%s\n' watch_quiet_events manager_rotate manager_rotate_keep
   printf '%s\n' \
     qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter \

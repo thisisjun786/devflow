@@ -39,7 +39,7 @@ cmd_start() {
   REPO=$(cd "$1" && git rev-parse --show-toplevel); ISSUE=$2; local slug=$3
   shift 3; valid_issue "$ISSUE"
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || fail 'invalid slug'
-  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref start_sha source_issue='' capacity own_admission=0
+  local agent=$DV_AGENT mode=$DV_MODE brief='' base='' ref start_sha source_issue='' capacity own_admission=0 dsh_fallback=''
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || fail "missing value for $1"
     case "$1" in
@@ -51,7 +51,15 @@ cmd_start() {
   known_agent "$agent" || fail 'unknown agent'
   [ -n "$mode" ] || mode=$(codex_default_mode "$agent")
   case "$mode" in auto|goal|exec) ;; *) fail 'mode must be auto, goal or exec' ;; esac
-  [ "$agent" = codex ] || [ "$mode" = goal ] || fail 'auto/exec modes are Codex-only'
+  [ "$agent" = codex ] || [ "$agent" = dsh ] || [ "$mode" = goal ] || fail 'auto/exec modes require codex or dsh'
+  if [ "$agent" = dsh ]; then
+    dsh_validate
+    dsh_jail_probe || fail "dsh jail required: $DSH_JAIL_REASON"
+    if ! bid_agent dsh; then
+      dsh_omp_ready || fail 'dsh is not ready and omp fallback is unavailable'
+      agent=omp; mode=goal; dsh_fallback='dsh readiness probe failed'
+    fi
+  fi
   [ -z "$brief" ] || [ -f "$brief" ] || fail 'brief file not found'
   need git; need jq
   if [ "$agent" = codex ] && [ -z "$DV_AGENT_CMD_codex" ]; then
@@ -65,7 +73,8 @@ cmd_start() {
     BACKEND=appserver; mode=goal
   else
     [ "$mode" != auto ] || mode='exec'
-    if [ "$agent:$mode" = codex:exec ] && [ -z "$DV_AGENT_CMD_codex" ]; then
+    if [ "$agent" = dsh ] || { [ "$agent:$mode" = codex:exec ] && [ -z "$DV_AGENT_CMD_codex" ]; }; then
+      mode='exec'
       BACKEND='exec'
       [[ "$DV_STALL_AFTER" =~ ^[1-9][0-9]*$ ]] || fail 'DV_STALL_AFTER must be a positive integer'
     elif [ "$DV_HERDR" != 0 ] && herdr_bin >/dev/null; then BACKEND=herdr; else need tmux; fi
@@ -128,6 +137,11 @@ cmd_start() {
     (if $token=="" then {} else {award_token:$token} end) +
     (if $source_issue=="" then {} else {source_issue:($source_issue|tonumber)} end)' > "$S/meta"
   : > "$S/log"
+  [ -z "$dsh_fallback" ] || dsh_fallback_record "$dsh_fallback"
+  if [ "$agent" = dsh ] && ! (cd "$WT" && dsh_jail_prepare); then
+    meta_set '.status="start-failed"'
+    fail 'dsh jail setup failed; worktree and state retained'
+  fi
   if ! launch_agent; then
     meta_set '.status="start-failed"'
     fail "$BACKEND startup failed; state retained for dv clean (no backend fallback)"
@@ -190,18 +204,19 @@ run_agent() {
   [ "${2:-}" != --revived ] || revived=1
   # The outer resource supervisor owns agent.pid and survives a scope OOM.
   agent=$(jq -r .agent "$S/meta"); mode=$(jq -r .mode "$S/meta")
-  override="DV_AGENT_CMD_$agent"; override=${!override}
+  override="DV_AGENT_CMD_$agent"; override=${!override:-}
   instruction="Read $S/brief.md and complete everything it asks. Finish with dv done $ISSUE."
+  if [ "${2:-}" = --exec-prompt ]; then instruction=$(cat "$3"); fi
   unset DV_REVIVE_ID
   if [ "$revived" = 1 ]; then
     instruction=$(cat "$S/revive/prompt.md")
     DV_REVIVE_ID=$(cat "$S/revive/id"); export DV_REVIVE_ID
   fi
   if [ "$BACKEND" = exec ]; then
-    if [ "${2:-}" = --exec-prompt ]; then instruction=$(cat "$3"); fi
     instruction="$(printf '%s\n' "$instruction"; job_oom_notice)"
     export DV_AGENT_INSTRUCTION="$instruction"
-    codex_exec_run "$instruction"
+    if [ "$agent" = dsh ]; then dsh_exec_run "$instruction"
+    else codex_exec_run "$instruction"; fi
     return
   fi
   instruction="$(printf '%s\n' "$instruction"; job_oom_notice)"

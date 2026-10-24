@@ -3,6 +3,7 @@
 # shellcheck disable=SC2016
 codex_default_mode() {
   if [ -n "$DV_MODE" ]; then printf '%s\n' "$DV_MODE"
+  elif [ "$1" = dsh ]; then printf 'exec\n'
   elif [ "$1" = codex ]; then
     case "$DV_CODEX_MODE" in
       auto|appserver) printf 'auto\n' ;;
@@ -17,7 +18,7 @@ codex_exec_launch() (
   # Serialize acceptance, including the gap before the wrapper takes .exec-lock.
   owned_lock "$S/.exec-launch" "$$" || fail 'exec launch already in progress'
   trap 'owned_unlock "$S/.exec-launch" "$$"' EXIT
-  if codex_exec_alive "$S"; then fail 'Codex exec is still running; send the follow-up after it exits'; fi
+  if codex_exec_alive "$S"; then fail 'exec is still running; send the follow-up after it exits'; fi
   # Keep startup alive under the caller until the child PID is published. Never
   # truncate a PID visible to status, and invalidate the previous completion
   # before returning to a caller that might immediately wait or send again.
@@ -207,7 +208,7 @@ $original_instruction"
 }
 codex_exec_send() {
   case "$(jq -r .status "$S/meta")" in landed|cancelled) fail 'cannot resume a finished issue' ;; esac
-  if codex_exec_alive "$S"; then fail 'Codex exec is still running; send the follow-up after it exits'; fi
+  if codex_exec_alive "$S"; then fail 'exec is still running; send the follow-up after it exits'; fi
   local prompt
   prompt=$(mktemp "$S/exec-prompt.XXXXXX")
   {

@@ -1,5 +1,7 @@
 # 공통 개발 규칙
 
+- Do not read other checkouts, branches or directories outside this worktree for answers.
+
 - 검색은 자기 worktree와 brief에 적힌 경로 안에서만 합니다. 홈 디렉터리 전체(`~`, `/home/<user>`), `/`, `/scratch`, `/state`, 다른 작업의 worktree는 통째로 검색하지 않습니다. 커밋이나 파일의 출처는 `git log -S` 같은 git 명령이나 `gh`로 찾습니다. 메모리 상한(MemoryMax-OOM)으로 죽었으면 같은 명령을 다시 돌리지 말고 검색 범위를 줄입니다.
 
 - 지정된 이슈의 worktree만 고칩니다. 다른 작업 파일을 덮어쓰거나 정리하지 않습니다.

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = --version ]; then printf 'dsh 0.2.1-rc.3\n'; exit; fi
+test "${INFERHUB_API_KEY:-}" = 'fixture-dsh-secret'
+test "$DSH_TELEMETRY_DISABLED:$DSH_TELEMETRY_MODE:$DSH_PERMISSION_MODE" = '1:DISABLED:danger-full-access'
+if [ "${DV_DSH_SMOKE:-0}" = 1 ]; then
+  cat >/dev/null
+  jq -cn --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" >> "$HOME/dsh-probes"
+  if [ "${DV_DSH_SMOKE_BAD:-0}" = 1 ]; then touch "$DSH_HOME/.anonymous-user-id"; fi
+  printf '%s\n' '{"type":"session","sessionId":"smoke-session"}' '{"type":"tool_call","name":"bash"}' '{"type":"status","phase":"turn_end","reason":{"kind":"completed"}}'
+  exit
+fi
+s="$DV_STATE/$DV_ISSUE"
+n=1
+[ ! -f "$s/dsh-count" ] || n=$(( $(cat "$s/dsh-count") + 1 ))
+printf '%s\n' "$n" > "$s/dsh-count"
+printf '%s\n' "$$" >> "$s/dsh-pids"
+instruction=$(cat)
+jq -cn --arg cwd "$PWD" --arg instruction "$instruction" --args '{cwd:$cwd,instruction:$instruction,args:$ARGS.positional}' -- "$@" >> "$s/dsh-runs.jsonl"
+printf '{"type":"session","session":{"sessionId":"dsh-session-%s"}}\n' "$n"
+case "${DV_DSH_SCENARIO:-success}" in
+  delivery)
+    printf 'work\n' > delivered.txt
+    git add delivered.txt
+    git commit -qm 'feat(fixture): deliver dsh work'
+    pr-template-body 'Delivers the dsh fixture.' > "$s/pr.md"
+    dv pr "$DV_ISSUE" >/dev/null
+    dv pr-wait "$DV_ISSUE" --foreground >/dev/null ;;
+  unfinished|restart)
+    if [ "$n" = 1 ] || [ "$DV_DSH_SCENARIO" = unfinished ]; then
+      printf 'partial\n' > partial.txt
+      printf '{"type":"status","phase":"turn_end","reason":{"kind":"completed"}}\n'
+      exit
+    fi ;;
+  crash|stall)
+    if [ "$n" = 1 ]; then
+      sleep 60 >/dev/null 2>&1 &
+      printf '%s\n' "$!" >> "$s/dsh-pids"
+      if [ "$DV_DSH_SCENARIO" = stall ]; then wait; else exit 7; fi
+    fi ;;
+  crash-always) exit 7 ;;
+  final-only)
+    dv 'done' "$DV_ISSUE" >/dev/null
+    printf '{"type":"final","text":"finished"}\n'; exit ;;
+  last-aborted)
+    dv 'done' "$DV_ISSUE" >/dev/null
+    printf '%s\n' '{"type":"status","phase":"turn_end","reason":{"kind":"completed"}}' '{"type":"status","phase":"turn_end","reason":{"kind":"aborted"}}'
+    exit ;;
+  jail)
+    test ! -r "$DV_WORK/sibling/secret"
+    test ! -r "$HOME/code/other/secret"
+    test ! -r "$DSH_HOME/sessions/other/secret"
+    printf 'jailed commit\n' > jailed.txt
+    git add jailed.txt
+    git commit -qm 'feat(fixture): commit inside the jail'
+    touch "$DSH_HOME/sessions/--$(printf '%s' "${PWD#/}" | tr / -)--/worked" ;;
+  capacity|quota)
+    if [ "$n" -le 2 ]; then
+      if [ "$DV_DSH_SCENARIO" = quota ]; then printf 'dsh: QUOTA: exhausted\n' >&2
+      else printf '{"type":"error","message":"model at capacity"}\n'; fi
+      exit 1
+    fi ;;
+  leak)
+    printf '{"type":"text","text":"%s"}\n' "$INFERHUB_API_KEY"
+    printf '%s\n' "$INFERHUB_API_KEY" >&2 ;;
+esac
+if [ "$n" -gt 1 ]; then
+  # Previously launched worker descendants must be gone before any retry.
+  while IFS= read -r pid; do
+    [ "$pid" != "$$" ] || continue
+    if kill -0 "$pid" 2>/dev/null && [ "$(ps -p "$pid" -o stat= | cut -c 1)" != Z ]; then
+      touch "$s/overlap"; exit 9
+    fi
+  done < "$s/dsh-pids"
+fi
+dv 'done' "$DV_ISSUE" >/dev/null
+printf '{"type":"status","phase":"turn_end","reason":{"kind":"completed"}}\n'
+printf '{"type":"final","text":"finished"}\n'

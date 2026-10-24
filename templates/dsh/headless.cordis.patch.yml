@@ -1,0 +1,41 @@
+# devflow dsh worker profile (sion 10-24). Every model call goes to InferHub
+# deepseek-v4.1-flash over anthropic-messages with the same upstream filter as omp.
+# The key is read from INFERHUB_API_KEY in the environment at run time only.
+- id: llm-pi-ai
+  config:
+    providers:
+      inferhub:
+        displayName: InferHub
+        apiKeyEnv: INFERHUB_API_KEY
+        api: anthropic-messages
+        baseURL: https://api.inferhub.dev
+        reasoning: high
+        headers:
+          x-ignore-upstream: ali,alicn,cmc,ocg
+        models:
+          - id: deepseek-v4.1-flash
+            contextWindow: 1000000
+            maxTokens: 64000
+            reasoningEfforts:
+              off:
+              high: high
+- id: agent-default-model
+  config:
+    provider: inferhub
+    model: deepseek-v4.1-flash
+# Never ship session logs or the plugin inventory anywhere.
+- id: session-log-deepseek
+  config:
+    enabled: false
+- id: plugin-package-inventory-deepseek
+  config:
+    enabled: false
+# No web_fetch/web_search for workers.
+- id: tool-web
+  disabled: true
+# Long Go/e2e tests: 10 min default per shell call, 60 min cap (a longer call keeps
+# running as a background job). Plumbing only; the model still picks per-call values.
+- id: bash-sandbox
+  config:
+    timeoutMs: 600000
+    maxTimeoutMs: 3600000

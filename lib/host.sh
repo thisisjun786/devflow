@@ -2,6 +2,8 @@
 # Host setup is independent of bidding and delivery. Never source/eval the TSV.
 # Shell snippets expand in the child; PATH changes in subshells are intentional.
 # shellcheck disable=SC2016,SC2030,SC2031
+# shellcheck source=lib/dsh-host.sh
+source "$DV_ROOT/lib/dsh-host.sh"
 host_rows() {
   awk -F '\t' -v host="$DV_HOST" '
     /^#/ || /^[[:space:]]*$/ {next}
@@ -163,9 +165,9 @@ host_omp_compaction_sync() {
 host_check() {
   local json=0 probe=0 rows login_path ssh_path name version install scope login ssh tools_json auth='{}' result
   local proxy=false codex_login codex_ssh probe_result='{"status":"not-requested"}' rc=0 bin
-  local omp_login omp_ssh
+  local omp_login omp_ssh dsh_probe=0 dsh_probe_result=not-requested dsh_info
   for arg in "$@"; do
-    case "$arg" in --json) json=1 ;; --probe-codex) probe=1 ;; *) fail 'usage: dv host check [--json] [--probe-codex]' ;; esac
+    case "$arg" in --json) json=1 ;; --probe-codex) probe=1 ;; --probe-dsh) dsh_probe=1 ;; *) fail 'usage: dv host check [--json] [--probe-codex] [--probe-dsh]' ;; esac
   done
   rows=$(host_rows) || fail 'invalid hosts/tools.tsv'
   login_path=$(host_shell_path login) || fail 'login shell probe failed'
@@ -191,6 +193,11 @@ host_check() {
   codex_ssh=$(host_codex_launcher "$ssh_path" "$proxy")
   omp_login=$(host_omp_compaction "$login_path") || return 1
   omp_ssh=$(host_omp_compaction "$ssh_path") || return 1
+  dsh_info=$(PATH="$ssh_path" host_dsh_check) || return 1
+  if [ "$dsh_probe" = 1 ]; then
+    if PATH="$ssh_path" host_probe_dsh; then dsh_probe_result=ready
+    else dsh_probe_result=failed; rc=1; fi
+  fi
   if [ "$probe" = 1 ]; then
     bin=$(printf '%s' "$codex_ssh" | jq -r .path)
     if [ "$(printf '%s' "$codex_ssh" | jq -r .status)" != ok ]; then
@@ -205,8 +212,9 @@ host_check() {
     --argjson login "$codex_login" --argjson ssh "$codex_ssh" --argjson probe "$probe_result" --argjson onboarding "$(claude_onboarding)" \
     --argjson watcher "$(self_update_watch_status)" --argjson disk "$(disk_info)" --argjson tmp "$(tmp_quota_info)" --argjson limits "$(job_host_info)" \
     --argjson omp_login "$omp_login" --argjson omp_ssh "$omp_ssh" --argjson compact_tokens "$DV_OMP_COMPACT_TOKENS" \
+    --argjson dsh "$dsh_info" --arg dsh_probe "$dsh_probe_result" \
     '{host:$host,shell:$shell,tools:.,auth:$auth,watcher:$watcher,tmp:$tmp,job_limits:$limits,codex:{configured:$configured,proxy:$proxy,login:$login,ssh:$ssh,probe:$probe},claude:{onboarding:$onboarding},
-      omp:{compaction:{expected:$compact_tokens,login:$omp_login,ssh:$omp_ssh}}} + $disk')
+      omp:{compaction:{expected:$compact_tokens,login:$omp_login,ssh:$omp_ssh}},dsh:($dsh+{probe:$dsh_probe})} + $disk')
   if [ "$json" = 1 ]; then printf '%s\n' "$result"
   else
     printf 'Host: %s (local login / non-interactive SSH shell startup)\n' "$DV_HOST"
@@ -217,6 +225,7 @@ host_check() {
     printf '%s\n' "$result" | jq -r '.tools[] | "\(.name) expected=\(.expected)\n  login: \(.login.status) \(.login.version) \(.login.path) \(.login.reason)\n  ssh:   \(.ssh.status) \(.ssh.version) \(.ssh.path) \(.ssh.reason)"'
     printf '%s\n' "$result" | jq -r '.auth | to_entries[] | "auth \(.key): login=\(.value.login) ssh=\(.value.ssh)"'
     printf '%s\n' "$result" | jq -r '.claude.onboarding | "claude onboarding: hasCompletedOnboarding=\(.hasCompletedOnboarding) skipDangerousModePermissionPrompt=\(.skipDangerousModePermissionPrompt)"'
+    printf '%s\n' "$result" | jq -r '.dsh | "dsh version=\(.version) expected=\(.expected) node>=24.9=\(.node_ready) profile=\(.profile) present=\(.profile_present) key_present=\(.key_present) jail=\(.jail.status) (\(.jail.reason)) probe=\(.probe)"'
     printf '%s\n' "$result" | jq -r '.omp.compaction |
       "omp compaction.thresholdTokens expected=\(.expected)\n  login: \(.login.status) \(.login.value // "unset")\n  ssh:   \(.ssh.status) \(.ssh.value // "unset")",
       (if any(.login,.ssh; .status=="mismatch" or .status=="unavailable") then
@@ -395,6 +404,7 @@ host_sync() (
       *) fail "unsupported installer: $install" ;;
     esac
   done <<< "$rows"
+  host_dsh_sync
   host_omp_compaction_sync
   host_path_update "$HOME/.profile" "$brew"; host_path_update "$HOME/.zshenv" "$brew"
   if [ -z "$missing_apt" ]; then :

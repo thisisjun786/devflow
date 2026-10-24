@@ -219,8 +219,8 @@ manager_event_repo() {
     rows=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" status "$issue" --json < /dev/null) || return 1
     repo=$(printf '%s\n' "$rows" | jq -er --arg issue "$issue" --arg host "$host" '.[] | select(.issue==$issue and .host==$host) | .repo') || return 1
   fi
-  if [ "$host" != "$DV_HOST" ] && [[ "$repo" = /* ]] && [ ! -d "$repo" ]; then
-    # Resolve a remote checkout on its host; basename matching can cross repos.
+  if [ "$host" != "$DV_HOST" ] && [[ "$repo" = /* ]]; then
+    # The same path can name different checkouts on the emitting and local hosts.
     bid_limit "$DV_BID_TIMEOUT" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$(shell_join git -C "$repo" config --get remote.origin.url)"
   else
     printf '%s\n' "$repo"
