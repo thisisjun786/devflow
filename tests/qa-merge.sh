@@ -395,3 +395,96 @@ case_qa_github_not_modified() {
   qa_github_events_repo "$(qa_enabled_repos events)"
   jq -se 'length==1' "$DV_HOME/kick.q"
 }
+
+qa_cursor_recovery_fixture() {
+  qa_merge_fixture
+  mkdir "$DV_STATE/QA-old"
+  jq -n --arg head "$(git -C "$REPO" rev-parse HEAD)" \
+    '{repository:"test/repo",base:"main",head:$head,status:"done",done_at:1}' > "$DV_STATE/QA-old/meta"
+  qa_merge_add 8 2026-10-22T00:02:00Z
+}
+qa_assert_observed_recovery() {
+  qa_cursor_recovery_fixture
+  local dir
+  dir=$(qa_dir test/repo main)
+  mkdir -p "$dir"
+  printf '%s' "$1" > "$dir/observed.json"
+  qa_scan 2> "$CASE_DIR/recovery.log"
+  cat "$CASE_DIR/recovery.log"
+  test "$qa_scan_failed" = 0
+  jq -e '[.prs[].number]==[8]' "$dir/pending.json"
+  jq -e '.merged_at=="2026-10-22T00:02:00Z" and .numbers==[8]' "$dir/observed.json"
+  cp "$dir/pending.json" "$CASE_DIR/recovered.json"
+  qa_scan 2>> "$CASE_DIR/recovery.log"
+  test "$qa_scan_failed" = 0
+  cmp "$dir/pending.json" "$CASE_DIR/recovered.json"
+  test "$(grep -c 'QA state recovery:.*observed.json' "$CASE_DIR/recovery.log")" = 1
+  qa_merge_add 9 2026-10-22T00:03:00Z
+  qa_scan
+  test "$qa_scan_failed" = 0
+  jq -e '[.prs[].number]==[8,9]' "$dir/pending.json"
+}
+case_qa_merge_empty_observed() { qa_assert_observed_recovery ''; }
+case_qa_merge_whitespace_observed() { qa_assert_observed_recovery $' \n\t'; }
+case_qa_merge_invalid_observed() { qa_assert_observed_recovery '{"merged_at":'; }
+case_qa_merge_shape_observed() { qa_assert_observed_recovery '{"merged_at":1,"numbers":null}'; }
+case_qa_merge_multiple_observed() { qa_assert_observed_recovery $'{"merged_at":"","numbers":[]}\n{}'; }
+
+qa_assert_pending_recovery() {
+  qa_cursor_recovery_fixture
+  local dir clock=1000 entry=${2:-dispatch}
+  now() { printf '%s\n' "$clock"; }
+  qa_scan
+  dir=$(qa_dir test/repo main)
+  # The observation already acknowledges PR 8, whose queued request was lost.
+  jq -e '.numbers==[8]' "$dir/observed.json"
+  printf '%s' "$1" > "$dir/pending.json"
+  if [ "$entry" = dispatch ]; then
+    qa_dispatch 2> "$CASE_DIR/recovery.log"
+    test -f "$DV_HOME/qa-scan/wanted"
+    test ! -d "$DV_HOME/submissions"
+  else
+    qa_scan 2> "$CASE_DIR/recovery.log"
+    test "$qa_scan_failed" = 0
+  fi
+  qa_scan_flush 2>> "$CASE_DIR/recovery.log"
+  cat "$CASE_DIR/recovery.log"
+  test ! -f "$DV_HOME/qa-scan/wanted"
+  jq -e '[.prs[].number]==[8]' "$dir/pending.json"
+  qa_scan 2>> "$CASE_DIR/recovery.log"
+  test "$qa_scan_failed" = 0
+  test "$(grep -c 'QA state recovery:.*pending.json' "$CASE_DIR/recovery.log")" = 1
+  clock=1600
+  qa_dispatch
+  jq -e '.kind=="qa" and [.qa.prs[].number]==[8]' "$DV_HOME"/submissions/QA-*/task.json
+  test ! -f "$dir/pending.json"
+}
+case_qa_merge_empty_pending() { qa_assert_pending_recovery ''; }
+case_qa_merge_whitespace_pending() { qa_assert_pending_recovery $'\n'; }
+case_qa_merge_invalid_pending() { qa_assert_pending_recovery '{"prs":'; }
+case_qa_merge_shape_pending() { qa_assert_pending_recovery '{"prs":null}'; }
+case_qa_merge_multiple_pending() { qa_assert_pending_recovery $'{}\n{}'; }
+case_qa_merge_scan_pending() { qa_assert_pending_recovery $'\n' scan; }
+
+case_qa_merge_recovery_retry() {
+  qa_cursor_recovery_fixture
+  local dir
+  dir=$(qa_dir test/repo main)
+  mkdir -p "$dir"
+  printf '\n' > "$dir/pending.json"
+  : > "$dir/observed.json"
+  touch "$GH_STUB_DIR/qa-api-fail"
+  qa_enqueue '{}'
+  qa_scan_flush 2> "$CASE_DIR/recovery.log"
+  test -f "$DV_HOME/qa-scan/wanted"
+  qa_scan_flush 2>> "$CASE_DIR/recovery.log"
+  test -f "$DV_HOME/qa-scan/wanted"
+  rm "$GH_STUB_DIR/qa-api-fail"
+  qa_scan_flush 2>> "$CASE_DIR/recovery.log"
+  cat "$CASE_DIR/recovery.log"
+  test ! -f "$DV_HOME/qa-scan/wanted"
+  jq -e '[.prs[].number]==[8]' "$dir/pending.json"
+  test "$(grep -c 'QA state recovery:.*pending.json' "$CASE_DIR/recovery.log")" = 1
+  qa_scan
+  test "$qa_scan_failed" = 0
+}

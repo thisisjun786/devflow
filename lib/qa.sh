@@ -165,6 +165,42 @@ qa_dir() {
   local identity=$1 base=$2
   printf '%s/qa/%s\n' "$DV_HOME" "$(printf '%s\n%s' "$identity" "$base" | cksum | awk '{print $1 "-" $2}')"
 }
+# Keep damaged state for diagnosis, but remove it from the active cursor path.
+qa_archive_state() {
+  local path=$1 tmp
+  tmp=$(mktemp "${path%/*}/.${path##*/}.recovery.XXXXXX") || return 1
+  mv "$path" "$tmp" || { rm -f "$tmp"; return 1; }
+}
+qa_recover_state() {
+  local dir=$1 name path
+  for name in observed pending; do
+    path="$dir/$name.json"
+    [ -f "$path" ] || continue
+    # Slurp requires exactly one document: jq otherwise accepts an empty file
+    # or a stream of separate JSON values without rejecting either one.
+    if jq -es --arg kind "$name" '
+      length==1 and (.[0] | type=="object" and
+        if $kind=="observed" then
+          (.merged_at|type=="string") and (.numbers|type=="array" and all(.[]; type=="number"))
+        else
+          all(.repository,.repo,.remote,.base,.agent; type=="string" and length>0) and
+          (.head|type=="string" and test("^[0-9a-f]{40}$")) and
+          (.due_at|type=="number" and .>=0 and .==floor) and
+          (.prs|type=="array" and all(.[]; type=="object" and
+            (.number|type=="number") and (.merged_at|type=="string")))
+        end)
+    ' "$path" >/dev/null 2>&1; then continue; fi
+    # Dispatch must schedule discovery too, even if no new merge arrives.
+    qa_enqueue '{}' || return 1
+    if [ "$name" = pending ] && [ -f "$dir/observed.json" ]; then
+      # Observations may acknowledge the lost request. Rewind first so a
+      # crash cannot leave that watermark silently suppressing its merges.
+      qa_archive_state "$dir/observed.json" || return 1
+    fi
+    qa_archive_state "$path" || return 1
+    printf 'QA state recovery: %s is empty or invalid; rebuilding from merged PRs\n' "$path" >&2
+  done
+}
 qa_poll_repo() (
   local repo=$1 repository=$2 base=$3 agent=$4 remote=$5 dir encoded head page rows merges='[]'
   local cursor='{"merged_at":"","numbers":[]}' since result pr sha comparison tmp request old='{}' time
@@ -173,6 +209,7 @@ qa_poll_repo() (
     jq -e --arg repository "$repository" --arg base "$base" \
       '.repository==$repository and .base==$base' "$dir/identity.json" >/dev/null || return 1
   fi
+  qa_recover_state "$dir" || return 1
   encoded=$(jq -rn --arg base "$base" '$base|@uri')
   head=$(bid_limit "$DV_BID_TIMEOUT" gh_get_cached "repos/$repository/commits/$encoded" | jq -er .sha) || return 1
   [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
@@ -237,7 +274,7 @@ qa_poll_repo() (
     --arg head "$head" --arg agent "$agent" --argjson prs "$merges" --argjson old "$old" \
     --argjson time "$time" --argjson delay "$DV_QA_COALESCE" \
     '{repository:$repository,repo:$repo,remote:$remote,base:$base,head:$head,agent:$agent,
-      prs:(($old.prs // [])+$prs|unique_by(.number)|sort_by(.merged_at,.number)),due_at:($time+$delay)}')
+      prs:(($old.prs // [])+$prs|unique_by(.number)|sort_by(.merged_at,.number)),due_at:($time+$delay)}') || return 1
   tmp=$(mktemp "$dir/.pending.XXXXXX") || return 1
   printf '%s\n' "$request" > "$tmp" && mv "$tmp" "$dir/pending.json" || return 1
   # Persist the pending request before acknowledging observations. A crash
@@ -246,7 +283,7 @@ qa_poll_repo() (
   jq -n --argjson cursor "$cursor" --argjson prs "$merges" \
     '($prs|last.merged_at) as $time | {merged_at:$time,
      numbers:((if $time==$cursor.merged_at then $cursor.numbers else [] end)+
-       [$prs[]|select(.merged_at==$time)|.number]|unique)}' > "$tmp"
+       [$prs[]|select(.merged_at==$time)|.number]|unique)}' > "$tmp" || return 1
   mv "$tmp" "$dir/observed.json" || return 1
 )
 qa_recover() {
@@ -288,6 +325,7 @@ qa_dispatch() {
   for dir in "$DV_HOME"/qa/*; do
     [ -d "$dir" ] || continue
     request="$dir/pending.json"
+    qa_recover_state "$dir" || return 1
     if [ -f "$dir/running.json" ]; then
       job=$(jq -r '.issue // empty' "$dir/running.json")
       task="$DV_HOME/submissions/$job/task.json"
