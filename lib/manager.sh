@@ -39,14 +39,14 @@ manager_lock() {
   mkdir -p "$dir/run.lock" || return 1
   # Bash noclobber uses exclusive file creation. Keep the parent directory:
   # removing it on release races the next acquirer creating its owner file.
-  # Never steal a stale owner file automatically: a worker child may outlive
-  # its parent, and deleting a newly acquired replacement would break ordering.
+  # Dispatch checks the recorded owner before recovering a stale reservation.
+  # A runner can outlive its watcher, so the watcher's PID is not sufficient.
   (set -C; printf '%s\n' "$$" > "$dir/run.lock/pid") 2>/dev/null || return 1
   now > "$dir/run.lock/started"
 }
 manager_unlock() {
-  local dir=$1
-  [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$$" ] || return 0
+  local dir=$1 owner=${2:-$$}
+  [ "$(cat "$dir/run.lock/pid" 2>/dev/null)" = "$owner" ] || return 0
   rm -f "$dir/run.lock/job" "$dir/run.lock/claim" "$dir/run.lock/started" \
     "$dir/run.lock/batch.json" "$dir/run.lock/notices.json"
   rm -f "$dir/run.lock/pid"
@@ -391,7 +391,7 @@ manager_fallback_dispatch() {
 # Snapshot once under the reservation. Arrivals during a turn belong to the
 # next batch, and issues with an outstanding fallback cannot race that worker.
 manager_dispatch() {
-  local meta dir job issue anchor enabled
+  local meta dir job issue anchor enabled owner claim
   local jobs=() notices=()
   for meta in "$DV_HOME"/managers/*/meta.json; do
     [ -f "$meta" ] || continue
@@ -400,7 +400,21 @@ manager_dispatch() {
     jq -e .enabled "$meta" >/dev/null && enabled=true
     # Enabled managers own one slot per repository, outside the worker pool.
     if [ "$enabled" = false ] && [ "$active" -ge "$DV_MAX_WORKERS" ]; then continue; fi
-    if ! manager_lock "$dir"; then manager_fallback_dispatch "$dir"; continue; fi
+    if ! manager_lock "$dir"; then
+      owner=$(cat "$dir/run.lock/pid" 2>/dev/null || true)
+      claim=$(cat "$dir/run.lock/claim" 2>/dev/null || true)
+      # An empty owner may still be getting written. A live claim also covers
+      # the brief handoff before the runner replaces its watcher's PID.
+      if ! [[ "$owner" =~ ^[1-9][0-9]*$ ]] || kill -0 "$owner" 2>/dev/null ||
+        { [[ "$claim" =~ ^[1-9][0-9]*$ ]] && kill -0 "$claim" 2>/dev/null; }; then
+        manager_fallback_dispatch "$dir"; continue
+      fi
+      manager_unlock "$dir" "$owner"
+      jq -cn --arg pid "$owner" --argjson time "$(now)" \
+        '{kind:"stale_lock_cleared",pid:$pid,time:$time}' >> "$dir/events.log"
+      # Jobs and notices remain queued; rebuild their reservation this pass.
+      if ! manager_lock "$dir"; then manager_fallback_dispatch "$dir"; continue; fi
+    fi
     jobs=(); notices=(); anchor=''
     for job in "$dir"/pending/*.json; do
       [ -f "$job" ] || continue
