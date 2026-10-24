@@ -720,6 +720,51 @@ qa_title_fixture() {
   jq 'del(.match)' "$CASE_DIR/finding.json" > "$CASE_DIR/title.json"
   mv "$CASE_DIR/title.json" "$CASE_DIR/finding.json"
 }
+qa_large_labels() {
+  # Early matches followed by enough output to exceed macOS/Linux pipe buffers.
+  printf 'qa\nbug\n' > "$GH_STUB_DIR/qa-labels"
+  awk 'BEGIN { for (i=1; i<=10000; i++) printf "synthetic-label-%05d\n", i }' >> "$GH_STUB_DIR/qa-labels"
+}
+case_qa_labels_large_comment() {
+  qa_finding_fixture
+  qa_large_labels
+  qa_finding_run
+  test "$qa_rc" = 0
+  grep -Fx 'issue-comment 158' "$GH_STUB_DIR/qa-actions"
+  jq -se 'length==1 and .[0].action=="commented" and (.[0].url|endswith("/158"))' "$DV_STATE/QA-FINDING/findings.jsonl"
+  test "$(grep -c '^label list ' "$GH_STUB_DIR/calls")" = 2
+  if grep -E '^label (edit|delete)|^label create .*--force' "$GH_STUB_DIR/calls"; then return 1; fi
+  qa_finding_run
+  test "$qa_rc" = 0
+  test "$(grep -c '^issue-comment ' "$GH_STUB_DIR/qa-actions")" = 1
+}
+case_qa_labels_large_create() {
+  qa_title_fixture
+  qa_large_labels
+  qa_finding_run
+  test "$qa_rc" = 0
+  grep -F 'issue-create' "$GH_STUB_DIR/qa-actions"
+  jq -se 'length==1 and .[0].action=="opened"' "$DV_STATE/QA-FINDING/findings.jsonl"
+  jq -e '(.labels|index("qa")) and (.labels|index("bug"))' "$GH_STUB_DIR/qa-created"
+}
+qa_labels_rejected() {
+  qa_finding_run
+  test "$qa_rc" != 0
+  test ! -s "$GH_STUB_DIR/qa-actions"
+  test ! -e "$GH_STUB_DIR/qa-created"
+  test ! -e "$DV_STATE/QA-FINDING/findings.jsonl"
+}
+case_qa_labels_missing() {
+  qa_finding_fixture
+  printf 'qa\nbug-extra\n' > "$GH_STUB_DIR/qa-labels"
+  qa_labels_rejected
+}
+case_qa_labels_failure() {
+  qa_finding_fixture
+  qa_large_labels
+  touch "$GH_STUB_DIR/qa-labels-fail"
+  qa_labels_rejected
+}
 qa_full_page() {
   # PRs count toward the page size, even though they cannot match a finding.
   jq -n '[range(1;101) | {number:.,title:"fix(tui): answer the first message",state:"open",pull_request:{url:"synthetic"}}]' > "$GH_STUB_DIR/qa-issues"

@@ -380,10 +380,10 @@ codex_screen() {
   else read_session; fi
 }
 codex_hook_trust_required() {
-  printf '%s\n' "$1" | grep -Eiq 'hooks? needs? review|t[[:space:]]+trust all.*enter[[:space:]]+review'
+  grep -Eiq 'hooks? needs? review|t[[:space:]]+trust all.*enter[[:space:]]+review' <<< "$1"
 }
 codex_folder_trust_required() {
-  printf '%s\n' "$1" | grep -Eiq 'trust (this|the) (folder|directory)|trusting will apply to the repository root|folder access'
+  grep -Eiq 'trust (this|the) (folder|directory)|trusting will apply to the repository root|folder access' <<< "$1"
 }
 codex_goal_pending() {
   # Match the last composer, including wrapped lines, never a transcript echo.
@@ -415,7 +415,7 @@ wait_codex_goal() {
           retried=1
           session_enter || true
         fi
-      elif printf '%s\n' "$screen" | grep -Eq '(^|(•|[*])[[:space:]]+)Pursuing goal([[:space:]]|$)'; then
+      elif grep -Eq '(^|(•|[*])[[:space:]]+)Pursuing goal([[:space:]]|$)' <<< "$screen"; then
         [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
         return 0
       elif [ "$BACKEND" = herdr ] && agent=$(herdr_cmd agent get "$HERDR_PANE" 2>/dev/null) &&
@@ -455,7 +455,7 @@ inject_goal() {
         wait_codex_goal "$instruction"; return $?
       fi
     else
-      if printf '%s\n' "$screen" | grep -Eq "$DV_READY_PATTERN" && send_text "/goal $instruction"; then
+      if grep -Eq "$DV_READY_PATTERN" <<< "$screen" && send_text "/goal $instruction"; then
         wait_codex_goal "$instruction"; return $?
       fi
     fi
@@ -470,7 +470,7 @@ accept_folder_trust() {
   local end=$(( $(now) + DV_START_WAIT )) pane
   while [ "$(now)" -lt "$end" ]; do
     pane=$(read_session 2>/dev/null) || return 0
-    if printf '%s\n' "$pane" | grep -Eiq 'trust (this|the) (folder|directory)|do you trust'; then
+    if grep -Eiq 'trust (this|the) (folder|directory)|do you trust' <<< "$pane"; then
       session_enter; return
     fi
     sleep 0.2
@@ -724,7 +724,7 @@ agent_gone() {
   REVIVE_PANE_EXISTS=0
   if [ "$BACKEND" = tmux ]; then
     if pane=$(tmux_dv list-panes -t "$SESSION:0" -F '#{pane_index} #{pane_dead}' 2>/dev/null); then
-      printf '%s\n' "$pane" | grep -qx '0 1'
+      grep -qx '0 1' <<< "$pane"
     else
       # A session lookup also guards against a missing window in a live session.
       ! tmux_dv has-session -t "=$SESSION" 2>/dev/null

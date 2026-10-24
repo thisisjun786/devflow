@@ -97,7 +97,10 @@ if [ -f "$GH_STUB_DIR/qa-pr" ]; then
       [ ! -f "$GH_STUB_DIR/qa-issue-$number-fail" ] || exit 1
       exit ;;
     'api --paginate repos/test/'*'/issues/'*'/comments?per_page=100') cat "$GH_STUB_DIR/qa-comments"; exit ;;
-    'label create '*) exit ;;
+    'label create '*) [ ! -f "$GH_STUB_DIR/qa-labels" ]; exit ;;
+    'label list '*)
+      cat "$GH_STUB_DIR/qa-labels"
+      [ ! -f "$GH_STUB_DIR/qa-labels-fail" ]; exit ;;
     'issue edit '*) printf 'issue-edit %s\n' "$2" >> "$GH_STUB_DIR/qa-actions"; exit ;;
     'issue comment '*|'pr comment '*)
       target=$3
