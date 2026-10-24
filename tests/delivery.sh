@@ -210,6 +210,8 @@ case_land_merged_checks() {
     test ! -f "$DV_STATE/LAND-1/land-result.json"
   done
 }
+# Shell syntax in the fixture/assertion is deliberately literal.
+# shellcheck disable=SC2016
 case_land_worker_rule() {
   grep -F '작업자는 자신의 PR을 병합하지 않습니다. 관리자가 `dv land`로 병합합니다.' "$ROOT/templates/rules.md"
 }

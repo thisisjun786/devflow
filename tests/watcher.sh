@@ -283,6 +283,8 @@ wait_seen_id() {
 }
 case_reconcile_corrected_head() {
   pr_fixture; watch_fixture
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=1
   local head_a head_b phase probe
   head_a=$(git -C "$REPO" rev-parse HEAD)

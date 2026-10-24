@@ -9,6 +9,8 @@ bidding_order_setup() {
     printf '{"status":"submitted","score":100}\n' > "$CASE_DIR/hosts/$host/bid.json"
   done
   # bid_limit invokes this fake transport in a child; no SSH or agent is started.
+  # Fixture functions are called indirectly by loaded helpers.
+  # shellcheck disable=SC2317,SC2329
   bid_rpc() {
     local host=$1 command=$2
     printf '%s %s\n' "$host" "$command" >> "$CASE_DIR/order.calls"
@@ -93,6 +95,8 @@ case_bid_order_reject_input() {
   head -c 2097152 /dev/zero | bid_limit "$DV_BID_TIMEOUT" bid_rpc hx-linux _award > "$CASE_DIR/reply"
   jq -e '.status=="rejected"' "$CASE_DIR/reply"
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 bidding_order_early_setup() {
   export DV_HOSTS='hx-linux amd-linux'
   bidding_order_setup

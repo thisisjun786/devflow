@@ -53,6 +53,8 @@ case_pr_worker_idle_concurrent() {
   jq -se '[.[]|select(.[0:2]==["agent","prompt"])]|length==1' "$CASE_DIR/herdr/calls"
   jq -e '(.recovery_sends|length)==1 and (.reviewed_heads|length)==1' "$DV_STATE/P-1/pr-loop.json"
 }
+# Shell syntax in the fixture/assertion is deliberately literal.
+# shellcheck disable=SC2016
 case_pr_worker_idle_tmux() {
   needs_tmux
   review_fixture
@@ -76,7 +78,7 @@ case_pr_worker_foreground() {
 }
 case_pr_worker_done_gate() {
   pr_fixture
-  if dv done P-1 > "$CASE_DIR/rejected" 2>&1; then
+  if dv 'done' P-1 > "$CASE_DIR/rejected" 2>&1; then
     printf 'BUG: done accepted without CI/review evidence\n'; return 1
   fi
   test ! -f "$DV_STATE/P-1/done.json"
@@ -122,14 +124,14 @@ case_pr_worker_cap() {
   done
   jq -e '.blocked and .ci_rounds==3' "$CASE_DIR/snapshot"
   jq -se 'length==1 and .[0].kind=="blocked"' "$DV_HOME/kick.q"
-  if dv done P-1; then return 1; fi
+  if dv 'done' P-1; then return 1; fi
 }
 case_pr_worker_stale() {
   pr_fixture
   dv pr-wait P-1 --foreground > /dev/null
   dv pr-wait P-1 --foreground --review-handled > /dev/null
   git -C "$REPO" commit --allow-empty -qm correction
-  if dv done P-1; then return 1; fi
+  if dv 'done' P-1; then return 1; fi
   test ! -f "$DV_STATE/P-1/done.json"
   test ! -s "$DV_HOME/kick.q"
 }
@@ -138,7 +140,7 @@ case_pr_worker_live_checks() {
   dv pr-wait P-1 --foreground > /dev/null
   dv pr-wait P-1 --foreground --review-handled > /dev/null
   printf '[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]\n' > "$GH_STUB_DIR/checks"
-  if dv done P-1; then return 1; fi
+  if dv 'done' P-1; then return 1; fi
   test ! -f "$DV_STATE/P-1/done.json"
   test ! -s "$DV_HOME/kick.q"
 }
