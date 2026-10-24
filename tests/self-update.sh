@@ -263,18 +263,23 @@ case_update_host() {
 }
 case_update_managed() {
   update_fixture
+  # The remote origin lookup and local fetch share an identity without a network.
+  git -C "$UPDATE_ROOT" config url."$CASE_DIR/update.git".insteadOf https://github.com/example/project.git
+  git -C "$UPDATE_ROOT" remote set-url origin https://github.com/example/project.git
+  export SSH_MANAGER_REPO=success SSH_MANAGER_REPO_PATH="$UPDATE_ROOT"
   export DV_MANAGER_HOST=$DV_HOST DV_WORKER_CMD='' DV_HERMES_BIN="$ROOT/tests/fixtures/manager-hermes"
   mkdir "$CASE_DIR/hermes"
   # Resolve a remote landing through the manager's trusted submission record.
   mkdir -p "$DV_HOME/submissions/UP-1"
-  jq -cn --arg repo "$UPDATE_ROOT" '{repo:$repo,host:"remote-host"}' > "$DV_HOME/submissions/UP-1/task.json"
+  jq -cn --arg repo "$UPDATE_ROOT" '{repo:$repo,host:"remote-box"}' > "$DV_HOME/submissions/UP-1/task.json"
   DV_AUTO_UPDATE=0 "$UPDATE_ROOT/bin/dv" manager start "$UPDATE_ROOT" > /dev/null
   "$UPDATE_ROOT/bin/dv-watch" > "$CASE_DIR/watch.log" 2>&1 & watcher=$!
   update_wait_idle
   update_publish
-  dv-kick landed UP-1 '' remote-host "$UPDATE_NEW"
+  dv-kick landed UP-1 '' remote-box "$UPDATE_NEW"
   update_wait_head
   update_wait_watcher "$UPDATE_NEW"
+  test -f "$CASE_DIR/manager-origin-lookup"
   test "$(cat "$DV_HOME/cursor")" = 1
   touch "$DV_HOME/stop"; wait "$watcher"; watcher=''
 }
