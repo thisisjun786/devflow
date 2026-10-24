@@ -75,6 +75,10 @@ case_tmp_appserver() {
     .params.config.shell_environment_policy.set.TMPDIR==$tmp and
     .params.config.shell_environment_policy.set.DV_TMP==$tmp and
     .params.config.shell_environment_policy.set.GOCACHE==($tmp+"/go-build"))' "$CASE_DIR/server/requests"
+  local rg_config
+  rg_config=$(jq -sr '[.[] | select(.method=="thread/start")][0].params.config.shell_environment_policy.set.RIPGREP_CONFIG_PATH' "$CASE_DIR/server/requests")
+  test -f "$rg_config"
+  grep -Fx -- '--max-filesize=20M' "$rg_config"
   local dir count=0
   for dir in "$DV_TMP"/dv-appserver.*; do
     test -s "$dir/owner.pid"

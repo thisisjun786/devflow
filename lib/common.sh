@@ -10,6 +10,8 @@ fi
 source "$DV_ROOT/config.example.sh"
 # shellcheck source=lib/job-limits.sh
 source "$DV_ROOT/lib/job-limits.sh"
+# shellcheck source=lib/search.sh
+source "$DV_ROOT/lib/search.sh"
 # shellcheck source=lib/capacity.sh
 source "$DV_ROOT/lib/capacity.sh"
 # shellcheck source=lib/portable.sh

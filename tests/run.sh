@@ -49,6 +49,7 @@ setup() {
   )
   export DV_START_WAIT DV_APPSERVER_TIMEOUT DV_STALL_AFTER DV_BID_TIMEOUT DV_AWARD_TIMEOUT
   unset DV_MODE
+  unset RIPGREP_CONFIG_PATH DV_RG_MAX_FILESIZE DV_RG_MAX_COLUMNS DV_RG_EXCLUDE_GLOBS
   unset DV_RECOVER_MAX DV_CAPACITY_BACKOFF DV_CAPACITY_MAX_WAIT
   unset CODEX_HOME
   export DV_TRUSTED_REPOS='' DV_CODEX_ENV_FILE="$HOME/.opencodex/codex-auth-env.sh"
@@ -2699,7 +2700,10 @@ case_runner_mapping() {
 }
 # shellcheck source=tests/job-limits.sh
 source "$ROOT/tests/job-limits.sh"
+# shellcheck source=tests/search-scope.sh
+source "$ROOT/tests/search-scope.sh"
 registered_cases() {
+  printf '%s\n' search_defaults search_override search_large search_tmux search_agents job_oom_evidence search_oom_retry search_oom_revive
   printf '%s\n' job_nproc job_failure job_failure_reset job_supervisor_retry job_generic_exit job_auto_exec job_host job_fallback job_launchd job_tasks job_memory job_agent_retry
   printf '%s\n' review_future_deadline review_future_deadline_retried review_near_deadline
   printf '%s\n' \
@@ -2757,7 +2761,7 @@ registered_cases() {
     pr_worker_idle_review pr_worker_idle_guards pr_worker_idle_concurrent pr_worker_idle_tmux stall_pr_idle stall_pr_remote \
     host_omp_compaction host_omp_compaction_failure host_omp_compaction_missing \
     stall_omp_once stall_omp_patterns stall_omp_pr stall_omp_negative stall_omp_guards stall_omp_session stall_omp_transport stall_omp_remote \
-    stall_omp_escalate stall_omp_escalate_pr stall_omp_escalate_skip stall_omp_escalate_launch stall_omp_escalate_interrupt stall_omp_escalate_wrapper stall_omp_escalate_legacy
+    stall_omp_escalate stall_omp_escalate_pr stall_omp_escalate_skip stall_omp_escalate_launch stall_omp_escalate_interrupt stall_omp_escalate_blocked stall_omp_escalate_blocked_guards stall_omp_escalate_wrapper stall_omp_escalate_legacy
 }
 
 runner_error() { printf 'tests/run.sh: %s\n' "$*" >&2; return 2; }

@@ -423,7 +423,7 @@ learned/effective slots를 덧붙입니다. 모델이나 사용 가능한 슬롯
 
 정체 구간과 고유 이벤트 ID는 watcher의 `$DV_HOME/stalls.json`에 보관합니다. 같은 구간은 watcher 재시작 후에도 한 번만 알리고, 활동이 확인되면 새 구간으로 계산합니다. 명시적인 정체 화면이 계속되는 동안은 재개 시도에 따른 herdr 상태 번호 변경만으로 구간을 초기화하지 않습니다. 종료 증거 없는 상태 불명·통신 실패에서는 타이머를 멈추고, 긴 점검 공백 뒤에는 다시 시간을 잽니다. `done`·`landed` 등 실행 중이 아닌 작업과 완료·정리 기록이 있는 작업은 제외합니다.
 
-omp herdr 작업은 `running`·`pr` 상태에서 마지막 턴이 실제 `toolCall` 없이 `[tool_use`, `<invoke`, `<function_calls>`, `<tool_call>` 중 하나가 포함된 텍스트로 끝나면 첫 상태 점검에서 계속 진행하라는 입력을 보냅니다. thinking 블록은 제외하며, 재개 문구는 텍스트 대신 실제 `tool_use`로 호출하고 도구 이름에 `_`를 붙이지 말도록 안내합니다(예: `bash`). 이번 실행 이후 갱신된 최신 세션 JSONL을 읽고, 이슈 호스트에서 idle·질문 대기·완료 여부를 다시 확인합니다. 세션 경로와 메시지 ID를 `$DV_STATE/ISSUE/omp-texttool-nudges.json`에 전송 전에 기록하므로 같은 턴은 재시작이나 전송 오류 뒤에도 다시 보내지 않습니다. 현재 실행의 재개 예약이 `DV_OMP_TEXTTOOL_ESCALATE`(양의 정수, 기본 4회)에 도달한 뒤 새 실패 턴이 나타나면 omp를 중단하고 정상 dv 실행 경로의 Codex exec에 한 번 인계합니다. 같은 worktree·브랜치와 미커밋 변경, PR 상태·리뷰 기록을 보존하며 원래 브리프와 PR 루프, `dv done`을 마무리하도록 전달합니다. 이 인계는 단일 revive 예산을 사용하지 않습니다. `dv status`에는 `escalated_from=omp reason=texttool`이 보이고 JSON에는 `escalation_status`도 담깁니다. 중단이나 실행 결과가 불명확하면 자동 재시도 대신 blocked 이벤트와 기록을 남깁니다. `$DV_STATE/ISSUE/texttool-skip`이 있으면 재개와 인계를 모두 건너뜁니다. 일반 정체 제한 시간이나 PR waiter 유무와는 별도로 동작합니다.
+omp herdr 작업은 `running`·`pr` 상태에서 마지막 턴이 실제 `toolCall` 없이 `[tool_use`, `<invoke`, `<function_calls>`, `<tool_call>` 중 하나가 포함된 텍스트로 끝나면 첫 상태 점검에서 계속 진행하라는 입력을 보냅니다. thinking 블록은 제외하며, 재개 문구는 텍스트 대신 실제 `tool_use`로 호출하고 도구 이름에 `_`를 붙이지 말도록 안내합니다(예: `bash`). 이번 실행 이후 갱신된 최신 세션 JSONL을 읽고, 이슈 호스트에서 idle·질문 대기·완료 여부를 다시 확인합니다. 세션 경로와 메시지 ID를 `$DV_STATE/ISSUE/omp-texttool-nudges.json`에 전송 전에 기록하므로 같은 턴은 재시작이나 전송 오류 뒤에도 다시 보내지 않습니다. 현재 실행의 재개 예약이 `DV_OMP_TEXTTOOL_ESCALATE`(양의 정수, 기본 4회)에 도달한 뒤 새 실패 턴이 나타나면 omp를 `C-c`로 중단하고 정상 dv 실행 경로의 Codex exec에 한 번 인계합니다. 같은 worktree·브랜치와 미커밋 변경, PR 상태·리뷰 기록을 보존하며 원래 브리프와 PR 루프, `dv done`을 마무리하도록 전달합니다. 이 인계는 단일 revive 예산을 사용하지 않습니다. `dv status`에는 `escalated_from=omp reason=texttool`이 보이고 JSON에는 `escalation_status`도 담깁니다. 중단이나 실행 결과가 불명확하면 blocked 이벤트와 기록을 남깁니다. `omp did not stop`으로 차단된 인계는 다음 점검에서 같은 복구 조건을 다시 확인하고 기존 인계 기록으로 중단을 재시도합니다. pane 종료나 Codex 실행 단계의 실패는 자동 재시도하지 않습니다. `$DV_STATE/ISSUE/texttool-skip`이 있으면 재개와 인계를 모두 건너뜁니다. 일반 정체 제한 시간이나 PR waiter 유무와는 별도로 동작합니다.
 
 기존 상태 점검에서 이슈 호스트의 잠금 아래 현재 token·상태·화면을 다시 확인하고 복구합니다. 살아 있는 Codex goal의 용량 오류가 아닌 정체 화면에는 `/goal resume`을 즉시 한 번 보내고, 같은 구간이 계속되면 5분 이상 간격으로 총 3회까지 시도합니다. 시도 기록은 `$DV_STATE/ISSUE/stall-recovery.json`에 저장해 watcher 재시작과 전달 오류에도 제한을 유지하며, 마지막 시도 5분 뒤에도 정체가 남으면 `blocked`를 한 번 보냅니다. 종료된 에이전트는 기존 revive 경로로 같은 worktree·브랜치에서 한 번 재시작하며 미커밋 작업과 보고서를 보존합니다. 작업자는 `stalled` 이벤트에서 복구 기록과 현재 화면을 확인하며 위 자동 복구 대상에 별도 재시작이나 추가 재개를 하지 않습니다. 그 밖의 idle은 기존 정책대로 원인을 조사하고, 오래된 pane의 provider 환경 누락처럼 복구 가능하면 WIP 커밋으로 보존하고 정상 종료를 확인한 뒤 같은 worktree에서 한 번 재시작합니다. 원인 불명·권한 필요는 차단으로 보고하고 provider 토큰이나 신뢰 설정을 임의로 바꾸지 않습니다.
 
@@ -478,6 +478,16 @@ watcher 점검은 감시자가 종료된 작업에 남은 등록도 확인합니
 등록을 지우지 않으며, 소유권 정보가 없는 등록은 작업에 귀속시킬 수 없습니다.
 그런 실행기는 launchd 정의에 작업 디렉터리나 `DV_ISSUE`를 넣어야 합니다.
 
+작업을 시작할 때 `RIPGREP_CONFIG_PATH`가 설정되지 않았으면 이슈 상태 폴더에
+dv 전용 rg 설정을 만들고 작업 환경에 전달합니다. 기본값은 파일 크기 20MiB
+(`DV_RG_MAX_FILESIZE=20M`), 출력 열 4000개(`DV_RG_MAX_COLUMNS=4000`)입니다.
+`DV_RG_EXCLUDE_GLOBS`는 줄바꿈으로 구분한 glob이며 기본적으로 `.codex`, `.hermes`,
+`.claude`, `.grok`, `.local/state`, `.cache`, `node_modules`, `.git/objects` 아래를
+제외합니다. 빈 문자열로 제외 목록을 끌 수 있습니다. 사용자가 설정한
+`RIPGREP_CONFIG_PATH`는 빈 값도 그대로 존중하며 사용자 rg 설정은 수정하지 않습니다.
+이는 rg 기본값이므로 `--no-config`, 명시적인 옵션, 별도 검색 엔진은 우회할 수
+있습니다. 모든 에이전트는 brief의 검색 범위 지침도 따라야 합니다.
+
 제한 종료는 `resource-failure.json`과 누적 `resource-events.jsonl`에
 `MemoryMax-OOM`/`TasksMax` 원인과 연속 횟수를 기록합니다. ulimit fallback은
 해당 실행의 stderr에서 fork 거절·메모리 할당 실패를 확인하면
@@ -487,6 +497,12 @@ scope로 한 번 재시도하고, 같은 원인이 두 번 이어지면 blocked�
 일반 종료 코드 137만으로 OOM이라고 판정하지 않습니다. 운영자가 원인을 해결한
 뒤 기록을 보존하고 차단 해제를 결정해야 합니다. `dv host check`의 `Job limits`
 및 JSON `job_limits`에 systemd 사용 가능 여부·설정 상한·계산한 nproc가 표시됩니다.
+Linux MemoryMax-OOM에는 해당 실행 이후의 커널 journal에서 scope와 victim PID가
+일치하는 kill 기록 중 가장 큰 anon-rss의 프로세스 이름(`top`)과 MiB 값(`rss_mb`)도
+남깁니다. journal 권한이나 기록이 없으면 두 값은 null이며 OOM 판정은 유지합니다.
+재시도와 revive 지시에는 직전 OOM 원인과 같은 범위 검색을 반복하지 말라는 안내가
+포함됩니다. 이 값은 커널이 기록한 victim의 anon-rss이며 모든 프로세스의 사용량을
+샘플링한 최고값은 아닙니다.
 
 `DV_CODEX_MODE=auto`가 기본값이며 새 작업은 자원 제한을 상속하는 백그라운드 exec로
 시작합니다. `DV_CODEX_MODE=appserver`도 경고 후 exec로 시작합니다. 외부 공유

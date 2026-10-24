@@ -483,9 +483,9 @@ cmd__appserver_run() {
     appserver_open && appserver_handshake || return 1
     params=$(jq -cn --arg cwd "$WT" --arg model "$DV_CODEX_MODEL" --arg effort "$DV_CODEX_EFFORT" \
       --arg config "$DV_CONFIG" --arg state "$DV_STATE" --arg work "$DV_WORK" --arg home "$DV_HOME" --arg host "$DV_HOST" --arg path "$DV_ROOT/bin:$PATH" \
-      --arg tmp "$TMPDIR" --arg cache "${GOCACHE:-}" \
+      --arg tmp "$TMPDIR" --arg cache "${GOCACHE:-}" --arg rg "${RIPGREP_CONFIG_PATH:-}" \
       '{cwd:$cwd,model:$model,approvalPolicy:"never",sandbox:"danger-full-access",config:{model_reasoning_effort:$effort,
-        shell_environment_policy:{set:({DV_CONFIG:$config,DV_STATE:$state,DV_WORK:$work,DV_HOME:$home,DV_HOST:$host,PATH:$path,TMPDIR:$tmp,DV_TMP:$tmp} +
+        shell_environment_policy:{set:({DV_CONFIG:$config,DV_STATE:$state,DV_WORK:$work,DV_HOME:$home,DV_HOST:$host,PATH:$path,TMPDIR:$tmp,DV_TMP:$tmp,RIPGREP_CONFIG_PATH:$rg} +
           (if $cache=="" then {} else {GOCACHE:$cache} end))}}}')
     appserver_mutate thread-start thread/start "$params"
     [ "$AS_CLASS" = accepted ] || return 1
