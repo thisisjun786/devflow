@@ -41,6 +41,8 @@ case_reconcile_stale_prs() {
   # One watcher pass closes merged PRs (ready or still pr), marks a PR closed
   # without merge, and leaves an open PR alone.
   repo stale remote; watch_fixture
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=1
   stale_job R-1 ready 11; stale_job R-2 pr 12; stale_job R-3 pr 13; stale_job R-4 ready 14
   printf '{"11":"MERGED","12":"MERGED","13":"CLOSED","14":"OPEN"}\n' > "$GH_STUB_DIR/pr-states"
@@ -177,6 +179,8 @@ case_qa_clean_url() {
   qa_direct_fixture
   for _ in 1 2 3 4 5 6; do printf 'fail\n' >> "$GH_STUB_DIR/qa-pull-responses"; done
   qa_direct_run
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2154
   test "$qa_rc" = 1
   record=$(find "$DV_STATE" -path '*/QA-*/meta' -print)
   issue=$(jq -r .issue "$record"); scratch=$(jq -r .scratch "$record")

@@ -325,7 +325,7 @@ case_revive_report_event() {
   test "$original" != "$current"
   grep -Fx 'Corrected report' "$RV_STATE/report.md"
   jq -e --slurpfile before "$CASE_DIR/original-done" '.head==$before[0].head' "$RV_STATE/done.json"
-  dv kick done RV-1 'delivery retry'
+  dv kick 'done' RV-1 'delivery retry'
   test "$(jq -sr 'last.id' "$RV_STATE/events.log")" = "$current"
   # A different watcher host has no access to the source issue's files.
   dv status --json > "$CASE_DIR/remote-status"
@@ -354,8 +354,8 @@ case_revive_manual_done() {
   mv "$CASE_DIR/meta" "$RV_STATE/meta"
   export DV_CLAUDE_BIN="$ROOT/tests/fixtures/revived-agent" DV_REVIVE_TEST_NO_DONE=1
   revive_hold
-  dv done RV-1 --note 'manual completion'
-  DV_REVIVE_ID=stale dv done RV-1 --note 'completion from another run'
+  dv 'done' RV-1 --note 'manual completion'
+  DV_REVIVE_ID=stale dv 'done' RV-1 --note 'completion from another run'
   revive_release
   jq -se 'any(.[]; .kind=="blocked" and (.message|contains("without dv done")))' "$RV_STATE/events.log"
   test ! -f "$RV_STATE/revive/done"
@@ -376,6 +376,8 @@ case_revive_capacity() {
   revive_release
   dv bid --json | jq -e '.active==0 and .free_slots==1'
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_revive_release_event() {
   revive_setup; revive_dead
   jq 'del(.done_at,.head) | .status="running"' "$RV_STATE/meta" > "$CASE_DIR/meta"
@@ -431,13 +433,15 @@ case_revive_stale_marker() {
   jq -se 'any(.[]; .kind=="blocked" and (.message|contains("without dv done"))) and
     ([.[]|select(.kind=="failed")]|length==1)' "$RV_STATE/events.log"
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 case_revive_goal_owned_done() {
   revive_setup; revive_dead
   jq '.agent="claude" | .mode="goal" | .award_token="award-round"' "$RV_STATE/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$RV_STATE/meta"
   export DV_CLAUDE_BIN="$ROOT/tests/fixtures/revived-agent"
   revive_hold
-  dv done RV-1 --note 'manual before actual completion'
+  dv 'done' RV-1 --note 'manual before actual completion'
   local manual current
   manual=$(jq -sr 'last.id' "$RV_STATE/events.log")
   revive_release
@@ -446,21 +450,24 @@ case_revive_goal_owned_done() {
   cmp "$RV_STATE/revive/id" "$RV_STATE/revive/done"
   jq -se 'all(.[]; .kind!="blocked" and .kind!="failed") and
     (last.token=="award-round")' "$RV_STATE/events.log"
-  dv done RV-1 --note 'repeat after actual completion'
+  dv 'done' RV-1 --note 'repeat after actual completion'
   test "$(jq -sr 'last.id' "$RV_STATE/events.log")" = "$current"
   # Reconciliation must retain both award identity and revival identity.
   bidding_functions
   local row
   row=$(dv status --json | jq -c '.[0]')
-  test "$(event_json done RV-1 '' test-host "$(jq -r .head "$RV_STATE/meta")" '' award-round | jq -r .id)" = "$current"
+  test "$(event_json 'done' RV-1 '' test-host "$(jq -r .head "$RV_STATE/meta")" '' award-round | jq -r .id)" = "$current"
 }
+# Fixture functions are called indirectly by loaded helpers.
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034,SC2317,SC2329
 case_revive_done_capacity() {
   revive_setup; revive_dead
   jq '.agent="claude" | .mode="goal"' "$RV_STATE/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$RV_STATE/meta"
   export DV_CLAUDE_BIN="$ROOT/tests/fixtures/revived-agent" DV_REVIVE_TEST_HOLD_DONE=1 DV_MAX_JOBS=1
   revive_hold
-  dv done RV-1 --note 'manual completion while the replacement is working'
+  dv 'done' RV-1 --note 'manual completion while the replacement is working'
   dv bid --json | jq -e '.active==1 and .free_slots==0'
   touch "$RV_STATE/revive-release"
   wait_file "$RV_STATE/revive-done-held"

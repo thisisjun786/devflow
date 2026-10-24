@@ -2,11 +2,15 @@
 learned_fixture() {
   capacity_fixture
   DV_MAX_JOBS=''
+  # Shared fixture state and intentionally unused polling counters/results.
+  # shellcheck disable=SC2034
   DV_HOST_CAPACITY_WINDOW=86400
   mkdir -p "$DV_STATE/.host-capacity"
   jq -cn --arg host "$DV_HOST" '{version:1,host:$host,cores:8,learned_cap:4,computed_at:0,sample_count:0,curve:[]}' > "$DV_STATE/.host-capacity/cap.json"
   printf '{"cores":8,"load5":1,"memory_available_mb":8192,"disk_available_gb":100}\n' > "$CASE_DIR/resources"
   learn_time=4000
+  # Fixture functions are called indirectly by loaded helpers.
+  # shellcheck disable=SC2317,SC2329
   now() { printf '%s\n' "$learn_time"; }
 }
 learned_sample() {
@@ -32,6 +36,8 @@ case_learned_percentile() {
   jq -e '.learned_cap==7 and .computed_at==7600' "$DV_STATE/.host-capacity/cap.json"
   cmd_bid --json | jq -e '.learned_cap==7 and .effective_slots==7 and .max_jobs==null'
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 case_learned_active_floor() {
   learned_fixture
   learned_sample 2 3
