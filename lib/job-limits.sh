@@ -325,6 +325,12 @@ job_run_agent() {
   if [ ! -f "$S/agent.exit" ]; then printf '%s\n' "$rc" > "$S/agent.exit"; fi
   job_cleanup
   trap - EXIT INT TERM
+  # Only the outer supervisor hands off, after the dsh body and its entire
+  # scope/tree are reaped. The terminal launcher then owns agent.pid/exit.
+  if [ -f "$S/dsh-fallback.pending" ] && job_can_launch; then
+    dsh_fallback_launch
+    return
+  fi
   return "$rc"
 }
 cmd__job_watch() (

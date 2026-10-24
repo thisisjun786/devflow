@@ -1,6 +1,9 @@
 {
   "smoke": ["runner_*", "capacity_classifier", "screen_locale_c", "install"],
   "libraries": {
+    "lib/dsh-exec.sh": ["dsh_*", "exec_*", "submit_route"],
+    "lib/dsh-jail.sh": ["dsh_*"],
+    "lib/dsh-host.sh": ["dsh_host_*", "host_*"],
     "lib/search.sh": ["search_*", "tmp_appserver"],
     "lib/job-limits.sh": ["job_*", "host_*", "revive_*", "exec_*", "start_done"],
     "lib/appserver-transport.sh": ["appserver_*", "capacity_appserver_*", "task_appserver*", "send_branch_appserver*", "clean_resume_appserver*"],

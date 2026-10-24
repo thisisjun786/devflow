@@ -49,7 +49,8 @@ App Server task의 done은 산출물 검사 후 goal 완료 응답을 확인합�
 | `codex` | 기본, 큰 작업 | `codex` | App Server·exec·goal(TUI) | gpt-6-astra/xhigh | `codex login status` | 신뢰 항목 기록 | `DV_CODEX_SESSIONS`(날짜별) |
 | `claude` | 큰 작업 | `claude` | `--dangerously-skip-permissions -- 지시` | opus/xhigh | `claude auth status` | `.claude.json` 기록 | `DV_CLAUDE_SESSIONS/<경로>` |
 | `devin` | 코드 | `~/.local/bin/devin` | `--permission-mode dangerous -- 지시` | fusion-gpt-6-astra-… | `devin auth status` | 화면에서 Enter | 없음 |
-| `omp` | 작은 코드(주 작업자) | `omp` | `--approval-mode=yolo -- 지시`, `OMP_SKIP_SETUP=1` | `inferhub/deepseek-v4.1-flash` | provider·키 설정 | 묻지 않음 | `DV_OMP_SESSIONS/--<경로>--` |
+| `dsh` | 작은 코드(주 작업자) | `~/.local/dsh/node_modules/.bin/dsh` | `--profile headless --json -` (stdin) | `deepseek-v4.1-flash` / InferHub | Node·버전·profile·키 파일 | danger-full-access 환경 | `DV_DSH_SESSIONS/--<경로>--` |
+| `omp` | dsh fallback·명시적 작업자 | `omp` | `--approval-mode=yolo -- 지시`, `OMP_SKIP_SETUP=1` | `inferhub/deepseek-v4.1-flash` | provider·키 설정 | 묻지 않음 | `DV_OMP_SESSIONS/--<경로>--` |
 | `agy` | 문서·이슈·PR 글·조사 | `agy` | `--dangerously-skip-permissions -i 지시` | `gemini-4-argon`(medium) | `agy models` | 화면에서 Enter | `DV_AGY_SESSIONS`(대화별) |
 | `grok` | 작은 코드 수정 | `grok` | `--always-approve -- 지시` | CLI 기본 | `grok models` | 화면에서 Enter | `DV_GROK_SESSIONS/<URL 인코딩 경로>` |
 | `cursor` | 작은 코드 수정 | `cursor-agent` | `--yolo --trust -- 지시` | CLI 기본 | `cursor-agent models` | `--trust` | `DV_CURSOR_SESSIONS/<경로>/agent-transcripts` |
@@ -59,6 +60,14 @@ omp·agy·grok·cursor는 Claude·Devin처럼 herdr pane(없으면 tmux)에서 �
 준비 확인은 읽기 전용입니다. agy·grok·cursor는 인증이 있어야 성공하는 `models`를 씁니다. cursor-agent `status`는 낡은 로그인을 성공으로 보여 주고 실제 요청은 "Authentication required"로 실패할 수 있기 때문입니다. 이때는 운영자가 `cursor-agent login`을 다시 하거나 pane 환경에 `CURSOR_API_KEY`를 둡니다. omp에는 인증 조회 명령이 없어 `DV_OMP_MODEL`의 provider가 `~/.omp/agent/models.yml`에 있고, `apiKey`가 변수 이름이면 그 값이 환경이나 `~/.omp/agent/.env`에 있는지 확인합니다. 키 값은 출력하지 않습니다. 내장 provider 로그인을 쓰면 `DV_AGENT_READY_omp`에 확인 명령을 지정합니다.
 
 `dv status --json`의 `transcript`는 worktree가 남아 있는 작업의 세션 기록 위치입니다. 해당 worktree의 기록 폴더가 있으면 그 경로, 없으면 에이전트의 기록 루트이며, 시온이 지금 무엇을 하는지 확인할 때 읽습니다. 자동 재시작 지시에는 같은 worktree의 이전 기록 폴더가 있으면 그 경로를 읽기 전용 참고로 넣습니다. dv는 기록을 읽기만 합니다.
+
+## dsh 실행과 격리
+
+dsh는 항상 exec 백엔드로 실행합니다(`--mode auto|goal|exec` 모두 headless로 정규화). `agent.jsonl`, `agent.session`, `agent.activity`에 이벤트·첫 session ID·활동 시간을 기록하며, exit 0과 마지막 `status/turn_end`의 `reason.kind=completed`, 해당 실행의 `dv done`이 모두 있어야 완료입니다. crash/stall은 같은 cwd에서 `--session-id`로 한 번 재개합니다. 완료 없이 끝나면 기존 브랜치의 미커밋 작업을 WIP 커밋으로 저장하고 origin에 push한 뒤 새 세션에 브리프·보고서·Git 상태 요약을 전달합니다. PR 상태와 base 브랜치는 자동 push하지 않습니다. 복구되지 않은 시도가 연속 두 번이면 dsh 프로세스 트리를 종료하고 같은 state/worktree/branch에서 omp goal 작업을 시작합니다. provider capacity 대기는 실패 횟수에 포함하지 않습니다. dsh 준비 확인에 실패해도 omp가 준비되어 있으면 입찰·시작이 가능합니다. metadata의 `fallback_from/reason/at`과 `$DV_HOME/dsh-events.log`에서 전환을 확인합니다.
+
+`dv host sync`는 Node 24.9 이상에서 dsh 고정 버전(기본 `0.2.1-rc.3`)을 `~/.local/dsh`에 설치하고 `$DV_DSH_HOME/profiles/headless/cordis.patch.yml`을 원자적으로 갱신합니다. 같은 버전은 npm 설치를 건너뜁니다. `DV_DSH_KEY_FILE`(기본 `~/.omp/agent/.env`)의 `DV_DSH_KEY_VAR` 값을 실행 직전 자식 환경의 `INFERHUB_API_KEY`로 전달합니다. 파일은 source하지 않으며 키가 출력에 섞여도 저장 전에 가립니다. telemetry와 session-log/plugin-inventory 전송은 끕니다. `dv host check`는 버전·profile·키 존재·jail 상태만 확인합니다. 명시적인 `--probe-dsh`만 실제 도구 호출 한 번과 session resume를 시험하고 `.anonymous-user-id`가 생기지 않았는지 확인합니다.
+
+Linux의 `DV_DSH_JAIL=auto`는 작동하는 bwrap이 있으면 다른 checkout 루트와 에이전트 세션 저장소를 tmpfs로 숨기고 worktree·git common dir·dv 실행/상태·런타임·캐시 경로만 다시 bind합니다. `DV_DSH_JAIL_HIDE`와 `DV_DSH_JAIL_BIND`는 줄마다 절대 디렉터리 하나입니다. dsh home을 다시 bind해도 sessions는 해당 worktree 폴더만 열어 둡니다. `on`은 Linux에서 jail을 만들 수 없으면 시작을 거절하고, `auto`는 이유를 log와 metadata에 남기고 jail 없이 실행합니다. macOS와 `off`는 jail 없이 실행합니다. 네트워크는 열려 있으며, 허용된 bind 경로와 그 하위는 읽고 쓸 수 있습니다. `dv send/status/land/clean`, disk 정리와 PR 안전망은 기존 exec 경로를 사용합니다.
 
 ## 무거운 명령의 호스트 슬롯
 
@@ -354,7 +363,7 @@ devflow는 PR 생성, QA finding 등록, 입찰 snapshot 변경, 확인된 병�
 
 시온은 lina-os에서 `dv submit ~/code/my-app APP-42 fix-save --brief /path/brief.md`를 실행합니다. `DV_MANAGER_HOST` 기본값은 lina-os이며, 다른 호스트의 submit은 기존 SSH 연결로 관리자에게 브리프 내용을 전송합니다. 개발 호스트에 관리자 방향 SSH 키가 없어도 관리자에서 제출하면 됩니다. `DV_HOSTS`에는 배정 가능한 SSH 별칭을 적고, 모든 호스트에 같은 버전의 dv를 둡니다. 원격 저장소가 있는 로컬 경로는 origin URL로 전달합니다. 각 호스트는 `$DV_REPO_ROOT`(기본 `~/code`)의 같은 이름 clone을 확인하고, 없으면 낙찰 후 clone합니다. 이름이 같은 다른 origin은 덮어쓰지 않습니다. 원격 없는 경로는 해당 경로가 있는 호스트만 입찰합니다.
 
-`--agent` 없이 제출하면 브리프의 줄 하나로 기본 에이전트를 고릅니다. `Route: writing`(문서·이슈·PR 글·조사처럼 글만 쓰는 작업)은 `DV_ROUTE_WRITING`(기본 agy), `Route: small`(한 패키지, 약 200줄 이하 예상)은 `DV_ROUTE_SMALL`(기본 omp)로 보냅니다. 줄이 없거나 `Route: default`이면 `DV_AGENT`입니다. `--agent`와 Codex 전용 `--mode auto|exec`가 항상 우선하며, 대상 값을 비우면(`DV_ROUTE_SMALL=`) 그 경로를 끕니다. 다른 값은 오타로 보고 제출을 거절합니다. 선택 결과는 stderr에 한 줄 남기고 제출 기록의 `agent`에 저장됩니다.
+`--agent` 없이 제출하면 브리프의 줄 하나로 기본 에이전트를 고릅니다. `Route: writing`(문서·이슈·PR 글·조사처럼 글만 쓰는 작업)은 `DV_ROUTE_WRITING`(기본 agy), `Route: small`(한 패키지, 약 200줄 이하 예상)은 `DV_ROUTE_SMALL`(기본 dsh)로 보냅니다. 줄이 없거나 `Route: default`이면 `DV_AGENT`입니다. `--agent`와 Codex 전용 `--mode auto|exec`가 항상 우선하며, 대상 값을 비우면(`DV_ROUTE_SMALL=`) 그 경로를 끕니다. 다른 값은 오타로 보고 제출을 거절합니다. 선택 결과는 stderr에 한 줄 남기고 제출 기록의 `agent`에 저장됩니다.
 
 `dv-watch`가 submitted 이벤트를 받으면 각 호스트에 `dv bid --json --repo REPO --agent AGENT`를 실행합니다. 입찰은 읽기 전용이며 빈 자리, load5/논리 코어 수, 사용 가능 메모리(MiB), 기존 clone, 에이전트 로그인 여부를 반환합니다. `DV_MAX_JOBS`는 학습한 상한에 적용하는 선택적 upper bound이며 기본값은 비어 있습니다. 실행 중인 기존 dv 작업도 자리를 차지하며 done 또는 종료된 작업은 제외합니다. 로그인 확인은 Codex `login status`, Claude/Devin `auth status`, agy·grok·cursor `models`, omp provider·키 설정을 사용하며([에이전트](#에이전트)), 다른 CLI는 `DV_AGENT_READY_<agent>`에 읽기 전용 명령을 지정할 수 있습니다. `DV_AGENT_CMD_*`로 지정한 사용자 실행기는 준비된 것으로 간주합니다.
 

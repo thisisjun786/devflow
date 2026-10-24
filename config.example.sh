@@ -47,6 +47,17 @@ fi
 : "${DV_CLAUDE_BIN:=claude}"
 : "${DV_DEVIN_BIN:=$HOME/.local/bin/devin}"
 : "${DV_OMP_BIN:=omp}"
+: "${DV_DSH_BIN:=$HOME/.local/dsh/node_modules/.bin/dsh}"
+: "${DV_DSH_HOME:=$HOME/.dsh-dv}" # exported as DSH_HOME only to dsh
+: "${DV_DSH_PROFILE:=headless}"
+: "${DV_DSH_VERSION:=0.2.1-rc.3}"
+: "${DV_DSH_KEY_FILE:=$HOME/.omp/agent/.env}" # parsed, never sourced
+: "${DV_DSH_KEY_VAR:=INFERHUB_API_KEY}"
+: "${DV_DSH_FALLBACK:=omp}"
+: "${DV_DSH_JAIL:=auto}" # auto, on (required on Linux), off
+: "${DV_DSH_JAIL_HIDE=}" # newline-separated absolute directories
+: "${DV_DSH_JAIL_BIND=}" # newline-separated absolute directories
+: "${DV_DSH_SESSIONS:=$DV_DSH_HOME/sessions}"
 : "${DV_AGY_BIN:=agy}"
 : "${DV_GROK_BIN:=grok}"
 : "${DV_CURSOR_BIN:=cursor-agent}"
@@ -65,7 +76,7 @@ fi
 : "${DV_GROK_MODEL:=}" # empty = grok's own default
 : "${DV_CURSOR_MODEL:=}" # empty = cursor-agent's own default
 : "${DV_ROUTE_WRITING=agy}" # dv submit without --agent: brief line "Route: writing"; empty keeps DV_AGENT
-: "${DV_ROUTE_SMALL=omp}" # brief line "Route: small" (one package, about 200 lines); empty keeps DV_AGENT
+: "${DV_ROUTE_SMALL=dsh}" # DeepSeek worker; omp is the readiness/recovery fallback
 : "${DV_AGENT:=codex}"
 : "${DV_AGENT_QUESTIONS:=sion}" # herdr: question tools on; off (always under tmux): disable Codex/Claude question tools
 : "${DV_CODEX_SESSIONS:=${CODEX_HOME:-$HOME/.codex}/sessions}" # question transcripts, read only
@@ -133,6 +144,7 @@ fi
 : "${DV_AGENT_READY_claude:=}"
 : "${DV_AGENT_READY_devin:=}"
 : "${DV_AGENT_READY_omp:=}" # default: DV_OMP_MODEL's provider and key are configured
+: "${DV_AGENT_READY_dsh:=}" # optional read-only readiness override
 : "${DV_AGENT_READY_agy:=}" # default for agy, grok, cursor: "<bin> models" succeeds
 : "${DV_AGENT_READY_grok:=}"
 : "${DV_AGENT_READY_cursor:=}"

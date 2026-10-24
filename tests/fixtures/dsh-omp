@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+s="$DV_STATE/$DV_ISSUE"
+while IFS= read -r pid; do
+  if kill -0 "$pid" 2>/dev/null && [ "$(ps -p "$pid" -o stat= | cut -c 1)" != Z ]; then
+    touch "$s/overlap"; exit 9
+  fi
+done < <(cat "$s/dsh-pids" 2>/dev/null || true)
+test "$(jq -r '.agent+":"+.mode' "$s/meta")" = omp:goal
+printf '%s\n' "$DV_AGENT_INSTRUCTION" > "$s/omp-instruction"
+dv 'done' "$DV_ISSUE" >/dev/null
