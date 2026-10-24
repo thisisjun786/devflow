@@ -6,6 +6,17 @@ qa_alive() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]] && kill -0 "$1" 2>/dev/null &&
     [ "$(ps -p "$1" -o stat= 2>/dev/null | cut -c 1)" != Z ]
 }
+# A QA job owns a slot only while its runner or agent child lives. A reboot can
+# leave status=running without agent.exit; the scratch checkout stays for
+# inspection and dv clean releases it.
+qa_job_alive() {
+  local dir=$1 issue runner wrapper child
+  issue=${dir##*/}
+  wrapper=$(cat "$dir/agent.pid" 2>/dev/null) || wrapper=''
+  runner=$(cat "$DV_STATE/.qa/$issue/runner.pid" 2>/dev/null) || runner=''
+  child=$(cat "$DV_STATE/.qa/$issue/child.pid" 2>/dev/null) || child=''
+  qa_alive "$wrapper" || qa_alive "$runner" || qa_alive "$child"
+}
 qa_job_id() {
   local repository=$1 head=$2 slug key
   slug=$(printf '%s' "$repository" | tr -c 'A-Za-z0-9_-' '-')

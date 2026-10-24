@@ -360,7 +360,7 @@ cmd_park() {
   # idling: its branch is pushed and its GitHub issue says what it waits for.
   [ "$#" -ge 1 ] || fail 'usage: dv park ISSUE --on N[,N...] [--note TEXT]'
   load_issue "$1"; shift
-  local on='' note='' list='' n number slug state head marker body refs exists status
+  local on='' note='' list='' n number slug state head marker body refs exists status episode
   local on_pattern='^[1-9][0-9]*(,[1-9][0-9]*)*$'
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || fail "missing value for $1"
@@ -401,8 +401,11 @@ cmd_park() {
     gh api --method POST "repos/$slug/issues/$number/comments" -F "body=@$body" > /dev/null
     rm "$body"
   fi
-  meta_set --argjson on "$(printf '%s\n' "$list" | jq -sc .)" --argjson issue "$number" --arg head "$head" --argjson time "$(now)" \
-    '.status="parked" | .head=$head | .parked={on:$on,issue:$issue,head:$head,at:$time}'
+  # Each park is its own episode: a second park at the same head must reach the
+  # manager again, while a retransmission of this event keeps its ID (#344).
+  episode=$(( $(jq -r '.parked.episode // 0' "$S/meta") + 1 ))
+  meta_set --argjson on "$(printf '%s\n' "$list" | jq -sc .)" --argjson issue "$number" --arg head "$head" --argjson time "$(now)" --argjson episode "$episode" \
+    '.status="parked" | .head=$head | .parked={on:$on,issue:$issue,head:$head,at:$time,episode:$episode}'
   metrics_note parked "$head"
   cmd_kick parked "$ISSUE" "Parked until $refs close${note:+: $note}"
   printf 'dv: parked %s until %s close; %s is pushed\n' "$ISSUE" "$refs" "$BRANCH"

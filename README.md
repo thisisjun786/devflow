@@ -184,7 +184,7 @@ GitHub의 `dv land`는 저장소의 허용 병합 방식을 한 번 조회하고
 
 다른 PR로 이미 합쳐진 작업은 `dv done ISSUE --already-merged <PR 번호·PR URL·커밋>`으로 끝냅니다. 숫자만 쓰면 PR 번호입니다. PR은 MERGED이고 같은 base에 병합됐는지 확인해 병합 커밋을 씁니다. 그 커밋이 fetch한 `origin/<BASE>`(원격이 없으면 로컬 base)의 조상이고, 이 브랜치를 base에 병합해도 tree가 바뀌지 않아야 합니다. 같은 수정을 다시 만든 커밋은 통과하며 base에 없는 변경이 남으면 거절합니다. 작업 자신의 PR이 열려 있어도 거절합니다. 결과는 done.json의 `merged_via`에 남고 상태는 ready입니다. 관리자의 `dv land`는 병합하지 않고 같은 확인을 반복한 뒤 landed 기록·worktree 정리·`landed` 이벤트를 처리합니다.
 
-열린 선행 이슈 때문에 진행할 수 없는 running 또는 pr 상태의 code 작업은 `dv park ISSUE --on 12,13 [--note TEXT]`로 보류합니다. 깨끗한 worktree와 선행 이슈가 열려 있는지 확인하고, force 없이 브랜치를 push하고, 작업 이슈(meta의 `source_issue`, 없으면 ISSUE 끝 번호)에 head별 마커가 있는 댓글을 한 번 남긴 뒤 상태를 `parked`로 바꾸고 `parked` 이벤트를 보냅니다. parked 작업은 입찰 슬롯을 차지하지 않고 PR 대기자 재시작·자동 재개·정체 복구 대상도 아니며, 에이전트가 끝나도 failed를 보내지 않습니다. 보류 중에도 PR의 병합·닫힘은 상태 안전망이 감지합니다. worktree는 보존하고 `dv send`가 상태를 running으로 되돌려 같은 worktree에서 재개합니다. 이후 `dv pr` 또는 `dv pr-wait`가 상태를 pr로 되돌리며 `pr-loop.json`의 누적 CI·리뷰 횟수와 요청 기록은 유지합니다.
+열린 선행 이슈 때문에 진행할 수 없는 running 또는 pr 상태의 code 작업은 `dv park ISSUE --on 12,13 [--note TEXT]`로 보류합니다. 깨끗한 worktree와 선행 이슈가 열려 있는지 확인하고, force 없이 브랜치를 push하고, 작업 이슈(meta의 `source_issue`, 없으면 ISSUE 끝 번호)에 head별 마커가 있는 댓글을 한 번 남긴 뒤 상태를 `parked`로 바꾸고 `parked` 이벤트를 보냅니다. 같은 head에서 다시 보류하면 meta의 보류 회차(`parked.episode`)마다 다른 이벤트 ID를 쓰므로 바뀐 선행 이슈 목록이 관리자에게 다시 전달되고, 같은 이벤트의 재전송은 중복으로 처리됩니다. parked 작업은 입찰 슬롯을 차지하지 않고 PR 대기자 재시작·자동 재개·정체 복구 대상도 아니며, 에이전트가 끝나도 failed를 보내지 않습니다. 보류 중에도 PR의 병합·닫힘은 상태 안전망이 감지합니다. worktree는 보존하고 `dv send`가 상태를 running으로 되돌려 같은 worktree에서 재개합니다. 이후 `dv pr` 또는 `dv pr-wait`가 상태를 pr로 되돌리며 `pr-loop.json`의 누적 CI·리뷰 횟수와 요청 기록은 유지합니다.
 
 쌓인 PR은 `pr.md` 또는 GitHub PR 본문에 `Depends on #123`처럼 선행 PR 번호를 한 줄씩 적습니다(같은 저장소, 여러 줄 가능). 줄 끝의 `.`·`,`·`;`는 무시하고 `Depends on #1, #2`처럼 한 줄에 여러 번호를 적어도 됩니다. 관리자는 다른 PR과 똑같이 이슈 범위를 검증하고 `dv land`를 실행합니다. 선행 PR이 모두 MERGED가 아니면 land는 실패를 반환하고 `waiting-base`로 보존합니다. 닫혔지만 병합하지 않은 PR도 통과하지 않습니다. 선행 PR의 병합 결과 커밋도 fetch한 대상 브랜치에 포함되어야 하므로 다른 브랜치에만 병합된 PR은 계속 기다립니다. 순서는 dv가 관리합니다.
 
@@ -288,7 +288,7 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 큐 처리가 실패해 같은 줄을 `DV_STALL_AFTER`초(기본 300) 넘게 재시도하면 `watcher-stuck` 이벤트를 기존 큐·이벤트 로그에 남기고 stderr와 `watch.log`에도 줄 번호·원인을 출력합니다. 한 멈춤 구간에 한 번 알리며, 커서가 진행하면 다음 멈춤을 다시 감지합니다. 큐가 비어 있는 유휴 상태에는 이 경보를 내지 않습니다. 경보 이벤트의 worker 전달은 막힌 줄이 풀린 뒤 이루어지므로, 멈춘 동안에는 stderr/로그로 확인할 수 있습니다.
 
-관리자 턴이 `DV_MANAGER_MAX_WAIT`(기본 120초)를 넘으면 그 턴과 다른 이슈의 대기 이벤트를 세션 없는 기존 worker 경로로 보냅니다. fallback worker는 `DV_MAX_WORKERS`를 지키며, 같은 이슈가 실행 중이면 해당 이슈의 후속 이벤트는 기다립니다. `fallback/`에 전달을 먼저 보존하고 기존 worker 재시도·재시작 복구를 사용합니다. 성공 결과는 `notices/`에 저장해 관리자의 다음 입력에 덧붙입니다. 새 이벤트가 없어도 결과 전달을 위한 턴을 실행합니다. `events.log`의 `event_handled`에는 이벤트별 `event_id`, `event_time`, `handled_at`, `latency_seconds`(초), `route`(`manager` 또는 `fallback`), `exit_code`, `disposition`이 남습니다. 관리자 배치 실패도 종료 코드와 함께 기록하고, fallback 실패는 기존 worker 규칙으로 재시도하여 성공했을 때 기록합니다. 미래 시각의 이벤트는 지연을 0으로 기록합니다.
+관리자 턴이 `DV_MANAGER_MAX_WAIT`(기본 1800초; 더 짧은 대기가 필요하면 `DV_MANAGER_MAX_WAIT`를 더 낮게 설정)를 넘으면 그 턴과 다른 이슈의 대기 이벤트를 세션 없는 기존 worker 경로로 보냅니다. fallback worker는 `DV_MAX_WORKERS`를 지키며, 같은 이슈가 실행 중이면 해당 이슈의 후속 이벤트는 기다립니다. `fallback/`에 전달을 먼저 보존하고 기존 worker 재시도·재시작 복구를 사용합니다. 성공 결과는 `notices/`에 저장해 관리자의 다음 입력에 덧붙입니다. 새 이벤트가 없어도 결과 전달을 위한 턴을 실행합니다. `events.log`의 `event_handled`에는 이벤트별 `event_id`, `event_time`, `handled_at`, `latency_seconds`(초), `route`(`manager` 또는 `fallback`), `exit_code`, `disposition`이 남습니다. 관리자 배치 실패도 종료 코드와 함께 기록하고, fallback 실패는 기존 worker 규칙으로 재시도하여 성공했을 때 기록합니다. 미래 시각의 이벤트는 지연을 0으로 기록합니다.
 
 재개가 실패하거나 세션 ID를 받지 못하면 실패를 기록하고 초기 역할과 해당 이벤트로 새 세션을 한 번 실행해 새 ID를 저장합니다. 새 실행까지 실패하면 이벤트를 `failed/`에 보관하며 자동으로 계속 재시도하지 않습니다. 재개 실패 전에 일부 동작이 실행됐을 수 있으므로 기존 worker의 head·중복·review-fix 확인 규칙이 계속 필요합니다. Hermes가 압축 후 새 ID를 반환하면 그 ID를 이어 사용합니다.
 
@@ -678,7 +678,9 @@ QA 하나를 최신 관측 base head에 제출합니다. 실행 중 추가 병�
 
 QA도 일반 작업과 같은 호스트 입찰·admission·`DV_MAX_JOBS` 슬롯을 사용하므로
 서로 다른 저장소는 여러 호스트에서 병렬 실행됩니다. 준비 중인 clone과
-`waiting-capacity`도 자리를 유지합니다. 저장소별 실행 요청은 고정하고, 같은 head의
+`waiting-capacity`도 자리를 유지합니다. 실행기나 그 자식 프로세스가 `agent.exit` 없이
+죽으면(예: 호스트 재부팅) 그 작업은 슬롯을 반환하고 `dv status`는 `failed`로 보여 주며,
+임시 clone은 `dv clean` 전까지 남습니다. 저장소별 실행 요청은 고정하고, 같은 head의
 작업을 중복 제출하지 않습니다. 작업 이름은 `QA-<repo identifier>-<short sha>`이며
 repo identifier에는 owner, 안전한 repo 이름과 checksum이 들어갑니다.
 `dv qa status --json`은 scheduler의 저장소별 pending/running을,

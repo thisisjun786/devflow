@@ -234,6 +234,46 @@ case_qa_recovered_capacity() {
   DV_MAX_JOBS=1 dv bid --kind qa --json --repo "$REPO" | jq -e '.active==1 and .free_slots==0 and .reason=="full"'
   qa_finish
 }
+case_qa_dead_runner() {
+  bidding_functions
+  # shellcheck source=lib/qa.sh
+  source "$ROOT/lib/qa.sh"
+  local issue=QA-dead-runner S="$DV_STATE/QA-dead-runner" qa_dir live pid_file
+  # No process can hold this PID on Linux or macOS, so a stale record always
+  # looks dead and a later PID reuse cannot make the case flaky.
+  local dead=999999999
+  mkdir -p "$S" "$DV_STATE/.qa/$issue"
+  qa_dir="$DV_STATE/.qa/$issue"
+  jq -n --arg issue "$issue" '{issue:$issue,kind:"qa",repo:"test/repo",worktree:"",branch:$issue,
+    base:"main",head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",start_head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    host:"test-host",agent:"codex",backend:"qa",status:"running",started:1}' > "$S/meta"
+  # A reboot leaves running metadata and stale PID files but no agent.exit.
+  printf '%s\n' "$dead" > "$S/agent.pid"
+  printf '%s\n' "$dead" > "$qa_dir/runner.pid"
+  printf '%s\n' "$dead" > "$qa_dir/child.pid"
+  test ! -e "$S/agent.exit"
+  test "$(bid_active)" = 0
+  dv status "$issue" --json | jq -e '.[0] | .status=="failed" and .alive==false'
+  # The scratch checkout outlives the runner until dv clean collects it.
+  test -f "$S/meta"
+  # A live wrapper, awarded runner, or agent child still holds the slot.
+  sleep 30 & live=$!
+  for pid_file in "$S/agent.pid" "$qa_dir/runner.pid" "$qa_dir/child.pid"; do
+    printf '%s\n' "$dead" > "$S/agent.pid"
+    printf '%s\n' "$dead" > "$qa_dir/runner.pid"
+    printf '%s\n' "$dead" > "$qa_dir/child.pid"
+    printf '%s\n' "$live" > "$pid_file"
+    test "$(bid_active)" = 1
+    dv status "$issue" --json | jq -e '.[0] | .status=="running" and .alive==true'
+  done
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  printf '%s\n' "$dead" > "$S/agent.pid"
+  printf '%s\n' "$dead" > "$qa_dir/runner.pid"
+  printf '%s\n' "$dead" > "$qa_dir/child.pid"
+  test "$(bid_active)" = 0
+  dv status "$issue" --json | jq -e '.[0] | .status=="failed" and .alive==false'
+}
 case_qa_explicit_match() {
   qa_fixture
   printf '[{"number":19,"title":"fix(tui): answer the first message"},{"number":21,"title":"Conversation input stalls"}]\n' > "$GH_STUB_DIR/qa-issues"
