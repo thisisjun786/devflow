@@ -65,7 +65,8 @@ case_claude_bsd_stat_mode() (
 # Fixture functions are called indirectly by loaded helpers.
 # shellcheck disable=SC2317,SC2329
 case_host_darwin_shells() (
-  # Apple's bash build enables SSH_SOURCE_BASHRC just like GNU bash.
+  # This wrapper only simulates Darwin's uname on the host's real shell, so the
+  # shared case detects the build's SSH startup behavior instead of assuming it.
   uname() { if [ "$1" = -s ]; then echo Darwin; else command uname "$@"; fi; }
   case_host_real_shells
 )

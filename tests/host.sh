@@ -242,16 +242,33 @@ case_host_path_preserve() {
 case_host_real_shells() {
   host_setup
   export DV_HOST_SHELL=/bin/bash
-  # GNU and Apple bash builds enable SSH_SOURCE_BASHRC: SSH_CLIENT makes a
-  # non-interactive shell read .bashrc, which can source the user's profile.
+  # SSH startup-file handling is a build option (SSH_SOURCE_BASHRC). Apple bash
+  # reads .bashrc for a non-interactive ssh command; some GNU bash builds (5.3.15
+  # seen) do not. Detect the build and assert the path it really produces.
   printf '. "$HOME/.profile"\n' > "$HOME/.bashrc"
   export DV_ENTRY="$ROOT/bin/dv"
   # shellcheck source=lib/common.sh
   source "$ROOT/lib/common.sh"
   # shellcheck source=lib/host.sh
   source "$ROOT/lib/host.sh"
+  local base=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin ssh_bashrc=0
+  # Explicitly sourcing the synthetic .bashrc always yields the profile PATH,
+  # so a failure below reflects startup handling, not the .bashrc contents.
+  test "$(env -i "HOME=$HOME" "PATH=$base" "$DV_HOST_SHELL" -c '. "$HOME/.bashrc"; printf "%s" "$PATH"')" = "$HOME/system:/usr/bin:/bin"
+  # Probe the build with the same non-interactive ssh invocation; .bashrc sets
+  # only a marker, so this is independent of host_shell_path's PATH handling.
+  printf 'export DV_SSH_BASHRC_PROBE=1\n' > "$HOME/.bashrc"
+  if env -i "HOME=$HOME" "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "SHELL=$DV_HOST_SHELL" \
+    "PATH=$base" 'SSH_CLIENT=127.0.0.1 1 22' 'SHLVL=0' \
+    "$DV_HOST_SHELL" -c 'test "${DV_SSH_BASHRC_PROBE:-}" = 1'; then ssh_bashrc=1; fi
+  printf '. "$HOME/.profile"\n' > "$HOME/.bashrc"
   path=$(host_shell_path ssh)
-  test "$path" = "$HOME/system:/usr/bin:/bin"
+  if [ "$ssh_bashrc" = 1 ]; then
+    test "$path" = "$HOME/system:/usr/bin:/bin"
+  else
+    # Without SSH_SOURCE_BASHRC a real ssh command keeps sshd's inherited PATH.
+    test "$path" = "$base"
+  fi
   if command -v zsh >/dev/null; then
     # A login startup file runs after macOS /etc/zprofile's path_helper.
     printf '. "$HOME/.zshenv"\n' > "$HOME/.zprofile"
