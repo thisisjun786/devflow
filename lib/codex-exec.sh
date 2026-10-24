@@ -87,9 +87,17 @@ codex_exec_events() {
         if printf '%s\n' "$event" | capacity_error; then exec_capacity=true; fi
         exec_reason=$(printf '%s\n' "$event" | jq -r '.message // .error.message // "codex error event"') ;;
       item.*)
+        # Error items are non-fatal notices (config and unstable-feature
+        # warnings at startup); the turn keeps running. Only provider capacity
+        # items stop the run so the capacity wait can take over. Fatal errors
+        # arrive as top-level error or turn.failed events.
         if printf '%s\n' "$event" | jq -e '.item.type=="error"' >/dev/null; then
-          if printf '%s\n' "$event" | capacity_error; then exec_capacity=true; fi
-          exec_reason=$(printf '%s\n' "$event" | jq -r '.item.message // "codex error item"')
+          if printf '%s\n' "$event" | capacity_error; then
+            exec_capacity=true
+            exec_reason=$(printf '%s\n' "$event" | jq -r '.item.message // "codex error item"')
+          else
+            printf 'codex warning: %s\n' "$(printf '%s\n' "$event" | jq -r '.item.message // "codex error item"' | head -n 1)" >> "$S/log"
+          fi
         fi ;;
     esac
   done < <(tail -n "+$((exec_line + 1))" "$S/agent.jsonl")

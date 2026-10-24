@@ -50,6 +50,13 @@ case "$scenario" in
     dv park "$DV_ISSUE" --on 12 --note 'waiting for #12' > /dev/null
     printf '{"type":"turn.completed"}\n'
     exit 0 ;;
+  warning-items)
+    # Real codex exec reports config and unstable-feature warnings as error
+    # items at startup, then runs the turn normally.
+    printf '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings."}}\n'
+    printf '{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Under-development features enabled: default_mode_request_user_input. Under-development features are incomplete and may behave unpredictably."}}\n'
+    printf '{"type":"turn.started"}\n'
+    sleep 0.5 ;;
   nonzero) exit 7 ;;
   retry) if [ "$n" = 1 ]; then exit 7; fi ;;
   capacity-once)
