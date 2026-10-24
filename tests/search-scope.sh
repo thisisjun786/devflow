@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# The runner supplies ROOT/RV_STATE; stubs are called through sourced functions.
-# shellcheck disable=SC2016,SC2153,SC2329
+# The runner supplies globals; sourced functions consume fixture assignments.
+# Libraries are linted directly by CI. Do not duplicate their graph here (#305).
+# shellcheck disable=SC2016,SC2034,SC2153,SC2329
 search_load() {
   unset RIPGREP_CONFIG_PATH DV_RG_MAX_FILESIZE DV_RG_MAX_COLUMNS DV_RG_EXCLUDE_GLOBS
   DV_ROOT=$ROOT
-  # Keep this focused fixture out of the full common.sh source graph (#305).
-  # shellcheck source=config.example.sh
+  # shellcheck source=/dev/null
   source "$ROOT/config.example.sh"
-  # shellcheck source=lib/search.sh
+  # shellcheck source=/dev/null
   source "$ROOT/lib/search.sh"
-  # shellcheck source=lib/job-limits.sh
+  # shellcheck source=/dev/null
   source "$ROOT/lib/job-limits.sh"
   S="$CASE_DIR/search-state"
   mkdir -p "$S"
 }
 search_commands_load() {
-  # shellcheck source=lib/commands.sh
+  # shellcheck source=/dev/null
   source "$ROOT/lib/commands.sh"
 }
 case_search_defaults() {
