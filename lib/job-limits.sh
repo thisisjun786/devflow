@@ -259,9 +259,9 @@ job_fallback_run() {
 job_fallback_reason() {
   local output
   output=$({ cat "$JOB_ATTEMPT/stderr" 2>/dev/null || true; tail -n "+$1" "$S/agent.stderr" 2>/dev/null || true; } | tail -n 50)
-  if printf '%s\n' "$output" | grep -Eq 'fork:.*Resource temporarily unavailable|failed to create new OS thread|pthread_create.*Resource temporarily unavailable'; then
+  if grep -Eq 'fork:.*Resource temporarily unavailable|failed to create new OS thread|pthread_create.*Resource temporarily unavailable' <<< "$output"; then
     printf 'ulimit-nproc\n'
-  elif printf '%s\n' "$output" | grep -Eqi 'xmalloc:.*cannot allocate|runtime: out of memory|cannot allocate memory'; then
+  elif grep -Eqi 'xmalloc:.*cannot allocate|runtime: out of memory|cannot allocate memory' <<< "$output"; then
     printf 'ulimit-memory\n'
   fi
 }

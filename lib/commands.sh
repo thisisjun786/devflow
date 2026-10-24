@@ -380,10 +380,10 @@ codex_screen() {
   else read_session; fi
 }
 codex_hook_trust_required() {
-  printf '%s\n' "$1" | grep -Eiq 'hooks? needs? review|t[[:space:]]+trust all.*enter[[:space:]]+review'
+  grep -Eiq 'hooks? needs? review|t[[:space:]]+trust all.*enter[[:space:]]+review' <<< "$1"
 }
 codex_folder_trust_required() {
-  printf '%s\n' "$1" | grep -Eiq 'trust (this|the) (folder|directory)|trusting will apply to the repository root|folder access'
+  grep -Eiq 'trust (this|the) (folder|directory)|trusting will apply to the repository root|folder access' <<< "$1"
 }
 codex_goal_pending() {
   # Match the last composer, including wrapped lines, never a transcript echo.
@@ -415,7 +415,7 @@ wait_codex_goal() {
           retried=1
           session_enter || true
         fi
-      elif printf '%s\n' "$screen" | grep -Eq '(^|(•|[*])[[:space:]]+)Pursuing goal([[:space:]]|$)'; then
+      elif grep -Eq '(^|(•|[*])[[:space:]]+)Pursuing goal([[:space:]]|$)' <<< "$screen"; then
         [ -z "${DV_AWARD_TOKEN:-}" ] || touch "$S/agent.started"
         return 0
       elif [ "$BACKEND" = herdr ] && agent=$(herdr_cmd agent get "$HERDR_PANE" 2>/dev/null) &&
@@ -455,7 +455,7 @@ inject_goal() {
         wait_codex_goal "$instruction"; return $?
       fi
     else
-      if printf '%s\n' "$screen" | grep -Eq "$DV_READY_PATTERN" && send_text "/goal $instruction"; then
+      if grep -Eq "$DV_READY_PATTERN" <<< "$screen" && send_text "/goal $instruction"; then
         wait_codex_goal "$instruction"; return $?
       fi
     fi
@@ -470,7 +470,7 @@ accept_folder_trust() {
   local end=$(( $(now) + DV_START_WAIT )) pane
   while [ "$(now)" -lt "$end" ]; do
     pane=$(read_session 2>/dev/null) || return 0
-    if printf '%s\n' "$pane" | grep -Eiq 'trust (this|the) (folder|directory)|do you trust'; then
+    if grep -Eiq 'trust (this|the) (folder|directory)|do you trust' <<< "$pane"; then
       session_enter; return
     fi
     sleep 0.2
@@ -724,7 +724,7 @@ agent_gone() {
   REVIVE_PANE_EXISTS=0
   if [ "$BACKEND" = tmux ]; then
     if pane=$(tmux_dv list-panes -t "$SESSION:0" -F '#{pane_index} #{pane_dead}' 2>/dev/null); then
-      printf '%s\n' "$pane" | grep -qx '0 1'
+      grep -qx '0 1' <<< "$pane"
     else
       # A session lookup also guards against a missing window in a live session.
       ! tmux_dv has-session -t "=$SESSION" 2>/dev/null
@@ -826,7 +826,12 @@ revive_agent() {
 }
 cmd_send() {
   [ "$#" -eq 2 ] || fail 'usage: dv send ISSUE text'
-  load_issue "$1"; issue_lock; require_worktree --allow-branch-change
+  load_issue "$1"; issue_lock
+  send_locked "$2"
+}
+# The caller has loaded the issue and holds its operation lock.
+send_locked() {
+  require_worktree --allow-branch-change
   job_can_launch || fail 'resource limit blocked; automatic continuation refused'
   if [ -n "${DV_PR_RECOVERY_HEAD:-}" ]; then
     # A background waiter may be descheduled before taking this issue lock.
@@ -844,12 +849,12 @@ cmd_send() {
   if jq -e '.status=="parked"' "$S/meta" >/dev/null && { [ "$BACKEND" != exec ] || ! codex_exec_alive "$S"; }; then
     meta_set --argjson time "$(now)" '.status="running" | .unparked_at=$time'
   fi
-  if [ "$BACKEND" = appserver ]; then appserver_request send "$2"; return; fi
-  if [ "$BACKEND" = exec ]; then codex_exec_send "$2"; return; fi
+  if [ "$BACKEND" = appserver ]; then appserver_request send "$1"; return; fi
+  if [ "$BACKEND" = exec ]; then codex_exec_send "$1"; return; fi
   # tmux can accept paste/Enter even when remain-on-exit retained a dead pane.
-  if [ "$BACKEND" = tmux ] && agent_gone; then revive_agent "$2"; return; fi
-  if send_text "$2"; then metrics_note resume; return 0; fi
-  if agent_gone; then revive_agent "$2"; else return 1; fi
+  if [ "$BACKEND" = tmux ] && agent_gone; then revive_agent "$1"; return; fi
+  if send_text "$1"; then metrics_note resume; return 0; fi
+  if agent_gone; then revive_agent "$1"; else return 1; fi
 }
 cmd_clean() {
   [ "$#" -eq 1 ] || fail 'usage: dv clean ISSUE'; load_issue "$1"; issue_lock

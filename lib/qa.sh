@@ -702,8 +702,9 @@ qa_finding() (
     "\n\n## Done when\n- [ ] following the steps gives the expected result.\n- [ ] a test covers this case.\n\n"+
     "## Context\nSource: real-use QA at `"+$head+"`, milestone **"+$milestone+"**\nEvidence: "+.evidence+"\n\n"+$marker' <<< "$data" > "$body"
   # Create only missing labels; never overwrite a repository's existing label.
-  gh label create qa -R "$repository" --color 7057ff --description 'Real-use QA finding' 2>/dev/null || gh label list -R "$repository" --json name --jq '.[].name' | grep -Fxq qa
-  gh label create "$kind" -R "$repository" --color d73a4a --description 'QA finding type' 2>/dev/null || gh label list -R "$repository" --json name --jq '.[].name' | grep -Fxq "$kind"
+  # Drain the listing even after a match so gh cannot fail with SIGPIPE.
+  gh label create qa -R "$repository" --color 7057ff --description 'Real-use QA finding' 2>/dev/null || gh label list -R "$repository" --json name --jq '.[].name' | grep -Fx qa >/dev/null
+  gh label create "$kind" -R "$repository" --color d73a4a --description 'QA finding type' 2>/dev/null || gh label list -R "$repository" --json name --jq '.[].name' | grep -Fx "$kind" >/dev/null
   if [ -n "$match" ]; then
     local milestone_args=()
     if [ "$milestone" != null ]; then milestone_args=(--milestone "$(jq -r .milestone.title "$S/meta")"); fi

@@ -84,7 +84,7 @@ stack_await() {
     jq -e "$expression" "$DV_STATE/S-$issue/meta" >/dev/null && return 0
     sleep 0.1
   done
-  cat "$DV_HOME/stack.log" "$DV_HOME/watch.log" "$CASE_DIR/watch.log" "$DV_HOME"/workers/*.log >&2 2>/dev/null || true
+  cat "$DV_STATE/S-$issue/meta" "$DV_STATE/S-$issue/stack-resume.log" "$DV_HOME/stack.log" "$DV_HOME/watch.log" "$CASE_DIR/watch.log" "$DV_HOME"/workers/*.log >&2 2>/dev/null || true
   return 1
 }
 stack_watch() { dv-watch > "$CASE_DIR/watch.log" 2>&1 & watcher=$!; }
@@ -475,6 +475,35 @@ case_stack_stalled() {
   stack_watch; sleep 1.5; stack_stop
   test "$(wc -l < "$DV_STATE/S-2/sent-input" | tr -d ' ')" = 1
 }
+case_stack_resume_lock() (
+  stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
+  stack_waiting 2; dv land S-1
+  DV_ENTRY="$ROOT/bin/dv"
+  source "$ROOT/lib/common.sh"
+  source "$ROOT/lib/stack.sh"
+  local key resume_rc=0
+  key=$(stack_resume_key < "$DV_STATE/S-2/meta")
+  cat > "$CASE_DIR/resume-lock-env" <<'ENV'
+rmdir() {
+  env rmdir "$@" || return
+  if [ "$*" = "$DV_STATE/S-2/.operation" ] &&
+    [ ! -f "$DV_STATE/S-2/sent-input" ] &&
+    jq -e '.stack_resume.status=="sending"' "$DV_STATE/S-2/meta" >/dev/null; then
+    # A reconciler can claim the lock between the reservation and dv send.
+    env mkdir "$DV_STATE/S-2/.operation"
+    touch "$CASE_DIR/resume-lock-stolen"
+  fi
+}
+ENV
+  BASH_ENV="$CASE_DIR/resume-lock-env" dv _stack-resume S-2 "$key" || resume_rc=$?
+  cat "$DV_STATE/S-2/stack-resume.log"
+  printf 'stack resume exit=%s\n' "$resume_rc"
+  test "$resume_rc" = 0
+  test ! -e "$CASE_DIR/resume-lock-stolen"
+  test ! -d "$DV_STATE/S-2/.operation"
+  jq -e '.stack_resume.status=="sent"' "$DV_STATE/S-2/meta"
+  test "$(wc -l < "$DV_STATE/S-2/sent-input" | tr -d ' ')" = 1
+)
 case_stack_resume_guards() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   stack_waiting 2

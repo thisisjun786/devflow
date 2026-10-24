@@ -247,7 +247,7 @@ dsh_exec_run() {
     touch "$S/agent.started"
     while kill -0 "$exec_child" 2>/dev/null; do
       dsh_exec_events
-      if tail -n "+$((stderr_line + 1))" "$S/agent.stderr" | grep -Eq '^dsh: (RATE_LIMIT|QUOTA):'; then exec_capacity=true; fi
+      if tail -n "+$((stderr_line + 1))" "$S/agent.stderr" | grep -E '^dsh: (RATE_LIMIT|QUOTA):' >/dev/null; then exec_capacity=true; fi
       if [ "$exec_capacity" = true ]; then exec_reason='dsh provider capacity'; break; fi
       [ -z "$exec_reason" ] || break
       current=$(now)
@@ -280,7 +280,7 @@ dsh_exec_run() {
       capacity_clear; meta_set '.exec_status="parked"'; printf '%s\n' "$rc" > "$S/agent.exit"
       dsh_exec_cleanup; return 0
     fi
-    if [ "$exec_capacity" = true ] || tail -n "+$((stderr_line + 1))" "$S/agent.stderr" | grep -Eq '^dsh: (RATE_LIMIT|QUOTA):'; then
+    if [ "$exec_capacity" = true ] || tail -n "+$((stderr_line + 1))" "$S/agent.stderr" | grep -E '^dsh: (RATE_LIMIT|QUOTA):' >/dev/null; then
       if capacity_wait; then continue; fi
       meta_set '.exec_status="blocked"'; printf '1\n' > "$S/agent.exit"
       dsh_exec_cleanup; return 1

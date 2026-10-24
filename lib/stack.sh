@@ -203,10 +203,10 @@ cmd_stack_resume() {
   prompt="All stack dependencies are merged into origin/$BASE. Resume this job in its existing worktree: merge origin/$BASE, resolve any conflict while preserving local work, rerun the required checks, commit changes, run dv pr $ISSUE, wait for green CI on the current head, and finish with dv done $ISSUE. Preserve pr-loop.json round counts; wait for a clean current-head Codex review with dv pr-wait --foreground. Do not force push."
   meta_set --arg key "$key" --arg base "$base_head" --argjson at "$(now)" \
     '.stack_resume={key:$key,base:$base,status:"sending",at:$at} | .done_episode=("stack-"+$key)'
-  # dv send owns its own operation lock; keep only the resume reservation.
-  rmdir "$S/.operation"
-  trap 'owned_unlock "$S/.stack-resume-lock" "$$"' EXIT
-  "$DV_ROOT/bin/dv" send "$ISSUE" "$prompt" > "$S/stack-resume.log" 2>&1 || rc=$?
+  # Keep the operation lock through delivery: a reconciler can otherwise
+  # claim it between this reservation and dv send, stranding the resume.
+  # Isolate send's failure/launch traps without releasing our parent locks.
+  (trap - EXIT; send_locked "$prompt") > "$S/stack-resume.log" 2>&1 || rc=$?
   if [ "$rc" != 0 ]; then
     meta_set '.stack_resume.status="failed"'
     cmd_kick blocked "$ISSUE" 'Stack resume delivery failed; inspect stack-resume.log before retrying'
