@@ -24,6 +24,144 @@ stall_omp_scan() {
 stall_omp_count() {
   jq -se --argjson n "$1" '[.[]|select(.[0:2]==["agent","prompt"])]|length==$n' "$CASE_DIR/herdr/calls"
 }
+stall_omp_escalation_fixture() {
+  stall_omp_fixture
+  export DV_CODEX_BIN="$ROOT/tests/fixtures/texttool-codex"
+  unset DV_OMP_TEXTTOOL_ESCALATE
+  cp "$CASE_DIR/brief" "$DV_STATE/ST-1/brief.md"
+  jq '.herdr_workspace="w-ST-1"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  printf 'report to preserve\n' > "$DV_STATE/ST-1/report.md"
+  printf '{"rounds":2,"requests":{"old":{"retried":true}}}\n' > "$DV_STATE/ST-1/pr-loop.json"
+  printf 'review receipt\n' > "$DV_STATE/ST-1/review-fix.sent"
+  printf 'staged\n' > "$REPO/staged"
+  git -C "$REPO" add staged
+  printf 'unstaged\n' >> "$REPO/staged"
+  printf 'untracked\n' > "$REPO/untracked"
+  git -C "$REPO" diff --binary > "$CASE_DIR/unstaged"
+  git -C "$REPO" diff --cached --binary > "$CASE_DIR/staged"
+  cp "$DV_STATE/ST-1/report.md" "$CASE_DIR/report"
+  cp "$DV_STATE/ST-1/pr-loop.json" "$CASE_DIR/pr-loop"
+}
+stall_omp_escalation_check() {
+  local expected_status=$1
+  wait_file "$DV_STATE/ST-1/takeover.json"
+  dv status ST-1 --json | jq -e --arg status "$expected_status" '.[0] |
+    .agent=="codex" and .escalated_from=="omp" and .escalation_reason=="texttool" and .status==$status'
+  dv status ST-1 | grep -F 'escalated_from=omp reason=texttool'
+  jq -e --arg wt "$REPO" '.cwd==$wt and (.args|index("exec")!=null) and
+    (.args[-1]|contains("stalled") and contains("uncommitted") and contains("brief.md") and contains("PR") and contains("dv done ST-1"))' "$DV_STATE/ST-1/takeover.json"
+  git -C "$REPO" diff --binary > "$CASE_DIR/unstaged-after"
+  git -C "$REPO" diff --cached --binary > "$CASE_DIR/staged-after"
+  cmp "$CASE_DIR/unstaged" "$CASE_DIR/unstaged-after"
+  cmp "$CASE_DIR/staged" "$CASE_DIR/staged-after"
+  grep -Fx untracked "$REPO/untracked"
+  test "$(git -C "$REPO" symbolic-ref --short HEAD)" = main
+  cmp "$CASE_DIR/report" "$DV_STATE/ST-1/report.md"
+  cmp "$CASE_DIR/pr-loop" "$DV_STATE/ST-1/pr-loop.json"
+  grep -Fx 'review receipt' "$DV_STATE/ST-1/review-fix.sent"
+  jq -se '[.[]|select(.[0:2]==["pane","send-keys"] and .[3]=="ctrl-c")]|length==1' "$CASE_DIR/herdr/calls"
+  stall_omp_scan
+  dv _stall-recover ST-1 --omp-texttool round-1
+  test "$(wc -l < "$DV_STATE/ST-1/takeover-runs" | tr -d ' ')" = 1
+}
+case_stall_omp_escalate() {
+  stall_omp_escalation_fixture
+  local n
+  for n in 1 2 3 4; do
+    stall_omp_message "retry-$n"
+    stall_omp_scan; stall_omp_count "$n"
+    jq -e '.agent=="omp" and .escalated_from==null' "$DV_STATE/ST-1/meta"
+  done
+  # A repeated scan of the just-resumed turn must let that attempt run.
+  stall_omp_scan; stall_omp_count 4
+  stall_omp_message exhausted
+  stall_omp_scan; stall_omp_count 4
+  stall_omp_escalation_check running
+  test ! -d "$DV_STATE/ST-1/revive"
+}
+case_stall_omp_escalate_pr() {
+  stall_omp_escalation_fixture
+  export DV_OMP_TEXTTOOL_ESCALATE=1
+  jq '.status="pr"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+  mkdir "$DV_STATE/ST-1/revive" "$DV_STATE/ST-1/.pr-wait"
+  printf 'previous-revive\n' > "$DV_STATE/ST-1/revive/id"
+  touch "$DV_STATE/ST-1/.pr-wait/pid-$$"
+  stall_omp_scan; stall_omp_count 1
+  stall_omp_message exhausted
+  stall_omp_scan; stall_omp_count 1
+  stall_omp_escalation_check pr
+  grep -Fx previous-revive "$DV_STATE/ST-1/revive/id"
+}
+case_stall_omp_escalate_skip() {
+  stall_omp_escalation_fixture
+  export DV_OMP_TEXTTOOL_ESCALATE=1
+  stall_omp_scan; stall_omp_count 1
+  stall_omp_message exhausted
+  touch "$DV_STATE/ST-1/texttool-skip"
+  stall_omp_scan; stall_omp_count 1
+  test ! -e "$DV_STATE/ST-1/takeover.json"
+  jq -e '.agent=="omp" and .escalated_from==null' "$DV_STATE/ST-1/meta"
+}
+case_stall_omp_escalate_launch() {
+  stall_omp_escalation_fixture
+  export DV_OMP_TEXTTOOL_ESCALATE=1
+  # Existing reservation format from a previous launch must not exhaust this one.
+  printf '{"old":{"reserved_at":1}}\n' > "$DV_STATE/ST-1/omp-texttool-nudges.json"
+  stall_omp_scan; stall_omp_count 1
+  # A distinct launch, even within the same second, starts a fresh budget.
+  printf 'next-launch\n' > "$DV_STATE/ST-1/agent.launched"
+  stall_omp_message next-launch
+  stall_omp_scan; stall_omp_count 2
+  jq -e '.agent=="omp" and .escalated_from==null' "$DV_STATE/ST-1/meta"
+  stall_omp_message exhausted
+  stall_omp_scan; stall_omp_count 2
+  stall_omp_escalation_check running
+}
+case_stall_omp_escalate_interrupt() {
+  stall_omp_escalation_fixture
+  export DV_OMP_TEXTTOOL_ESCALATE=1
+  stall_omp_scan; stall_omp_count 1
+  stall_omp_message exhausted
+  printf 'pane send-keys\n' > "$CASE_DIR/herdr/fail"
+  stall_omp_scan; stall_omp_count 1
+  jq -e '.agent=="omp" and .escalation_status=="blocked"' "$DV_STATE/ST-1/meta"
+  rm "$CASE_DIR/herdr/fail"
+  stall_omp_scan
+  dv _stall-recover ST-1 --omp-texttool round-1
+  stall_omp_count 1
+  test ! -e "$DV_STATE/ST-1/takeover.json"
+  jq -se '[.[]|select(.kind=="blocked")]|length==1' "$DV_STATE/ST-1/events.log"
+  jq -se '[.[]|select(.[0:2]==["pane","send-keys"])]|length==1' "$CASE_DIR/herdr/calls"
+  grep -Fx untracked "$REPO/untracked"
+}
+case_stall_omp_escalate_legacy() {
+  stall_omp_escalation_fixture
+  export DV_OMP_TEXTTOOL_ESCALATE=1
+  jq -n --argjson at "$(date +%s)" '{old:{reserved_at:$at}}' > "$DV_STATE/ST-1/omp-texttool-nudges.json"
+  stall_omp_scan; stall_omp_count 0
+  stall_omp_escalation_check running
+}
+case_stall_omp_escalate_wrapper() {
+  stall_omp_escalation_fixture
+  export DV_OMP_TEXTTOOL_ESCALATE=1
+  export DV_AGENT_CMD_omp='printf "%s\n" "$$" > "$DV_STATE/$DV_ISSUE/omp-pid"; while :; do sleep 0.1; done'
+  touch "$CASE_DIR/herdr/w-ST-1/ready"
+  herdr pane run w-ST-1:p1 "$(shell_join "$ROOT/bin/dv" _agent ST-1)"
+  wait_file "$DV_STATE/ST-1/omp-pid"
+  local previous_pid
+  previous_pid=$(cat "$DV_STATE/ST-1/agent.pid")
+  stall_omp_message live-wrapper
+  stall_omp_scan; stall_omp_count 1
+  stall_omp_message exhausted
+  stall_omp_scan; stall_omp_count 1
+  stall_omp_escalation_check running
+  ! kill -0 "$previous_pid" 2>/dev/null
+  # The old wrapper cannot publish an exit over its Codex successor.
+  test ! -f "$DV_STATE/ST-1/agent.exit"
+  test ! -d "$DV_STATE/ST-1/revive"
+}
 case_stall_omp_once() {
   stall_omp_fixture
   stall_omp_scan; stall_omp_count 1

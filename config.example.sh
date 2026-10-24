@@ -46,6 +46,7 @@ fi
 : "${DV_CLAUDE_EFFORT:=xhigh}"
 : "${DV_DEVIN_MODEL:=fusion-gpt-6-astra-xhigh-sidekick-swe-2-high}"
 : "${DV_OMP_MODEL:=inferhub/deepseek-v4.1-flash}" # provider/model; custom providers live in ~/.omp/agent/models.yml
+: "${DV_OMP_TEXTTOOL_ESCALATE:=4}" # positive resume budget per launch before one Codex takeover
 : "${DV_AGY_MODEL:=gemini-4-argon}" # Argon at medium effort; the TUI ignores gemini-4-argon-medium
 : "${DV_GROK_MODEL:=}" # empty = grok's own default
 : "${DV_CURSOR_MODEL:=}" # empty = cursor-agent's own default

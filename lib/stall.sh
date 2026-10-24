@@ -6,7 +6,7 @@ stall_omp_candidates() {
   jq -c '.[] | select(.agent=="omp" and .backend=="herdr" and
     (.status=="running" or .status=="pr") and .alive==true and .agent_status=="idle" and
     .question_pending!=true and .goal_active!=true and .capacity_detected!=true and .capacity==null and
-    .cleaned_at==null and (.done_at==null or (.status=="pr" and .done_head!=.head)) and
+    .cleaned_at==null and .escalated_from==null and (.done_at==null or (.status=="pr" and .done_head!=.head)) and
     (.issue|type)=="string" and (.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")))'
 }
 # Read the newest session written by this launch. A later user/tool message or
@@ -34,23 +34,69 @@ stall_omp_turn() {
     [$session,.id]|tojson' "$newest"
 }
 stall_omp_resume() {
-  local token=$1 turn row tmp state="$S/omp-texttool-nudges.json"
+  local token=$1 turn row tmp launch launched count=0 state="$S/omp-texttool-nudges.json"
   [ ! -e "$S/texttool-skip" ] || return 0
+  jq -e '.escalated_from==null' "$S/meta" >/dev/null || return 0
   turn=$(stall_omp_turn) || return 0
   # Recheck live activity after reading the log, under the normal issue lock.
   row=$(cmd_status "$ISSUE" --json | stall_omp_candidates) || return 1
   [ -n "$row" ] && printf '%s\n' "$row" | jq -e --arg token "$token" '(.award_token // "")==$token' >/dev/null || return 0
+  [[ "$DV_OMP_TEXTTOOL_ESCALATE" =~ ^[1-9][0-9]{0,8}$ ]] || fail 'DV_OMP_TEXTTOOL_ESCALATE must be a positive integer (at most 9 digits)'
+  launch=$(cat "$S/agent.launched") || return 1
+  launched=$(stat -c %Y "$S/agent.launched" 2>/dev/null || stat -f %m "$S/agent.launched") || return 1
+  # Older launch markers were empty. Accept their existing reservations by
+  # timestamp; new markers identify distinct launches even in the same second.
+  [ -n "$launch" ] || launch="legacy:$launched"
   if [ -f "$state" ]; then
     jq -e 'type=="object"' "$state" >/dev/null || return 1
     if jq -e --arg turn "$turn" 'has($turn)' "$state" >/dev/null; then return 0; fi
+    count=$(jq --arg launch "$launch" --argjson launched "$launched" '[.[] |
+      select(.launch==$launch or (.launch==null and (.reserved_at // 0)>=$launched))] | length' "$state") || return 1
   fi
+  if [ "$count" -ge "$DV_OMP_TEXTTOOL_ESCALATE" ]; then stall_omp_escalate "$count"; return; fi
   # Reserve before sending: uncertain transport delivery is never retried for
   # the same session/message, including after watcher or command restarts.
   tmp=$(mktemp "$S/.omp-texttool.XXXXXX") || return 1
   if ! { if [ -f "$state" ]; then cat "$state"; else printf '{}\n'; fi; } |
-    jq --arg turn "$turn" --argjson time "$(now)" '.[$turn]={reserved_at:$time}' > "$tmp" ||
+    jq --arg turn "$turn" --arg launch "$launch" --argjson time "$(now)" '.[$turn]={reserved_at:$time,launch:$launch}' > "$tmp" ||
     ! mv "$tmp" "$state"; then rm -f "$tmp"; return 1; fi
   send_text 'Your last turn ended with a tool call written as text. Continue the existing task using actual tool calls. Preserve existing changes and finish the brief.'
+}
+stall_omp_escalate() {
+  local count=$1 dir="$S/omp-texttool-escalation" trust_root file
+  job_can_launch || return 1
+  trust_root=$(codex_repo_root "$REPO") || return 1
+  codex_repo_allowed "$trust_root" && codex_environment && codex_trust_repo "$trust_root" || return 1
+  # The issue lock and permanent reservation cover watcher restarts and
+  # uncertain interrupt/launch delivery. This does not consume the revive.
+  mkdir "$dir" || return 1
+  {
+    printf 'The previous omp worker stalled after repeated tool calls written as text. Its uncommitted changes are still in this worktree; preserve them.\n'
+    printf 'Continue the original brief in %s on branch %s. Read %s/brief.md and %s/report.md if present.\n' "$WT" "$BRANCH" "$S" "$S"
+    printf 'Finish the original brief, including the PR loop if status is pr. Preserve PR review rounds and receipts; fix current-head P0/P1 findings and wait for CI and Codex review.\n'
+    printf 'Do not create a new branch. Finish with dv done %s.\n' "$ISSUE"
+  } > "$dir/prompt.md"
+  meta_set --argjson at "$(now)" --argjson count "$count" \
+    '.escalated_from="omp" | .escalation_reason="texttool" | .escalated_at=$at |
+      .escalation_resumes=$count | .escalation_status="interrupting"'
+  if ! herdr_interrupt; then stall_omp_escalation_blocked 'omp did not stop'; return 1; fi
+  for file in agent.pid agent.exit agent.launched agent.session; do
+    [ ! -f "$S/$file" ] || cp "$S/$file" "$dir/previous-$file"
+  done
+  if ! herdr_clean; then stall_omp_escalation_blocked 'could not close stopped omp pane'; return 1; fi
+  rm -f "$S/agent.pid" "$S/agent.exit" "$S/agent.session"
+  # launch_agent (commands.sh) reads the selected backend.
+  # shellcheck disable=SC2034
+  BACKEND='exec'
+  meta_set '.agent="codex" | .mode="exec" | .backend="exec" | .escalation_status="launching"'
+  if ! launch_agent --exec-prompt "$dir/prompt.md"; then
+    stall_omp_escalation_blocked 'could not launch Codex'; return 1
+  fi
+  meta_set '.escalation_status="launched"'
+}
+stall_omp_escalation_blocked() {
+  meta_set --arg error "$1" '.escalation_status="blocked" | .escalation_error=$error'
+  cmd_kick blocked "$ISSUE" "texttool escalation: $1; inspect the retained worktree and escalation record"
 }
 stall_reconcile() {
   local host=$1 rows=$2 interval=$3 time state tmp row issue event_host head token id message pending

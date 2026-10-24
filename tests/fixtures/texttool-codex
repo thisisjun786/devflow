@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Hold a synthetic takeover without modifying the worktree or opening a PR.
+set -euo pipefail
+if [ "${1:-} ${2:-}" = 'login status' ]; then exit 0; fi
+state="$DV_STATE/$DV_ISSUE"
+printf '%s\n' "$$" > "$state/held.pid"
+printf 'started\n' >> "$state/takeover-runs"
+jq -cn --arg cwd "$PWD" --args '{cwd:$cwd,args:$ARGS.positional}' -- "$@" > "$state/takeover.json"
+printf '{"type":"thread.started","thread_id":"takeover-fixture"}\n'
+while :; do sleep 0.1; done
