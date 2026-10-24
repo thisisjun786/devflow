@@ -108,23 +108,110 @@ case_dsh_last_status() {
   dsh_start_wait
   jq -e '.agent=="omp" and .dsh_failures==2' "$DV_STATE/DS-1/meta"
 }
+bwrap_plan_has() {
+  local log=$1 option=$2 path=$3
+  jq -se --arg option "$option" --arg path "$path" '
+    any(.[]; .argv as $a |
+      any(range(0; ($a|length)-1); ($a[.] == $option and $a[. + 1] == $path)))
+  ' "$log" >/dev/null
+}
 case_dsh_jail() {
   if [ "$(uname -s)" != Linux ] || ! command -v bwrap >/dev/null ||
     ! bwrap --dev-bind / / -- /bin/true >/dev/null 2>&1; then
     printf 'SKIP dsh_jail (working Linux bwrap unavailable)\n'; return 77
   fi
   dsh_setup jail
-  mkdir -p "$HOME/code/other" "$DV_DSH_HOME/sessions/other"
+  mkdir -p "$HOME/code/other" "$HOME/.cache/go-build" "$DV_STATE/DS-OTHER" \
+    "$DV_DSH_HOME/sessions/other" "$DV_HOME/submissions/OTHER"
+  printf 'hidden\n' > "$HOME/code/other/secret"
+  printf 'hidden\n' > "$DV_STATE/DS-OTHER/secret"
+  printf 'hidden\n' > "$DV_DSH_HOME/sessions/other/secret"
+  printf 'hidden\n' > "$DV_HOME/submissions/OTHER/secret"
   mv "$REPO" "$HOME/code/source"; REPO="$HOME/code/source"
   git clone -q "$REPO" "$DV_WORK/sibling"
   printf 'hidden\n' > "$DV_WORK/sibling/secret"
-  printf 'hidden\n' > "$HOME/code/other/secret"
-  printf 'hidden\n' > "$DV_DSH_HOME/sessions/other/secret"
+  git clone -q "$REPO" "$HOME/.cache/sibling"
+  printf 'hidden\n' > "$HOME/.cache/sibling/secret"
   export DV_DSH_JAIL=on
   dsh_start_wait
   jq -e '.agent=="dsh" and .exec_status=="done" and .dsh_jail.status=="on"' "$DV_STATE/DS-1/meta"
   test "$(cat "$DV_STATE/DS-1/dsh-count")" = 1
   test -f "$(jq -r .worktree "$DV_STATE/DS-1/meta")/jailed.txt"
+  test -f "$DV_STATE/DS-1/done.json"
+  test -f "$HOME/.cache/go-build/jail-cache"
+}
+case_dsh_jail_plan() {
+  if [ "$(uname -s)" != Linux ]; then
+    printf 'SKIP dsh_jail_plan (Linux only)\n'; return 77
+  fi
+  dsh_setup
+  local log="$CASE_DIR/bwrap-plan.jsonl" home work wt common sessions tmpdir
+  export DV_DSH_JAIL=auto DV_TEST_BWRAP_LOG="$log" DV_DSH_SESSIONS="$DV_DSH_HOME/sessions" \
+    DV_TMP="$HOME/.cache/dv/tmp" DV_DSH_JAIL_BIND="$CASE_DIR/jail-extra"
+  mkdir -p "$DV_HOME/submissions" "$DV_STATE/DS-OTHER" "$DV_STATE/.heavy" \
+    "$HOME/.cache/go-build" "$HOME/code/other" "$HOME/node" "$DV_TMP" "$DV_DSH_JAIL_BIND"
+  printf 'hidden\n' > "$DV_STATE/DS-OTHER/secret"
+  printf 'hidden\n' > "$HOME/code/other/secret"
+  cat > "$CASE_DIR/dsh-bin/bwrap" <<'BWRAP'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "${DV_TEST_BWRAP_LOG:-}" ]; then
+  jq -cn --args '{argv:$ARGS.positional}' -- "$@" >> "$DV_TEST_BWRAP_LOG"
+fi
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+[ "$#" -gt 0 ] && shift
+exec "$@"
+BWRAP
+  chmod +x "$CASE_DIR/dsh-bin/bwrap"
+  dsh_start_wait
+  jq -e '.agent=="dsh" and .exec_status=="done" and .dsh_jail.status=="on"' "$DV_STATE/DS-1/meta"
+  home=$(cd "$HOME" && pwd -P)
+  work=$(cd "$DV_WORK" && pwd -P)
+  wt=$(cd "$(jq -r .worktree "$DV_STATE/DS-1/meta")" && pwd -P)
+  common=$(cd "$wt" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
+  sessions="$DV_DSH_SESSIONS/--$(printf '%s' "${wt#/}" | tr / -)--"
+  bwrap_plan_has "$log" --tmpfs "$home"
+  tmpdir=$(cd /tmp && pwd -P)
+  bwrap_plan_has "$log" --tmpfs "$tmpdir"
+  if [ -d /var/tmp ]; then bwrap_plan_has "$log" --tmpfs "$(cd /var/tmp && pwd -P)"; fi
+  bwrap_plan_has "$log" --tmpfs "$work"
+  bwrap_plan_has "$log" --tmpfs "$DV_STATE"
+  bwrap_plan_has "$log" --ro-bind "$ROOT"
+  bwrap_plan_has "$log" --ro-bind "$home/node"
+  bwrap_plan_has "$log" --bind "$wt"
+  bwrap_plan_has "$log" --bind "$common"
+  bwrap_plan_has "$log" --bind "$DV_STATE/DS-1"
+  bwrap_plan_has "$log" --bind "$DV_STATE/.heavy"
+  bwrap_plan_has "$log" --bind "$DV_HOME"
+  bwrap_plan_has "$log" --bind "$DV_TMP"
+  bwrap_plan_has "$log" --bind "$DV_DSH_JAIL_BIND"
+  bwrap_plan_has "$log" --tmpfs "$DV_HOME/submissions"
+  bwrap_plan_has "$log" --tmpfs "$DV_DSH_SESSIONS"
+  bwrap_plan_has "$log" --bind "$sessions"
+  bwrap_plan_has "$log" --bind "$home/.cache/go-build"
+  if bwrap_plan_has "$log" --bind "$DV_STATE"; then return 1; fi
+  if bwrap_plan_has "$log" --bind "$DV_STATE/DS-OTHER"; then return 1; fi
+  if bwrap_plan_has "$log" --tmpfs "$home/code"; then return 1; fi
+  if bwrap_plan_has "$log" --bind "$ROOT"; then return 1; fi
+}
+case_dsh_jail_nonlinux_log() {
+  local default state fake
+  default=$(bash -c 'unset DV_DSH_JAIL; source "$1"; printf "%s" "${DV_DSH_JAIL:-}"' _ "$ROOT/config.example.sh")
+  [ "$default" = auto ] || return 1
+  state="$CASE_DIR/nonlinux-state"
+  fake="$CASE_DIR/fake-uname"
+  mkdir -p "$state" "$fake"
+  printf '{}\n' > "$state/meta"
+  printf '#!/usr/bin/env bash\nprintf "Darwin\\n"\n' > "$fake/uname"
+  chmod +x "$fake/uname"
+  PATH="$fake:$PATH" bash -c '
+    set -euo pipefail
+    export DV_ENTRY="$1/bin/dv" DV_DSH_JAIL=auto S="$2" WT="$3"
+    source "$1/lib/common.sh"
+    dsh_jail_prepare
+  ' _ "$ROOT" "$state" "$CASE_DIR/nonlinux-wt" > "$CASE_DIR/nonlinux.log" 2>&1
+  jq -e '.dsh_jail.status=="off" and .dsh_jail.reason=="non-Linux host"' "$state/meta"
+  grep -Fxq 'jail=off non-Linux host' "$state/log"
 }
 case_dsh_jail_unavailable() {
   dsh_setup

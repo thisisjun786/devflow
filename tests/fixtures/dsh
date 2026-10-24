@@ -49,7 +49,11 @@ case "${DV_DSH_SCENARIO:-success}" in
   jail)
     test ! -r "$DV_WORK/sibling/secret"
     test ! -r "$HOME/code/other/secret"
+    test ! -r "$HOME/.cache/sibling/secret"
+    test ! -r "$DV_STATE/DS-OTHER/secret"
+    test ! -r "$DV_HOME/submissions/OTHER/secret"
     test ! -r "$DSH_HOME/sessions/other/secret"
+    printf 'cache\n' > "$HOME/.cache/go-build/jail-cache"
     printf 'jailed commit\n' > jailed.txt
     git add jailed.txt
     git commit -qm 'feat(fixture): commit inside the jail'
