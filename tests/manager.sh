@@ -102,8 +102,13 @@ case_manager_busy_default() {
   wait_file "$dir/pending/$(manager_job_name 1 worker:M-2:pr-ready:abc).json"
   sleep 0.2
   test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 2
-  # Advance only the synthetic reservation's clock, proving the default is 120s.
-  printf '%s\n' "$(( $(date +%s) - 121 ))" > "$dir/run.lock/started"
+  # Below the default a busy manager keeps its queue (devflow#326: 120 s sent
+  # each later event to its own one-shot session).
+  printf '%s\n' "$(( $(date +%s) - 1700 ))" > "$dir/run.lock/started"
+  sleep 0.3
+  test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 2
+  # Advance only the synthetic reservation's clock, proving the default is 1800s.
+  printf '%s\n' "$(( $(date +%s) - 1801 ))" > "$dir/run.lock/started"
   manager_wait_calls 3
   jq -se '.[2].resume==""' "$CASE_DIR/hermes/calls"
   rm "$CASE_DIR/hermes/hold-resume"
@@ -456,4 +461,39 @@ case_manager_runner_ownership() {
   test "$(cat "$dir/run.lock/pid")" = "$$"
   test -f "$job"
   test "$(wc -l < "$CASE_DIR/hermes/calls" | tr -d ' ')" = 1
+}
+# A rotate hook (exit 10) retires the manager session after a successful turn;
+# the next event starts a fresh session with the role prompt (devflow#326).
+case_manager_rotate() {
+  manager_setup
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >> "%s/rotate-checks"\nexit 10\n' "$CASE_DIR" > "$CASE_DIR/rotate"
+  chmod +x "$CASE_DIR/rotate"
+  dv manager start "$REPO"
+  export DV_MANAGER_ROTATE_CHECK="$CASE_DIR/rotate"
+  manager_event M-1 "$REPO"
+  manager_watch_until 2
+  rm -f "$DV_HOME/stop"
+  local dir
+  dir=$(dirname "$(manager_meta)")
+  jq -e '.session_id==null and .rotated_from=="session-1"' "$dir/meta.json"
+  jq -se 'any(.[]; .kind=="rotated" and .previous_session=="session-1")' "$dir/events.log"
+  test "$(cat "$CASE_DIR/rotate-checks")" = session-1
+  manager_event M-2 "$REPO"
+  manager_watch_until 3
+  jq -se '.[2].resume==""' "$CASE_DIR/hermes/calls"
+  grep -F '장기 실행 관리자' "$CASE_DIR/hermes/prompt-3"
+  # The fresh session is itself checked; this hook always rotates.
+  jq -e '.session_id==null and .rotated_from=="session-2"' "$dir/meta.json"
+}
+case_manager_rotate_keep() {
+  manager_setup
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$CASE_DIR/rotate"; chmod +x "$CASE_DIR/rotate"
+  dv manager start "$REPO"
+  export DV_MANAGER_ROTATE_CHECK="$CASE_DIR/rotate"
+  manager_event M-1 "$REPO"
+  manager_watch_until 2
+  local dir
+  dir=$(dirname "$(manager_meta)")
+  jq -e '.session_id=="session-1"' "$dir/meta.json"
+  jq -se 'all(.[]; .kind!="rotated")' "$dir/events.log"
 }

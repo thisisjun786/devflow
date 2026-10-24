@@ -91,6 +91,7 @@ manager_turn() {
     if [ "$rc" = 0 ] && [ -n "$next" ]; then
       manager_set "$dir" --arg id "$next" '.session_id=$id | del(.last_error)' || return 1
       manager_log "$dir" resumed "$session" "$next" 0
+      manager_rotate "$dir" "$next"
       return 0
     fi
     manager_log "$dir" resume_failed "$session" "$next" "$rc"
@@ -111,6 +112,18 @@ manager_turn() {
   fi
   manager_set "$dir" --arg id "$next" '.session_id=$id | del(.last_error)' || return 1
   manager_log "$dir" fresh "$session" "$next" 0
+  manager_rotate "$dir" "$next"
+}
+# The operator hook decides when a long-lived session has stopped compacting
+# (token ceiling, repeated no-op compression). Exit 10 retires it; the next
+# turn starts fresh with the role prompt. Any other result keeps the session.
+manager_rotate() {
+  local dir=$1 session=$2 rc=0
+  [ -n "${DV_MANAGER_ROTATE_CHECK:-}" ] || return 0
+  "$DV_MANAGER_ROTATE_CHECK" "$session" >> "$dir/rotate.log" 2>&1 || rc=$?
+  [ "$rc" = 10 ] || return 0
+  manager_set "$dir" --arg id "$session" '.session_id=null | .rotated_from=$id' || return 0
+  manager_log "$dir" rotated "$session" '' 0
 }
 manager_start() (
   [ "$#" -ge 1 ] || fail 'usage: dv manager start <repo> [--agent hermes]'
