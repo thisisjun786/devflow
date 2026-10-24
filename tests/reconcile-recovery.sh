@@ -85,6 +85,19 @@ CONTENDER
   test "$(wc -l < "$CASE_DIR/entered" | tr -d ' ')" = 8
   test ! -e "$RECOVERY_LOCK/owner"
 }
+native_utf8_locale() {
+  # Read the whole list before matching. A pipeline into awk that exits on the
+  # first match lets locale keep writing into a closed pipe, and pipefail then
+  # reports SIGPIPE (141) before the pane check runs (issue #381).
+  local available line
+  available=$(locale -a 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) printf '%s\n' "$line"; return 0 ;;
+    esac
+  done <<< "$available"
+  return 1
+}
 recovery_utf8_status() {
   local backend=$1 implementation=$2 screen_locale
   stall_fixture
@@ -136,15 +149,46 @@ BSD_TR
 case_status_cut_utf8_log_bsd() { recovery_utf8_status log bsd; }
 case_status_cut_utf8_pane_bsd() { recovery_utf8_status pane bsd; }
 case_status_cut_utf8_native() {
+  local screen_locale rc=0
+  if ! screen_locale=$(native_utf8_locale); then
+    printf 'SKIP status_cut_utf8_native (no UTF-8 locale)\n' >&2
+    exit 77
+  fi
   recovery_utf8_status log native
   # Restore the fixture's pane backend without launching another agent.
   jq '.backend="herdr" | .status="running"' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
-  local screen_locale
-  screen_locale=$(locale -a | awk 'tolower($0) ~ /utf-?8/ { print; exit }')
-  LC_ALL="$screen_locale" dv status ST-1 --json > "$CASE_DIR/status.json" 2> "$CASE_DIR/status.err"
+  LC_ALL="$screen_locale" dv status ST-1 --json > "$CASE_DIR/status.json" 2> "$CASE_DIR/status.err" || rc=$?
+  cat "$CASE_DIR/status.err" >&2
+  printf 'status backend=herdr tr=native exit=%s\n' "$rc"
+  test "$rc" = 0
   test ! -s "$CASE_DIR/status.err"
-  jq -e 'length==1 and (.[0].last_log | length>0 and contains("한"))' "$CASE_DIR/status.json"
+  jq -e 'length==1 and .[0].backend=="herdr" and (.[0].last_log | length>0 and contains("한"))' "$CASE_DIR/status.json"
+}
+case_status_cut_utf8_native_locale() {
+  # macOS lists far more locales than fit in a pipe buffer, so a reader that
+  # exits on the first match leaves locale writing into a closed pipe. Under
+  # pipefail that turns the selection into exit 141 before any pane check.
+  mkdir -p "$CASE_DIR/locale-bin"
+  awk 'BEGIN { for (n = 0; n < 5000; n++) printf "xx_YY.ISO8859-1-%d\n", n }' > "$CASE_DIR/locale-bin/list"
+  cat > "$CASE_DIR/locale-bin/locale" <<'LOCALE'
+#!/usr/bin/env bash
+exec 2>/dev/null
+printf 'en_US.UTF-8\n'
+cat "$(dirname "$0")/list" || exit 141
+LOCALE
+  chmod +x "$CASE_DIR/locale-bin/locale"
+  PATH="$CASE_DIR/locale-bin:$PATH"
+  local selected
+  selected=$(native_utf8_locale)
+  test "$selected" = en_US.UTF-8
+  # Without any UTF-8 locale the caller must be able to skip, not run the pane.
+  mkdir -p "$CASE_DIR/locale-none"
+  printf '#!/bin/sh\nprintf "C\\nPOSIX\\n"\n' > "$CASE_DIR/locale-none/locale"
+  chmod +x "$CASE_DIR/locale-none/locale"
+  PATH="$CASE_DIR/locale-none:$PATH"
+  if selected=$(native_utf8_locale); then return 1; fi
+  test -z "$selected"
 }
 case_reconcile_timeout_default() {
   unset DV_STATUS_TIMEOUT

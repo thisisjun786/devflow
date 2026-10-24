@@ -2765,7 +2765,7 @@ registered_cases() {
   printf '%s\n' dsh_quota dsh_crash_fallback dsh_completion_gate dsh_last_status dsh_jail dsh_jail_plan dsh_jail_nonlinux_log dsh_jail_unavailable dsh_host_sync dsh_host_probe
   printf '%s\n' dsh_delivery dsh_herdr_fallback
   printf '%s\n' dsh_silent_tool dsh_session_activity dsh_session_scope dsh_tool_cap dsh_tool_cap_activity dsh_tool_cap_per_call dsh_tool_cap_disabled
-  printf '%s\n' owned_lock_missing_marker owned_unlock_reaper_race owned_unlock_marker_race owned_lock_dead_reaper owned_lock_recovery_race status_cut_utf8_log_bsd status_cut_utf8_pane_bsd status_cut_utf8_native reconcile_timeout_default
+  printf '%s\n' owned_lock_missing_marker owned_unlock_reaper_race owned_unlock_marker_race owned_lock_dead_reaper owned_lock_recovery_race status_cut_utf8_log_bsd status_cut_utf8_pane_bsd status_cut_utf8_native status_cut_utf8_native_locale reconcile_timeout_default
   printf '%s\n' search_defaults search_override search_large search_tmux search_agents job_oom_evidence search_oom_retry search_oom_revive
   printf '%s\n' job_nproc job_failure job_failure_reset job_supervisor_retry job_generic_exit job_auto_exec job_host job_fallback job_launchd job_tasks job_memory job_agent_retry
   printf '%s\n' review_future_deadline review_future_deadline_retried review_near_deadline
