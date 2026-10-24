@@ -6,7 +6,10 @@ stall_omp_candidates() {
   jq -c '.[] | select(.agent=="omp" and .backend=="herdr" and
     (.status=="running" or .status=="pr") and .alive==true and .agent_status=="idle" and
     .question_pending!=true and .goal_active!=true and .capacity_detected!=true and .capacity==null and
-    .cleaned_at==null and .escalated_from==null and (.done_at==null or (.status=="pr" and .done_head!=.head)) and
+    .cleaned_at==null and (.escalated_from==null or
+      (.escalated_from=="omp" and .escalation_reason=="texttool" and
+       .escalation_status=="blocked" and .escalation_error=="omp did not stop")) and
+    (.done_at==null or (.status=="pr" and .done_head!=.head)) and
     (.issue|type)=="string" and (.issue|test("^[A-Za-z0-9][A-Za-z0-9_-]*$")))'
 }
 # Read the newest session written by this launch. A later user/tool message or
@@ -36,7 +39,6 @@ stall_omp_turn() {
 stall_omp_resume() {
   local token=$1 turn row tmp launch launched count=0 state="$S/omp-texttool-nudges.json"
   [ ! -e "$S/texttool-skip" ] || return 0
-  jq -e '.escalated_from==null' "$S/meta" >/dev/null || return 0
   turn=$(stall_omp_turn) || return 0
   # Recheck live activity after reading the log, under the normal issue lock.
   row=$(cmd_status "$ISSUE" --json | stall_omp_candidates) || return 1
@@ -67,18 +69,23 @@ stall_omp_escalate() {
   job_can_launch || return 1
   trust_root=$(codex_repo_root "$REPO") || return 1
   codex_repo_allowed "$trust_root" && codex_environment && codex_trust_repo "$trust_root" || return 1
-  # The issue lock and permanent reservation cover watcher restarts and
-  # uncertain interrupt/launch delivery. This does not consume the revive.
-  mkdir "$dir" || return 1
-  {
-    printf 'The previous omp worker stalled after repeated tool calls written as text. Its uncommitted changes are still in this worktree; preserve them.\n'
-    printf 'Continue the original brief in %s on branch %s. Read %s/brief.md and %s/report.md if present.\n' "$WT" "$BRANCH" "$S" "$S"
-    printf 'Finish the original brief, including the PR loop if status is pr. Preserve PR review rounds and receipts; fix current-head P0/P1 findings and wait for CI and Codex review.\n'
-    printf 'Do not create a new branch. Finish with dv done %s.\n' "$ISSUE"
-  } > "$dir/prompt.md"
+  # Reuse a reservation only when interruption failed before any Codex launch.
+  # The issue lock and live candidate checks still guard every retry.
+  if [ -d "$dir" ]; then
+    jq -e '.escalated_from=="omp" and .escalation_reason=="texttool" and
+      .escalation_status=="blocked" and .escalation_error=="omp did not stop"' "$S/meta" >/dev/null || return 1
+  else
+    mkdir "$dir" || return 1
+    {
+      printf 'The previous omp worker stalled after repeated tool calls written as text. Its uncommitted changes are still in this worktree; preserve them.\n'
+      printf 'Continue the original brief in %s on branch %s. Read %s/brief.md and %s/report.md if present.\n' "$WT" "$BRANCH" "$S" "$S"
+      printf 'Finish the original brief, including the PR loop if status is pr. Preserve PR review rounds and receipts; fix current-head P0/P1 findings and wait for CI and Codex review.\n'
+      printf 'Do not create a new branch. Finish with dv done %s.\n' "$ISSUE"
+    } > "$dir/prompt.md"
+  fi
   meta_set --argjson at "$(now)" --argjson count "$count" \
     '.escalated_from="omp" | .escalation_reason="texttool" | .escalated_at=$at |
-      .escalation_resumes=$count | .escalation_status="interrupting"'
+      .escalation_resumes=$count | .escalation_status="interrupting" | del(.escalation_error)'
   if ! herdr_interrupt; then stall_omp_escalation_blocked 'omp did not stop'; return 1; fi
   for file in agent.pid agent.exit agent.launched agent.session; do
     [ ! -f "$S/$file" ] || cp "$S/$file" "$dir/previous-$file"

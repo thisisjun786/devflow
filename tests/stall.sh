@@ -44,10 +44,11 @@ stall_omp_escalation_fixture() {
   cp "$DV_STATE/ST-1/pr-loop.json" "$CASE_DIR/pr-loop"
 }
 stall_omp_escalation_check() {
-  local expected_status=$1
+  local expected_status=$1 interrupts=${2:-1}
   wait_file "$DV_STATE/ST-1/takeover.json"
   dv status ST-1 --json | jq -e --arg status "$expected_status" '.[0] |
-    .agent=="codex" and .escalated_from=="omp" and .escalation_reason=="texttool" and .status==$status'
+    .agent=="codex" and .escalated_from=="omp" and .escalation_reason=="texttool" and .status==$status and
+    .escalation_status=="launched" and .escalation_error==null'
   dv status ST-1 | grep -F 'escalated_from=omp reason=texttool'
   jq -e --arg wt "$REPO" '.cwd==$wt and (.args|index("exec")!=null) and
     (.args[-1]|contains("stalled") and contains("uncommitted") and contains("brief.md") and contains("PR") and contains("dv done ST-1"))' "$DV_STATE/ST-1/takeover.json"
@@ -60,7 +61,7 @@ stall_omp_escalation_check() {
   cmp "$CASE_DIR/report" "$DV_STATE/ST-1/report.md"
   cmp "$CASE_DIR/pr-loop" "$DV_STATE/ST-1/pr-loop.json"
   grep -Fx 'review receipt' "$DV_STATE/ST-1/review-fix.sent"
-  jq -se '[.[]|select(.[0:2]==["pane","send-keys"] and .[3]=="ctrl-c")]|length==1' "$CASE_DIR/herdr/calls"
+  jq -se --argjson count "$interrupts" '[.[]|select(.[0:2]==["pane","send-keys"] and .[3]=="C-c")]|length==$count' "$CASE_DIR/herdr/calls"
   stall_omp_scan
   dv _stall-recover ST-1 --omp-texttool round-1
   test "$(wc -l < "$DV_STATE/ST-1/takeover-runs" | tr -d ' ')" = 1
@@ -129,12 +130,54 @@ case_stall_omp_escalate_interrupt() {
   jq -e '.agent=="omp" and .escalation_status=="blocked"' "$DV_STATE/ST-1/meta"
   rm "$CASE_DIR/herdr/fail"
   stall_omp_scan
+  stall_omp_count 1
+  stall_omp_escalation_check running 2
+  jq -se '[.[]|select(.kind=="blocked")]|length==1' "$DV_STATE/ST-1/events.log"
+}
+stall_omp_blocked_fixture() {
+  stall_omp_escalation_fixture
+  export DV_OMP_TEXTTOOL_ESCALATE=1
+  stall_omp_scan; stall_omp_count 1
+  stall_omp_message exhausted
+  # Reproduce the record retained by older releases after invalid_key.
+  mkdir "$DV_STATE/ST-1/omp-texttool-escalation"
+  printf 'Retained handoff: stalled, uncommitted, brief.md, PR, dv done ST-1\n' > "$DV_STATE/ST-1/omp-texttool-escalation/prompt.md"
+  cp "$DV_STATE/ST-1/omp-texttool-escalation/prompt.md" "$CASE_DIR/prompt"
+  jq '.escalated_from="omp" | .escalation_reason="texttool" | .escalation_status="blocked" |
+    .escalation_error="omp did not stop" | .escalation_resumes=1 | .escalated_at=1' "$DV_STATE/ST-1/meta" > "$CASE_DIR/meta"
+  mv "$CASE_DIR/meta" "$DV_STATE/ST-1/meta"
+}
+case_stall_omp_escalate_blocked() {
+  stall_omp_blocked_fixture
+  stall_omp_scan
+  stall_omp_escalation_check running
+  cmp "$CASE_DIR/prompt" "$DV_STATE/ST-1/omp-texttool-escalation/prompt.md"
+}
+case_stall_omp_escalate_blocked_guards() {
+  stall_omp_blocked_fixture
+  local change
+  cp "$DV_STATE/ST-1/meta" "$CASE_DIR/blocked-meta"
+  for change in '.escalation_status="interrupting"' '.escalation_status="launching"' '.escalation_status="launched"' \
+    '.escalation_error="could not close stopped omp pane"' '.escalation_error="could not launch Codex"' \
+    '.escalation_reason="other"' '.done_at=1' '.capacity={}' ; do
+    jq "$change" "$CASE_DIR/blocked-meta" > "$DV_STATE/ST-1/meta"
+    stall_omp_scan
+    dv _stall-recover ST-1 --omp-texttool round-1
+  done
+  cp "$CASE_DIR/blocked-meta" "$DV_STATE/ST-1/meta"
+  dv _stall-recover ST-1 --omp-texttool stale-token
+  touch "$DV_STATE/ST-1/texttool-skip"
+  stall_omp_scan
+  rm "$DV_STATE/ST-1/texttool-skip"
+  printf 'working\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  stall_omp_scan
   dv _stall-recover ST-1 --omp-texttool round-1
   stall_omp_count 1
   test ! -e "$DV_STATE/ST-1/takeover.json"
-  jq -se '[.[]|select(.kind=="blocked")]|length==1' "$DV_STATE/ST-1/events.log"
-  jq -se '[.[]|select(.[0:2]==["pane","send-keys"])]|length==1' "$CASE_DIR/herdr/calls"
-  grep -Fx untracked "$REPO/untracked"
+  jq -se 'all(.[]; .[0:2]!=["pane","send-keys"])' "$CASE_DIR/herdr/calls"
+  printf 'idle\n' > "$CASE_DIR/herdr/w-ST-1/status"
+  stall_omp_scan
+  stall_omp_escalation_check running
 }
 case_stall_omp_escalate_legacy() {
   stall_omp_escalation_fixture
