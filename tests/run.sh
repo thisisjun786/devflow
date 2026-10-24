@@ -2728,6 +2728,22 @@ case_readme_startup_guidance() {
   grep -F 'Codex는 코드 작업과 같은 모드 선택을 사용합니다: 기본 auto와 `DV_CODEX_MODE=appserver`(경고 출력)는 자원 제한을 상속하는 백그라운드 JSON exec로 시작합니다.' "$ROOT/README.md"
   grep -F 'Codex 기본 모드는 `DV_CODEX_MODE=auto`이며, 새 auto/appserver 작업은 자원 격리를 위해 백그라운드 exec로 시작합니다(`DV_CODEX_MODE=appserver`는 경고를 출력하고 exec로 대체하며, App Server thread 제어는 기존 레거시 App Server 작업에만 적용됩니다).' "$ROOT/README.md"
 }
+# shellcheck disable=SC2016
+case_readme_manager_max_wait() {
+  local default_wait
+  default_wait=$(
+    unset DV_MANAGER_MAX_WAIT
+    # shellcheck source=/dev/null
+    source "$ROOT/config.example.sh"
+    printf '%s' "${DV_MANAGER_MAX_WAIT:-}"
+  )
+  [[ "$default_wait" =~ ^[0-9]+$ ]]
+  if grep -E '`DV_MANAGER_MAX_WAIT`\(기본 [0-9]+초' "$ROOT/README.md" | grep -Fv "\`DV_MANAGER_MAX_WAIT\`(기본 ${default_wait}초"; then
+    return 1
+  fi
+  grep -F "관리자 턴이 \`DV_MANAGER_MAX_WAIT\`(기본 ${default_wait}초" "$ROOT/README.md"
+  grep -F '더 짧은 대기가 필요하면 `DV_MANAGER_MAX_WAIT`를 더 낮게 설정' "$ROOT/README.md"
+}
 # shellcheck source=tests/job-limits.sh
 source "$ROOT/tests/job-limits.sh"
 # shellcheck source=tests/search-scope.sh
@@ -2785,7 +2801,7 @@ registered_cases() {
   pr_fallback_body pr_fallback_summary pr_fallback_private_paths pr_fallback_private_hosts pr_fallback_public_tokens pr_fallback_missing pr_fallback_bounded pr_fallback_private_only pr_head_title pr_prepared_body pr_legacy_body pr_patch_title pr_patch_body polish_unreachable polish_unreachable_timeout \
   pr_title_format pr_branch_names pr_body_template pr_format_delivery pr_format_legacy pr_format_start pr_format_instructions \
   reconcile_stale_prs reconcile_merged_unverified land_already_merged land_already_merged_guards qa_clean_url park_prerequisites park_agent_exit park_exec_exit park_open_pr park_pr_prerequisites park_pr_wait park_pr_stale_send park_pr_wait_resume park_pr_reconcile reconcile_merged_cleanup_retry \
-  runner_contract runner_selection runner_mapping readme_startup_guidance
+  runner_contract runner_selection runner_mapping readme_startup_guidance readme_manager_max_wait
   printf '%s\n' watch_quiet_events manager_rotate manager_rotate_keep
   printf '%s\n' \
     qa_external_merge qa_merge_debounce qa_merge_disabled qa_merge_untrusted_event qa_merge_catchup qa_merge_api_retry qa_merge_base_membership qa_merge_missing_state qa_merge_startup_catchup qa_merge_legacy_catchup qa_merge_disabled_pending qa_merge_spread qa_merge_event_wake qa_github_event_input qa_github_event_dedup qa_github_event_retry qa_github_not_modified pr_worker_late_waiter \
