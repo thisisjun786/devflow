@@ -92,6 +92,8 @@ qa_merge_fixture() {
   # shellcheck source=lib/qa.sh
   source "$ROOT/lib/qa.sh"
   local dir
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   dir=$(manager_dir "$REPO")
   mkdir -p "$dir/pending"
   jq -n --arg repo "$REPO" --arg identity "$(manager_identity "$REPO")" \
@@ -200,6 +202,8 @@ case_qa_merge_missing_state() {
   qa_direct_fixture
   rm -r "$DV_STATE"
   qa_direct_run
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2154
   test "$qa_rc" = 0
   jq -e '.status=="done"' "$DV_STATE"/QA-*/meta
 }

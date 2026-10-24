@@ -210,16 +210,20 @@ manager_event_repo() {
   # Current event-side metadata takes precedence over a retained submission,
   # including a reused identifier on the same host with a different repo.
   if [ "$host" = "$DV_HOST" ] && [ -f "$DV_STATE/$issue/meta" ]; then
-    jq -er --arg host "$host" 'select(.host==$host) | .repo' "$DV_STATE/$issue/meta"
+    repo=$(jq -er --arg host "$host" 'select(.host==$host) | .repo' "$DV_STATE/$issue/meta") || return 1
   elif [ -f "$DV_HOME/submissions/$issue/task.json" ] &&
     repo=$(jq -er --arg host "$host" 'select(.host==$host) | .repo | select(type=="string" and length>0)' "$DV_HOME/submissions/$issue/task.json"); then
-    printf '%s\n' "$repo"
+    :
   else
     case " $DV_HOSTS " in *" $host "*) ;; *) return 1 ;; esac
     rows=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" status "$issue" --json < /dev/null) || return 1
     repo=$(printf '%s\n' "$rows" | jq -er --arg issue "$issue" --arg host "$host" '.[] | select(.issue==$issue and .host==$host) | .repo') || return 1
+  fi
+  if [ "$host" != "$DV_HOST" ] && [[ "$repo" = /* ]] && [ ! -d "$repo" ]; then
     # Resolve a remote checkout on its host; basename matching can cross repos.
     bid_limit "$DV_BID_TIMEOUT" ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$host" "$(shell_join git -C "$repo" config --get remote.origin.url)"
+  else
+    printf '%s\n' "$repo"
   fi
 }
 manager_conflict() {

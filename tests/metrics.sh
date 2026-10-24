@@ -8,6 +8,8 @@ metrics_fixture() {
   # local idle case, rather than presenting a confirmed dead tmux session.
   jq '.status="running" | .started=100 | .backend="herdr" | .herdr_pane="working-pane"' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$DV_STATE/P-1/meta"
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   DV_ENTRY="$ROOT/bin/dv"
   # shellcheck source=lib/common.sh
   source "$ROOT/lib/common.sh"
@@ -184,7 +186,7 @@ case_metrics_queue_activity() {
 case_metrics_terminal() {
   metrics_fixture
   local phase
-  for phase in running done pr ready start-failed; do
+  for phase in running 'done' pr ready start-failed; do
     jq --arg phase "$phase" '.status=$phase' "$DV_STATE/P-1/meta" > "$CASE_DIR/meta"
     mv "$CASE_DIR/meta" "$DV_STATE/P-1/meta"
     cmd__metrics_sample >/dev/null
@@ -336,9 +338,11 @@ case_metrics_timeout_snapshot() {
   cmp "$CASE_DIR/before-snapshot" "$dir/snapshot.json"
   metrics_stop_watch
 }
+# Fixture functions are called indirectly by loaded helpers.
+# shellcheck disable=SC2317,SC2329
 case_metrics_stall_overlap() {
   stall_functions
-  DV_HOSTS=alias
+  DV_HOSTS='alias'
   STALL_ROW=$(printf '%s\n' "$STALL_ROW" | jq '.goal_stalled=true')
   # Feed the collector host snapshots without invoking an agent or SSH.
   bid_limit() {

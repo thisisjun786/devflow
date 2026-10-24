@@ -41,6 +41,8 @@ case_reconcile_stale_prs() {
   # One watcher pass closes merged PRs (ready or still pr), marks a PR closed
   # without merge, and leaves an open PR alone.
   repo stale remote; watch_fixture
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   export DV_HOSTS="$DV_HOST" DV_RECONCILE_INTERVAL=1
   stale_job R-1 ready 11; stale_job R-2 pr 12; stale_job R-3 pr 13; stale_job R-4 ready 14
   printf '{"11":"MERGED","12":"MERGED","13":"CLOSED","14":"OPEN"}\n' > "$GH_STUB_DIR/pr-states"
@@ -177,6 +179,8 @@ case_qa_clean_url() {
   qa_direct_fixture
   for _ in 1 2 3 4 5 6; do printf 'fail\n' >> "$GH_STUB_DIR/qa-pull-responses"; done
   qa_direct_run
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2154
   test "$qa_rc" = 1
   record=$(find "$DV_STATE" -path '*/QA-*/meta' -print)
   issue=$(jq -r .issue "$record"); scratch=$(jq -r .scratch "$record")
@@ -238,6 +242,34 @@ case_park_prerequisites() {
   # Parking twice is refused; the comment is not repeated.
   if dv park PK-7 --on 12; then return 1; fi
   jq -e 'length==1' "$GH_STUB_DIR/issue-7-comments"
+}
+case_park_repark_blockers() {
+  # A second park at the same head must reach the manager with its new
+  # prerequisites (devflow#344): the first parked event ID was already seen.
+  needs_tmux; park_fixture
+  local state="$DV_STATE/PK-7" head
+  cat > "$CASE_DIR/repark-agent" <<'AGENT'
+#!/usr/bin/env bash
+pwd > "$DV_STATE/$DV_ISSUE/resumed"
+while [ ! -f "$DV_STATE/$DV_ISSUE/resume-release" ]; do sleep 0.05; done
+AGENT
+  chmod +x "$CASE_DIR/repark-agent"
+  export DV_AGENT_CMD_codex="$CASE_DIR/repark-agent"
+  head=$(git -C "$DV_WORK/PK-7" rev-parse HEAD)
+  dv park PK-7 --on 12 --note 'first-blocker'
+  dv send PK-7 'continue work after the first dependency'
+  wait_file "$state/resumed"
+  dv park PK-7 --on 13 --note 'second-blocker'
+  jq -se --arg head "$head" '[.[]|select(.kind=="parked" and .issue=="PK-7")] |
+    length==2 and (.[0].id != .[1].id) and (.[1].message|contains("#13")) and
+    all(.[]; .head==$head)' "$DV_HOME/kick.q"
+  # Re-emitting the same episode keeps its ID, so a retry is still deduplicated.
+  dv kick parked PK-7 'retransmit'
+  jq -se '[.[]|select(.kind=="parked" and .issue=="PK-7")] |
+    length==3 and (.[2].id == .[1].id)' "$DV_HOME/kick.q"
+  jq -e --arg head "$head" '.status=="parked" and .parked.on==[13] and .head==$head' "$state/meta"
+  touch "$state/resume-release"
+  wait_done PK-7
 }
 case_park_pr_prerequisites() { case_park_prerequisites pr; }
 case_park_agent_exit() {

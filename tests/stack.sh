@@ -6,6 +6,8 @@ stack_fixture() {
   git -C "$REPO" checkout -qb dev
   git -C "$REPO" push -qu origin dev
   mkdir "$CASE_DIR/stack-bin"
+  # Assigned by the shared test harness.
+  # shellcheck disable=SC2153
   ln -s "$ROOT/tests/fixtures/stack-gh" "$CASE_DIR/stack-bin/gh"
   ln -s "$ROOT/tests/fixtures/stack-agent" "$CASE_DIR/stack-bin/herdr"
   export PATH="$CASE_DIR/stack-bin:$PATH"
@@ -71,9 +73,11 @@ stack_green() {
   if [ "$resumed" = true ]; then
     dv pr-wait "S-$1" --foreground > "$CASE_DIR/ready-$1.json"
     dv pr-wait "S-$1" --foreground --review-handled > "$CASE_DIR/handled-$1.json"
-    dv done "S-$1"
+    dv 'done' "S-$1"
   fi
 }
+# Shared fixture state and intentionally unused polling counters/results.
+# shellcheck disable=SC2034
 stack_await() {
   local issue=$1 expression=$2 n
   for n in {1..200}; do
@@ -374,6 +378,8 @@ stack_rewritten_base() {
 case_stack_squash_base() { stack_rewritten_base squash; }
 case_stack_rebase_base() { stack_rewritten_base rebase; }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_waiting_without_head() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   stack_waiting 2
@@ -394,6 +400,8 @@ case_stack_waiting_without_head() {
   fi
 }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_waiting_clock() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   local before stamp
@@ -404,6 +412,8 @@ case_stack_waiting_clock() {
   test "$(jq -r .stack_waiting_since "$DV_STATE/S-2/meta")" = "$stamp"
 }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_safety_local() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   stack_waiting 2; dv land S-1
@@ -415,12 +425,16 @@ case_stack_safety_local() {
   stack_stop
 }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 stack_legacy_waiting() {
   local number=$1
   jq '.status="waiting-base" | .stack_dependencies=["1"] | del(.stack_head,.stack_waiting_since)' \
     "$DV_STATE/S-$number/meta" > "$CASE_DIR/meta"
   mv "$CASE_DIR/meta" "$DV_STATE/S-$number/meta"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_resume_headless() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   # The base lands before the job enters waiting-base, with no delivered event.
@@ -441,6 +455,8 @@ case_stack_resume_headless() {
   stack_watch; sleep 1.5; stack_stop
   test "$(wc -l < "$DV_STATE/S-2/sent-input" | tr -d ' ')" = 1
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_stalled() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   stack_waiting 2
@@ -484,6 +500,8 @@ case_stack_resume_guards() {
     test ! -f "$DV_STATE/S-2/sent-input"
   )
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_resume_failed() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   stack_waiting 2; dv land S-1
@@ -497,6 +515,8 @@ case_stack_resume_failed() {
   stack_watch; sleep 1.5; stack_stop
   test ! -f "$DV_STATE/S-2/sent-input"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_remote_safety() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   dv land S-1; : > "$DV_HOME/kick.q"
@@ -545,6 +565,8 @@ case_stack_land_requeue() {
   )
 }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_land_retry() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   stack_waiting 2; dv land S-1
@@ -561,6 +583,8 @@ case_stack_land_retry() {
   test "$(tr '\n' ' ' < "$GH_STUB_DIR/order")" = '1 2 '
 }
 
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_unfinished_auto_land() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   dv land S-1
@@ -581,6 +605,8 @@ case_stack_unfinished_auto_land() {
   test -d "$DV_WORK/stack-2"
   test "$(cat "$GH_STUB_DIR/order")" = 1
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_auto_done_guard() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   dv land S-1
@@ -619,6 +645,8 @@ case_stack_auto_done_guard() {
   dv _stack-land S-2 "$approved"
   jq -e '.status=="landed"' "$DV_STATE/S-2/meta"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_auto_done_merge() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   local completed approved
@@ -641,6 +669,8 @@ case_stack_auto_done_merge() {
   dv _stack-land S-2 "$approved"
   jq -e '.status=="landed"' "$DV_STATE/S-2/meta"
 }
+# Each case starts with setup in a fresh process.
+# shellcheck disable=SC2031
 case_stack_resume_done_episode() {
   stack_fixture; stack_pr 1 dev; stack_pr 2 stack-1 'Depends on #1'
   local head

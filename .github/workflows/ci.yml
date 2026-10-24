@@ -63,13 +63,7 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Shellcheck
-        # Bound each process to one entry point; keep the same files and -x
-        # analysis without retaining all entry points in one large process.
-        run: |
-          for file in bin/* lib/*.sh install.sh config.example.sh tests/run.sh tests/fixtures/*; do
-            printf 'ShellCheck %s\n' "$file"
-            shellcheck -x "$file"
-          done
+        run: bash tests/shellcheck.sh
   tests:
     needs: plan
     strategy:
