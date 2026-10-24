@@ -3,7 +3,7 @@ set -euo pipefail
 if [ -n "${SSH_MANAGER_REPO:-}" ]; then
   test "$#" = 7 && test "$1" = -n && test "$2" = -o && test "$3" = BatchMode=yes
   test "$4" = -o && test "$5" = ConnectTimeout=5 && test "$6" = remote-box
-  test "$7" = 'git -C /Users/x/code/repo config --get remote.origin.url '
+  test "$7" = "$(printf '%q ' git -C "${SSH_MANAGER_REPO_PATH:-/Users/x/code/repo}" config --get remote.origin.url)"
   touch "$CASE_DIR/manager-origin-lookup"
   [ "$SSH_MANAGER_REPO" != failure ] || exit 255
   printf 'https://github.com/example/project.git\n'
