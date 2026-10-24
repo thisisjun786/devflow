@@ -106,9 +106,7 @@ stall_omp_restart_prompt() {
   local status=$1 wip=$2 pushed=$3 log tree
   log=$(git -C "$WT" log --oneline --no-merges -12 "origin/$BASE..HEAD" 2>/dev/null || git -C "$WT" log --oneline --no-merges -12 "$BASE..HEAD" 2>/dev/null)
   tree=$(git -C "$WT" status --short | sed -n '1,25p')
-  printf 'This is a fresh omp session for the same job %s. The previous session stopped because a tool call came back as plain text, so nothing ran.\n' "$ISSUE"
-  printf 'Use real tool calls only. Never write a tool call as text ([tool_use ...], <invoke ...>, <function_calls>).\n'
-  printf 'Call tools only through tool_use (actual tool calls), never as text. Do not prefix tool names with _ (for example, use bash).\n'
+  printf 'This is a fresh omp session for the same job %s. The previous session ended without running its last step.\n' "$ISSUE"
   printf 'Read %s/brief.md first; %s/report.md if present.\n' "$S" "$S"
   printf 'Worktree %s, branch %s (base %s), job status %s. Do not create a new branch or force push.\n' "$WT" "$BRANCH" "$BASE" "$status"
   printf 'Recovery preparation: wip=%s, pushed=%s. If either failed, inspect git and finish saving the work.\n' "$wip" "$pushed"
