@@ -270,6 +270,137 @@ case_qa_dead_runner() {
   test "$(bid_active)" = 0
   dv status "$issue" --json | jq -e '.[0] | .status=="failed" and .alive==false'
 }
+qa_crashed_dispatch_fixture() {
+  qa_merge_fixture
+  export DV_QA_COALESCE=0
+  qa_scan
+  qa_dispatch
+  scheduler=$(qa_dir test/repo main)
+  old_job=$(jq -r .issue "$scheduler/running.json")
+  old_task="$DV_HOME/submissions/$old_job/task.json"
+  bid_task_set "${old_task%/task.json}" '.status="working" | .host="test-host" | .token="qa-award"'
+  mkdir -p "$DV_STATE/$old_job" "$DV_STATE/.qa/$old_job" "$DV_STATE/.awards/$old_job"
+  git clone -q "$CASE_DIR/remote.git" "$CASE_DIR/failed-checkout"
+  printf 'unfinished QA evidence\n' >> "$CASE_DIR/failed-checkout/base"
+  jq -n --arg issue "$old_job" --arg wt "$CASE_DIR/failed-checkout" \
+    '{issue:$issue,kind:"qa",backend:"qa",status:"running",award_token:"qa-award",worktree:$wt,
+      host:"test-host",repo:"test/repo",base:"main",started:1}' > "$DV_STATE/$old_job/meta"
+  printf '999999999\n' > "$DV_STATE/.qa/$old_job/runner.pid"
+  printf '{"status":"working","token":"qa-award"}\n' > "$DV_STATE/.awards/$old_job/receipt.json"
+  cp "$DV_STATE/$old_job/meta" "$CASE_DIR/meta.before"
+  cp "$DV_STATE/.awards/$old_job/receipt.json" "$CASE_DIR/receipt.before"
+  qa_merge_add 8 2026-10-22T00:02:00Z
+  qa_scan
+  new_job=$(qa_job_id test/repo "$(git -C "$REPO" rev-parse HEAD)")
+}
+qa_assert_crashed_dispatch() {
+  qa_dispatch
+  jq -e '.status=="failed" and .token=="qa-award" and .host=="test-host"' "$old_task"
+  dv queue --json | jq -e --arg issue "$old_job" 'any(.[]; .issue==$issue and .status=="failed")'
+  dv qa status --json | jq -e 'length==1 and .[0].running==false and .[0].pending==true'
+  jq -e '.status=="submitted" and .host==null and [.qa.prs[].number]==[8]' "$DV_HOME/submissions/$new_job/task.json"
+  jq -e --arg issue "$new_job" '.issue==$issue' "$scheduler/running.json"
+  test ! -f "$scheduler/pending.json"
+  test ! -f "$DV_STATE/$old_job/agent.exit"
+  cmp "$CASE_DIR/meta.before" "$DV_STATE/$old_job/meta"
+  cmp "$CASE_DIR/receipt.before" "$DV_STATE/.awards/$old_job/receipt.json"
+  grep -Fx 'unfinished QA evidence' "$CASE_DIR/failed-checkout/base"
+  cp "$DV_HOME/kick.q" "$CASE_DIR/kicks.before"
+  cp "$DV_HOME/submissions/$new_job/task.json" "$CASE_DIR/new.before"
+  qa_dispatch
+  cmp "$CASE_DIR/kicks.before" "$DV_HOME/kick.q"
+  cmp "$CASE_DIR/new.before" "$DV_HOME/submissions/$new_job/task.json"
+  test "$(find "$DV_HOME/submissions" -name task.json | wc -l | tr -d ' ')" = 2
+}
+case_qa_crashed_dispatch() {
+  local scheduler old_job old_task new_job
+  qa_crashed_dispatch_fixture
+  # A remote host confirms exit even though the killed runner wrote no exit file.
+  # shellcheck disable=SC2329
+  bid_rpc() {
+    test "$*" = "test-host _receipt $old_job qa-award" || return 1
+    printf '{"status":"failed","token":"qa-award","exited":true}\n'
+  }
+  qa_assert_crashed_dispatch
+}
+case_qa_crashed_receipt() {
+  local scheduler old_job old_task new_job
+  qa_crashed_dispatch_fixture
+  dv status "$old_job" --json | jq -e '.[0] | .status=="failed" and .alive==false'
+  dv _receipt "$old_job" qa-award | jq -e '.status=="failed" and .exited==true and .token=="qa-award"'
+  qa_assert_crashed_dispatch
+}
+case_qa_dispatch_receipt_guards() {
+  local scheduler old_job old_task new_job reply
+  qa_crashed_dispatch_fixture
+  cp "$old_task" "$CASE_DIR/task.before"
+  cp "$scheduler/pending.json" "$CASE_DIR/pending.before"
+  # shellcheck disable=SC2329
+  bid_rpc() { [ "$reply" != unavailable ] || return 1; printf '%s\n' "$reply"; }
+  for reply in unavailable invalid '{}' '{"status":"absent"}' \
+    '{"status":"working","token":"qa-award","exited":false}' \
+    '{"status":"failed","token":"qa-award","exited":false}' \
+    '{"status":"failed","token":"other-award","exited":true}'; do
+    qa_dispatch
+    cmp "$CASE_DIR/task.before" "$old_task"
+    cmp "$CASE_DIR/pending.before" "$scheduler/pending.json"
+    test ! -d "$DV_HOME/submissions/$new_job"
+    dv qa status --json | jq -e '.[0].running and .[0].pending'
+  done
+}
+case_qa_dispatch_live_runner() {
+  local scheduler old_job old_task new_job
+  qa_crashed_dispatch_fixture
+  printf '%s\n' "$$" > "$DV_STATE/.qa/$old_job/child.pid"
+  dv _receipt "$old_job" qa-award | jq -e '.status=="working" and .exited==false'
+  qa_dispatch
+  jq -e '.status=="working"' "$old_task"
+  test -f "$scheduler/pending.json"
+  test ! -d "$DV_HOME/submissions/$new_job"
+  dv qa status --json | jq -e '.[0].running and .[0].pending'
+}
+case_qa_dispatch_exited_receipt() {
+  local scheduler old_job old_task new_job
+  qa_crashed_dispatch_fixture
+  bid_task_set "${old_task%/task.json}" '.status="input-required"'
+  # Older hosts retain the startup status in their terminal receipt.
+  # shellcheck disable=SC2329
+  bid_rpc() { printf '{"status":"working","token":"qa-award","exited":true}\n'; }
+  qa_assert_crashed_dispatch
+}
+case_qa_dispatch_completed_receipt() {
+  local scheduler old_job old_task new_job
+  qa_crashed_dispatch_fixture
+  jq '.status="done"' "$DV_STATE/$old_job/meta" > "$CASE_DIR/done.meta"
+  mv "$CASE_DIR/done.meta" "$DV_STATE/$old_job/meta"
+  dv _receipt "$old_job" qa-award | jq -e '.status=="completed" and .exited==true'
+  qa_dispatch
+  jq -e '.status=="completed" and .reason==null' "$old_task"
+  test -f "$DV_HOME/submissions/$new_job/task.json"
+}
+case_qa_dispatch_unawarded() {
+  local scheduler old_job old_task new_job
+  qa_crashed_dispatch_fixture
+  bid_task_set "${old_task%/task.json}" '.status="submitted" | .host=null | del(.token)'
+  # shellcheck disable=SC2329
+  bid_rpc() { touch "$CASE_DIR/unexpected-rpc"; return 1; }
+  qa_dispatch
+  test ! -f "$CASE_DIR/unexpected-rpc"
+  test ! -d "$DV_HOME/submissions/$new_job"
+  test -f "$scheduler/pending.json"
+  dv qa status --json | jq -e '.[0].running==false and .[0].pending==true'
+}
+case_qa_crashed_without_pending() {
+  local scheduler old_job old_task new_job
+  qa_crashed_dispatch_fixture
+  mv "$scheduler/pending.json" "$CASE_DIR/later.json"
+  qa_dispatch
+  jq -e '.status=="failed"' "$old_task"
+  dv qa status --json | jq -e '.[0].running==false and .[0].pending==false'
+  test ! -d "$DV_HOME/submissions/$new_job"
+  mv "$CASE_DIR/later.json" "$scheduler/pending.json"
+  qa_assert_crashed_dispatch
+}
 case_qa_explicit_match() {
   qa_fixture
   printf '[{"number":19,"title":"fix(tui): answer the first message"},{"number":21,"title":"Conversation input stalls"}]\n' > "$GH_STUB_DIR/qa-issues"

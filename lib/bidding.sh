@@ -305,6 +305,10 @@ cmd__receipt() {
   for receipt in "$dir/receipt.json" "$dir"/failed.*/receipt.json; do
     [ -f "$receipt" ] || continue
     if jq -e --arg token "$2" '.token==$token' "$receipt" >/dev/null; then
+      if [ -f "$DV_STATE/$1/meta" ] && jq -e --arg token "$2" \
+        '.kind=="qa" and .award_token==$token' "$DV_STATE/$1/meta" >/dev/null; then
+        qa_receipt "$1" "$receipt"; return
+      fi
       jq --argjson exited "$exited" '.+{exited:$exited}' "$receipt"; return
     fi
   done

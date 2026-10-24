@@ -17,6 +17,17 @@ qa_job_alive() {
   child=$(cat "$DV_STATE/.qa/$issue/child.pid" 2>/dev/null) || child=''
   qa_alive "$wrapper" || qa_alive "$runner" || qa_alive "$child"
 }
+# Enrich the existing award receipt without changing the host's evidence. A
+# killed QA runner cannot write agent.exit; its surviving child still blocks.
+qa_receipt() {
+  local issue=$1 receipt=$2 status=failed
+  if qa_job_alive "$DV_STATE/$issue"; then
+    jq '.+{exited:false}' "$receipt"
+  else
+    if jq -e '.status=="done"' "$DV_STATE/$issue/meta" >/dev/null; then status=completed; fi
+    jq --arg status "$status" '.+{status:$status,exited:true}' "$receipt"
+  fi
+}
 qa_job_id() {
   local repository=$1 head=$2 slug key
   slug=$(printf '%s' "$repository" | tr -c 'A-Za-z0-9_-' '-')
@@ -240,24 +251,36 @@ qa_request_enabled() {
   return 1
 }
 qa_dispatch() {
-  local request dir job task payload tmp pid child receipt
+  local request dir job task payload tmp pid child receipt host token status
   [ "$DV_HOST" = "$DV_MANAGER_HOST" ] || return 0
-  for request in "$DV_HOME"/qa/*/pending.json; do
-    [ -f "$request" ] || continue
-    dir=$(dirname "$request")
-    [ "$(now)" -ge "$(jq -r '.due_at // 0' "$request")" ] || continue
-    qa_request_enabled "$request" || continue
+  for dir in "$DV_HOME"/qa/*; do
+    [ -d "$dir" ] || continue
+    request="$dir/pending.json"
     if [ -f "$dir/running.json" ]; then
       job=$(jq -r '.issue // empty' "$dir/running.json")
       task="$DV_HOME/submissions/$job/task.json"
-      if [ -n "$job" ] && [ -f "$task" ] && jq -e '.status=="submitted" or .status=="working" or .status=="input-required"' "$task" >/dev/null; then continue; fi
       if [ -n "$job" ] && [ -f "$task" ]; then
-        receipt=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$(jq -r .host "$task")" _receipt "$job" "$(jq -r .token "$task")" </dev/null) || continue
-        jq -e '.exited==true' <<< "$receipt" >/dev/null || continue
+        # Reconcile a lost runner even before another merge arrives. Completed
+        # history needs no more host reads until there is something to dispatch.
+        if [ ! -f "$request" ] && ! jq -e '.status=="submitted" or .status=="working" or .status=="input-required"' "$task" >/dev/null; then continue; fi
+        host=$(jq -r '.host // empty' "$task"); token=$(jq -r '.token // empty' "$task")
+        # Unawarded submissions still own the queue position. An unavailable
+        # host or a receipt for another award cannot prove that QA has stopped.
+        [ -n "$host" ] && [ -n "$token" ] || continue
+        receipt=$(bid_limit "$DV_BID_TIMEOUT" bid_rpc "$host" _receipt "$job" "$token" </dev/null) || continue
+        jq -e --arg token "$token" '.token==$token and .exited==true' <<< "$receipt" >/dev/null 2>&1 || continue
+        if jq -e '.status=="submitted" or .status=="working" or .status=="input-required"' "$task" >/dev/null; then
+          status=$(jq -r 'if .status=="completed" then "completed" else "failed" end' <<< "$receipt")
+          bid_task_set "${task%/task.json}" --arg status "$status" \
+            '.status=$status | if $status=="failed" then .reason="QA runner exited; inspect its report and log" else del(.reason) end' || return 1
+        fi
       fi
       pid=$(cat "$dir/pid" 2>/dev/null || true); child=$(cat "$dir/child.pid" 2>/dev/null || true)
       if qa_alive "$pid" || qa_alive "$child"; then continue; fi
     fi
+    [ -f "$request" ] || continue
+    [ "$(now)" -ge "$(jq -r '.due_at // 0' "$request")" ] || continue
+    qa_request_enabled "$request" || continue
     job=$(qa_job_id "$(jq -r .repository "$request")" "$(jq -r .head "$request")")
     task="$DV_HOME/submissions/$job/task.json"
     if [ ! -f "$task" ]; then
@@ -676,7 +699,8 @@ cmd_qa() {
           task="$DV_HOME/submissions/$job/task.json"
           if [ -n "$job" ] && [ -f "$task" ]; then
             running=false
-            if jq -e '.status=="submitted" or .status=="working" or .status=="input-required"' "$task" >/dev/null; then running=true; fi
+            if jq -e '.status=="submitted" and .host==null' "$task" >/dev/null; then pending=true
+            elif jq -e '.status=="submitted" or .status=="working" or .status=="input-required"' "$task" >/dev/null; then running=true; fi
           fi
           jq --argjson pending "$pending" --argjson running "$running" '{repository,base,pending:$pending,running:$running}' "$request"
         done

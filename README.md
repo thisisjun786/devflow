@@ -722,7 +722,10 @@ pending/running QA가 끝나기 전까지 milestone 완료를 보류합니다. �
 관측 지점·대기 요청은 scheduler의 `$DV_HOME/qa/`, 입찰 기록은
 `$DV_HOME/submissions/`, 실행 예약·로그는 실행 호스트의 `$DV_STATE/.qa/`,
 작업 meta·발견 영수증·보고서는 `$DV_STATE/QA-*/`에 남습니다. watcher 재시작은
-살아 있는 QA를 중복 실행하지 않습니다. provider usage limit/capacity 오류는
+살아 있는 QA를 중복 실행하지 않습니다. 실행기가 종료 기록 없이 사라져도 scheduler가
+호스트의 award 영수증으로 종료를 확인하면 실패 상태로 정리하고 다음 병합을 제출합니다.
+`dv qa status --json`은 호스트 배정을 기다리는 제출을 `pending=true`, `running=false`로 표시합니다.
+provider usage limit/capacity 오류는
 #170의 공통 대기 경로로 같은 clone/session에서 재시도하며 정상 복구 횟수를
 소비하지 않습니다. 기본 2분·5분·15분 이후 15분 간격이며,
 `DV_CAPACITY_MAX_WAIT`(기본 6시간)를 넘으면 이유와 함께 blocked로 남습니다.
