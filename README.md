@@ -283,6 +283,10 @@ PR 체크가 아직 없거나 실행 중이면 `DV_POLL_INTERVAL` 간격으로 �
 
 같은 안전망은 `pr`·`ready`·`waiting-base`·`parked` 작업의 PR을 작업 호스트에서 `dv _pr-reconcile`로 확인합니다. 살아 있는 pr-wait가 지켜보는 `pr` 작업은 건너뜁니다. GitHub에서 병합된 PR은 `dv land`와 같은 조건(base·head 일치, 체크 전부 성공, 깨끗한 worktree)을 확인한 뒤 landed로 기록하고 worktree를 정리하며 `landed` 이벤트를 한 번 보냅니다. 조건이 맞지 않으면 아무것도 지우지 않고 같은 head·이유마다 한 번 `blocked`로 알립니다. 병합 없이 닫힌 PR은 `closed` 상태와 `closed` 이벤트로 남기며 worktree와 브랜치는 보존합니다. 다시 진행하려면 PR을 다시 열고 `dv pr`을 실행합니다. parked·closed 이벤트도 done·landed처럼 대기 중인 제출의 배정을 다시 시도합니다.
 
+`issue-closed` 이벤트는 호스트 안전 점검을 깨우며, 같은 sweep은 주기적으로도 작업의 GitHub 이슈를 확인합니다. 이슈 번호는 meta의 `source_issue`, 없으면 작업 키의 끝 번호로 찾습니다. 닫힌 이슈의 code 작업은 에이전트를 중단하고 커밋된 브랜치를 force 없이 push한 뒤 `closed`, reason=`issue closed`로 기록해 슬롯을 반환합니다. 미커밋 파일과 worktree는 그대로 보존합니다. 해당 브랜치의 열린 PR 본문에 같은 저장소·이슈를 닫는 `Closes`/`Fixes`/`Resolves` 참조가 있으면 기존 PR 절차를 계속합니다. GitHub 조회나 push가 실패하면 완료로 기록하지 않고 다음 sweep에서 재시도합니다.
+
+관리자의 같은 reconcile pass는 호스트와 배정 토큰이 일치하는 제출의 상태를 동기화합니다. 호스트의 `closed`·`failed`·`landed`는 각각 큐의 기존 상태 `canceled`·`failed`·`completed`로 옮겨 더 이상 `working`으로 집계되지 않습니다. 다른 호스트나 이전 배정의 결과는 현재 제출에 적용하지 않습니다.
+
 ## 프로젝트 관리자
 
 `DV_MANAGER_HOST`(기본 lina-os)에서 `dv manager start ~/code/devflow`를 실행합니다. `DV_MANAGER_AGENT` 기본값과 지원 에이전트는 `hermes`입니다. start는 로그인된 `DV_HERMES_BIN`의 sion 프로필로 초기 역할 프롬프트를 한 번 실행하고 stderr의 `session_id:`를 저장합니다. 이후 같은 저장소의 이벤트는 `hermes -p sion chat -Q --yolo -t terminal,connections -s devflow --resume ID --query-file FILE`로 같은 대화를 이어갑니다. 매 배치마다 프로세스는 종료되며 대화 세션만 유지합니다.

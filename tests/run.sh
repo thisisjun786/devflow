@@ -2525,6 +2525,8 @@ source "$ROOT/tests/watcher-stuck.sh"
 # shellcheck source=/dev/null
 source "$ROOT/tests/stale-jobs.sh"
 # shellcheck source=/dev/null
+source "$ROOT/tests/closed-issues.sh"
+# shellcheck source=/dev/null
 source "$ROOT/tests/task.sh"
 task_content_setup() {
   task_setup
@@ -2827,6 +2829,7 @@ registered_cases() {
     host_omp_compaction host_omp_compaction_failure host_omp_compaction_missing \
     stall_omp_once stall_omp_patterns stall_omp_forms stall_omp_wip stall_omp_pr stall_omp_unmerged stall_omp_negative stall_omp_guards \
     stall_omp_session stall_omp_transport stall_omp_gap stall_omp_config stall_omp_daily stall_omp_remote
+  printf '%s\n' reconcile_closed_issue reconcile_closed_event reconcile_submission_terminal reconcile_closed_guards reconcile_closed_push_retry reconcile_closed_submission_event reconcile_closed_waiter reconcile_closed_appserver reconcile_closed_tmux reconcile_closed_merged_pr
 }
 
 runner_error() { printf 'tests/run.sh: %s\n' "$*" >&2; return 2; }

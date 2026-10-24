@@ -286,6 +286,11 @@ cmd_pr_reconcile_sweep() {
   owned_lock "$DV_STATE/.pr-reconcile" "$$" || return 0
   trap 'owned_unlock "$DV_STATE/.pr-reconcile" "$$"' EXIT
   for meta in "$DV_STATE"/*/meta; do
+    # Loaded from lib/reconcile.sh by bin/dv.
+    # shellcheck disable=SC2154
+    if jq -e "$issue_reconcile_filter" "$meta" >/dev/null 2>&1; then
+      "$DV_ROOT/bin/dv" _issue-reconcile "$(basename "$(dirname "$meta")")" || true
+    fi
     jq -e "$pr_reconcile_filter" "$meta" >/dev/null 2>&1 || continue
     "$DV_ROOT/bin/dv" _pr-reconcile "$(basename "$(dirname "$meta")")" || true
   done
@@ -456,13 +461,13 @@ pr_wait_recover() (
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
     if [ -f "$S/agent.exit" ]; then
       while kill -0 "$pid" 2>/dev/null; do
-        [ "$(jq -r .status "$S/meta")" != parked ] || return 0
+        ! jq -e '.status=="parked" or .status=="closed"' "$S/meta" >/dev/null || return 0
         sleep "$DV_POLL_INTERVAL"
       done
     else live=true; fi
   fi
   [ "$(jq -r '.head // empty' "$S/meta")" = "$head" ] || return 0
-  [ "$(jq -r .status "$S/meta")" != parked ] || return 0
+  ! jq -e '.status=="parked" or .status=="closed"' "$S/meta" >/dev/null || return 0
   if jq -e --arg head "$head" '.head==$head and .checks=="green" and .review=="handled"' "$S/done.json" >/dev/null 2>&1; then return 0; fi
   # Preserve the existing one-shot revival, including its exit handoff guards.
   if [ "$live" = false ] && agent_gone; then
@@ -498,9 +503,9 @@ cmd_pr_wait() {
   [[ "$DV_REVIEW_ROUNDS" =~ ^[1-9][0-9]*$ ]] || fail 'DV_REVIEW_ROUNDS must be a positive integer'
   local pr head rc=0 tmp current green=false loop review deadline max_deadline retry reason='' reviewed=false rounds=0 conflict=false
   local recovery_episode
-  # Park is an explicit pause, including for a waiter already in flight. Do
-  # not reset its review counters or let it submit automatic recovery input.
-  [ "$(jq -r .status "$S/meta")" != parked ] || return 0
+  # Parked/closed jobs also stop waiters already in flight. Preserve their
+  # review counters and suppress automatic recovery input.
+  ! jq -e '.status=="parked" or .status=="closed"' "$S/meta" >/dev/null || return 0
   pr=$(jq -er .url "$S/pr.json")
   if jq -e '.status=="running" and .unparked_at!=null' "$S/meta" >/dev/null; then
     # send resumes in running; waiting on its existing PR restores ownership.
@@ -508,7 +513,7 @@ cmd_pr_wait() {
     (issue_lock; meta_set 'if .status=="running" and .unparked_at!=null then .status="pr" else . end')
   fi
   until pr_wait_lock; do
-    [ "$(jq -r .status "$S/meta")" != parked ] || return 0
+    ! jq -e '.status=="parked" or .status=="closed"' "$S/meta" >/dev/null || return 0
     [ "$foreground" = true ] || return 0
     sleep "$DV_POLL_INTERVAL"
   done
@@ -519,7 +524,7 @@ cmd_pr_wait() {
   loop=$(printf '%s\n' "$loop" | jq '.reviewed_heads //= [] | .requests //= {} | .review_handled=false')
   review=$(mktemp "$S/.review-result.XXXXXX")
   while :; do
-    [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
+    ! jq -e '.status=="parked" or .status=="closed"' "$S/meta" >/dev/null || { rm "$review"; return 0; }
     head=$(jq -r '.head // empty' "$S/meta"); [ -n "$head" ] || head=$(git rev-parse HEAD)
     loop=$(printf '%s\n' "$loop" | jq --arg head "$head" '.initial_head //= (.review_head // $head)')
     rc=0
@@ -527,11 +532,11 @@ cmd_pr_wait() {
     # watch would wait forever. Hand the conflict back to the worker instead.
     if pr_conflicting "$pr" "$head"; then conflict=true; break; fi
     gh pr checks "$pr" --watch --interval "${DV_CHECKS_INTERVAL:-60}" > "$S/checks.log" 2>&1 || rc=$?
-    [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
+    ! jq -e '.status=="parked" or .status=="closed"' "$S/meta" >/dev/null || { rm "$review"; return 0; }
     tmp=$(mktemp "$S/.pr-snapshot.XXXXXX")
     gh pr view "$pr" --json headRefOid,baseRefName,statusCheckRollup,reviews,state,mergeable > "$tmp"
     mv "$tmp" "$S/pr-snapshot.json"
-    [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
+    ! jq -e '.status=="parked" or .status=="closed"' "$S/meta" >/dev/null || { rm "$review"; return 0; }
     if [ "$(jq -r .state "$S/pr-snapshot.json")" != OPEN ]; then
       [ "$foreground" != true ] || fail 'PR is no longer open'
       rm "$review"
@@ -549,7 +554,7 @@ cmd_pr_wait() {
       sleep "$DV_POLL_INTERVAL"; continue
     fi
     review_snapshot "$pr" "$S/pr-snapshot.json" || { rm "$review"; return 1; }
-    [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
+    ! jq -e '.status=="parked" or .status=="closed"' "$S/meta" >/dev/null || { rm "$review"; return 0; }
     review_parse "$S/pr-snapshot.json" "$head" > "$review"
     green=false; checks_green "$S/pr-snapshot.json" && green=true
     # CI failures return to the worker immediately; review waiting starts only
@@ -591,7 +596,7 @@ cmd_pr_wait() {
     tmp=$(mktemp "$S/.pr-loop.XXXXXX"); printf '%s\n' "$loop" > "$tmp"; mv "$tmp" "$S/pr-loop.json"
     sleep "$DV_POLL_INTERVAL"
   done
-  [ "$(jq -r .status "$S/meta")" != parked ] || { rm "$review"; return 0; }
+  ! jq -e '.status=="parked" or .status=="closed"' "$S/meta" >/dev/null || { rm "$review"; return 0; }
   if [ "$conflict" = true ]; then
     pr_wait_conflict_ready "$head" "$loop"
     rm "$review"

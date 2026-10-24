@@ -73,6 +73,7 @@ case "$command" in
   pr-wait) cmd_pr_wait "$@" ;;
   _pr-wait-start) cmd_pr_wait_start "$@" ;;
   _pr-reconcile) cmd_pr_reconcile "$@" ;;
+  _issue-reconcile) cmd_issue_reconcile "$@" ;;
   _pr-reconcile-start) cmd_pr_reconcile_start "$@" ;;
   _pr-reconcile-sweep) cmd_pr_reconcile_sweep "$@" ;;
   _stack-land) cmd_stack_land "$@" ;;
