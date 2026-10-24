@@ -157,6 +157,7 @@ case "$1 $2" in
     if [ "$#" -gt 5 ]; then test "$6" = --lines; tail -n "$7" "$dir/output"
     else cat "$dir/output"; fi ;;
   'pane send-keys')
+    if [ "$4" = ctrl-c ]; then touch "$dir/interrupted"; exit; fi
     test "$4" = Enter
     if [ -f "$dir/startup-mode" ]; then
       touch "$dir/retry-enter"

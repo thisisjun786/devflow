@@ -167,7 +167,7 @@ capacity_terminal_run() {
   touch "$S/log"
   line=$(wc -l < "$S/log")
   # Session records older than this launch cannot describe its provider state.
-  touch "$S/agent.launched"
+  printf '%s\n' "$(now):$$:$RANDOM" > "$S/agent.launched"
   # Explicit stdin keeps the existing TTY for interactive CLIs in this
   # non-job-control shell while the wrapper supervises provider waits.
   "$@" <&0 & capacity_child=$!

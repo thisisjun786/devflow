@@ -75,6 +75,28 @@ herdr_shell_only() {
     all(.foreground_processes[]; .pid==$shell and
       (.name|test("^(-|.*/)?(bash|zsh|sh|dash|fish|ksh|tcsh|csh)$")))' >/dev/null 2>&1
 }
+# Stop this issue's supervised foreground worker before switching agents. A
+# Ctrl-C may only cancel an omp turn, so also terminate the owned dv wrapper.
+# Its cleanup reaps the agent tree/scope before the pane returns to its shell.
+herdr_interrupt() {
+  local pid command deadline
+  pid=$(cat "$S/agent.pid" 2>/dev/null) || pid=''
+  herdr_cmd pane send-keys "$HERDR_PANE" ctrl-c >/dev/null || return 1
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+    command=$(ps -p "$pid" -o args=) || return 1
+    case "$command" in
+      *"/bin/dv _agent $ISSUE"|*"/bin/dv _agent $ISSUE "*) kill -TERM "$pid" || return 1 ;;
+      *) return 1 ;;
+    esac
+  fi
+  deadline=$(( $(now) + DV_START_WAIT ))
+  while :; do
+    if { [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null ||
+      [ "$(ps -p "$pid" -o stat= 2>/dev/null | cut -c 1)" = Z ]; } && herdr_shell_only "$HERDR_PANE"; then return 0; fi
+    [ "$(now)" -lt "$deadline" ] || return 1
+    sleep 0.1
+  done
+}
 # Run the CLI itself as the child so a signal interrupts wait immediately and
 # cleanup can reap the socket subscriber (no orphaned shell/function child).
 herdr_question_wait() {

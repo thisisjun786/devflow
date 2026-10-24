@@ -692,7 +692,7 @@ cmd_status() {
       printf '%s\n' "$row"
     done
   } | if [ "$json" = 1 ]; then jq -s --argjson heavy "$heavy" 'map(.+{heavy:$heavy})'
-    else jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .agent_exit_code!=null then "exit="+(.agent_exit_code|tostring) else empty end),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none"),"status_age="+(if .status_age_seconds==null then "unknown" else (.status_age_seconds|tostring)+"s" end) else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
+    else jq -r '[.issue,.status,.agent,.host,(.elapsed|tostring)+"s",("backend="+.backend),"alive="+(.alive|tostring),"agent="+.agent_status,"tmux="+(.tmux|tostring),(if .escalated_from!=null then "escalated_from="+.escalated_from+" reason="+.escalation_reason else empty end),(if .agent_exit_code!=null then "exit="+(.agent_exit_code|tostring) else empty end),(if .capacity_retry_at!=null then "next_try="+(.capacity_retry_at|todateiso8601) else empty end),(if .backend=="appserver" then "recoveries="+(.recoveries|tostring),"last_recovery_reason="+(.last_recovery_reason // "none"),"status_age="+(if .status_age_seconds==null then "unknown" else (.status_age_seconds|tostring)+"s" end) else empty end),(.last_log|gsub("[\\r\\n\\t]";" "))]|join("\t")'; fi
 }
 agent_gone() {
   local reply pane pid unknown=0
