@@ -374,6 +374,9 @@ GitHub 저장소는 HTTPS·HTTP·`git@github.com:`·`ssh://` 주소의 대소문
 정규화해 같은 저장소로 비교합니다. clone 재사용, `DV_BID_REJECT_REPOS` 제외 목록,
 manager 식별에 같은 규칙을 쓰며 GitHub clone 대상 이름은 소문자로 정합니다.
 다른 호스트·소유자·저장소와 비기본 포트는 구분하고, 기존 origin은 바꾸지 않습니다.
+대문자 URL 스킴도 입찰·제출에 허용합니다. 예전 식별자로 등록된 관리자는 새 키를 먼저
+조회한 뒤 기존 등록에서 찾고, 유휴 상태일 때 식별자만 한 번 갱신합니다. 실행 중이면
+갱신을 미루며 세션·메타데이터·큐와 기존 디렉터리 경로를 보존합니다.
 
 `--agent` 없이 제출하면 브리프의 줄 하나로 기본 에이전트를 고릅니다. `Route: writing`(문서·이슈·PR 글·조사처럼 글만 쓰는 작업)은 `DV_ROUTE_WRITING`(기본 agy), `Route: small`(한 패키지, 약 200줄 이하 예상)은 `DV_ROUTE_SMALL`(기본 dsh)로 보냅니다. 줄이 없거나 `Route: default`이면 `DV_AGENT`입니다. `--agent`와 Codex 전용 `--mode auto|exec`가 항상 우선하며, 대상 값을 비우면(`DV_ROUTE_SMALL=`) 그 경로를 끕니다. 다른 값은 오타로 보고 제출을 거절합니다. 선택 결과는 stderr에 한 줄 남기고 제출 기록의 `agent`에 저장됩니다.
 

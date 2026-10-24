@@ -10,16 +10,54 @@ manager_identity() {
   fi
   repo_identity "$repo"
 }
+# Persisted keys have already lost the transport .git suffix. In particular,
+# canonical keys and raw legacy keys ending in .git name repositories with
+# that suffix; normalizing them as fresh URLs would select another repo.
+manager_stored_identity() {
+  case "$1" in
+    github.com/*) printf '%s\n' "$1" ;;
+    *.git) repo_identity "$1.git" ;;
+    *) repo_identity "$1" ;;
+  esac
+}
 manager_dir() {
-  local key dir
+  local key dir path identity legacy=''
   key=$(manager_identity "$1") || return 1
   dir="$DV_HOME/managers/$(printf '%s' "$key" | cksum | awk '{print $1 "-" $2}')"
   # Refuse a checksum collision instead of selecting another repo's session.
   if [ -f "$dir/meta.json" ]; then
     jq -e --arg key "$key" '.identity==$key' "$dir/meta.json" >/dev/null || return 1
+  else
+    # The caller may use any equivalent URL, so its spelling cannot reconstruct
+    # the old key. Compare persisted identities, including already re-keyed ones.
+    for path in "$DV_HOME"/managers/*/meta.json; do
+      [ -f "$path" ] || continue
+      identity=$(jq -er '.identity | select(type=="string" and length>0)' "$path") || continue
+      [ "$(manager_stored_identity "$identity")" = "$key" ] || continue
+      # Preserve ambiguous registrations for the operator; never pick a session.
+      [ -z "$legacy" ] || return 1
+      legacy=${path%/meta.json}
+    done
+    if [ -n "$legacy" ]; then
+      manager_rekey "$legacy" "$key" || return 1
+      dir=$legacy
+    fi
   fi
   printf '%s\n' "$dir"
 }
+manager_rekey() (
+  local dir=$1 key=$2 identity
+  identity=$(jq -er .identity "$dir/meta.json") || return 1
+  [ "$identity" != "$key" ] || return 0
+  # Keep the directory stable for in-flight runners and queued file references.
+  # Busy managers remain reachable; migrate on the next idle lookup.
+  manager_lock "$dir" || return 0
+  trap 'manager_unlock "$dir"' EXIT
+  identity=$(jq -er .identity "$dir/meta.json") || return 1
+  [ "$(manager_stored_identity "$identity")" = "$key" ] || return 1
+  [ "$identity" != "$key" ] || return 0
+  manager_set "$dir" --arg key "$key" '.identity=$key'
+)
 manager_set() {
   local dir=$1 tmp; shift
   tmp=$(mktemp "$dir/.meta.XXXXXX") || return 1
